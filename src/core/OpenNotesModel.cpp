@@ -76,21 +76,17 @@ bool OpenNotesModel::isOpen(const QString &noteId) const
     return indexOf(noteId) >= 0;
 }
 
-void OpenNotesModel::updateGeometry(const QString &noteId, int x, int y, int width, int height,
-                                     const QString &screenName)
+void OpenNotesModel::updateSize(const QString &noteId, int width, int height)
 {
     // Start from the note's existing cached state (if any) rather than a
     // fresh default-constructed one, so fields this call doesn't touch
-    // (currently just alwaysOnTop) aren't silently reset to their defaults
-    // on every resize/drag.
+    // (x/y/screenName/alwaysOnTop) aren't silently reset to their defaults
+    // on every resize.
     const int row = indexOf(noteId);
     Settings::NoteSessionState state = row >= 0 ? m_notes.at(row) : Settings::NoteSessionState();
     state.noteId = noteId;
-    state.x = x;
-    state.y = y;
     state.width = width;
     state.height = height;
-    state.screenName = screenName;
     // upsertNoteState persists and emits Settings::openNotesChanged, which
     // syncFromSettings picks up to refresh our own cache — no local mutation
     // needed here, keeping Settings as the single source of truth.
@@ -142,7 +138,7 @@ void OpenNotesModel::syncFromSettings()
     }
 
     // Add ids that are new, and refresh geometry for ids that already existed
-    // (e.g. updateGeometry/upsertNoteState changing an existing note in place).
+    // (e.g. updateSize/upsertNoteState changing an existing note in place).
     for (const Settings::NoteSessionState &state : std::as_const(newNotes)) {
         const int row = indexOf(state.noteId);
         if (row < 0) {

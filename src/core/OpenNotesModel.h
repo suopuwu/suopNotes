@@ -39,11 +39,18 @@ public:
     // open note may outlive its file) — see Main.qml's reconciliation logic.
     Q_INVOKABLE QStringList openNoteIds() const;
 
-    // Persists a note's live geometry (called after a drag/resize settles,
-    // or when position/screen is captured on close) without disturbing the
-    // other open notes' entries.
-    Q_INVOKABLE void updateGeometry(const QString &noteId, int x, int y, int width, int height,
-                                     const QString &screenName);
+    // Persists a note's live size after a resize settles, without disturbing
+    // its position, screen, or any other open note's entry. Deliberately
+    // takes no x/y: position is PositionEventService's exclusive domain (see
+    // its own docs) because it's the only thing that can observe a real,
+    // final position after a compositor-driven Wayland drag. A resize
+    // handler's own window x/y are never live-synced back from such a
+    // drag — confirmed live, this used to be a single updateGeometry(x, y,
+    // width, height, screenName) called from NoteWindow's resize handler,
+    // and every resize after a drag silently reverted the note's saved
+    // position back to wherever it was when the window was created, using
+    // those stale x/y, even though the note stayed visually put on screen.
+    Q_INVOKABLE void updateSize(const QString &noteId, int width, int height);
 
     // Toggles the pin (req. 5). Preserves the note's current geometry —
     // only alwaysOnTop changes.

@@ -21,6 +21,11 @@ Window {
     // per-note KWin rule group applyPosition() writes below when true.
     required property bool alwaysOnTop
 
+    // True only while Component.onCompleted is restoring this window's
+    // already-persisted width/height — see there for why persistSize()
+    // must not fire on those two specific assignments.
+    property bool restoringGeometry: false
+
     // Exposed for tests only (structural verification of drag-gesture
     // config); not used by app code outside this file.
     readonly property alias mouseDragArea: mouseDragArea
@@ -57,8 +62,27 @@ Window {
         // simultaneously-opened fresh notes don't perfectly overlap.
         noteWindow.x = hasSavedPosition ? noteX : (100 + index * 40)
         noteWindow.y = hasSavedPosition ? noteY : (100 + index * 40)
+        // restoringGeometry (cleared below) suppresses persistSize() for
+        // these two assignments — this is what was causing a real,
+        // reported bug: assigning width here fires onWidthChanged
+        // synchronously, which used to call persistSize() with the CORRECT
+        // width but
+        // height still at its 260 default (the next line hasn't run yet),
+        // clobbering the real saved height in Settings. That write
+        // round-trips synchronously back through OpenNotesModel's
+        // dataChanged into this exact delegate's live-bound noteHeight
+        // property, corrupting it to 260 *before* the next line ever reads
+        // it — so `noteWindow.height = noteHeight` then reapplies the
+        // already-corrupted value instead of the real one, and since
+        // window.height was already 260, no onHeightChanged fires to
+        // self-correct. Net effect: height silently reverted to 260 on
+        // every single restart, while width (assigned first, before any
+        // corruption occurs) always restored correctly — restoring
+        // already-persisted values has nothing to persist anyway.
+        restoringGeometry = true
         noteWindow.width = noteWidth
         noteWindow.height = noteHeight
+        restoringGeometry = false
 
         // Assigned imperatively, not via a `settings: settings` binding on
         // NoteAppearance itself — that bare RHS "settings" would resolve to
@@ -105,8 +129,11 @@ Window {
         visible = wasVisible
     }
 
-    function persistGeometry() {
-        openNotesModel.updateGeometry(noteId, x, y, width, height, screenName)
+    // Deliberately does not pass this window's own x/y — see
+    // OpenNotesModel::updateSize's doc comment for why that used to
+    // silently revert a note's saved position on every resize after a drag.
+    function persistSize() {
+        openNotesModel.updateSize(noteId, width, height)
     }
 
     // Delete (new requirement): permanently removes the note's .md file and
@@ -165,8 +192,8 @@ Window {
         blurEffect.applyTo(noteWindow, noteAppearance.blurEnabled, noteAppearance.windowRadius)
     }
 
-    onWidthChanged: { updateBlur(); persistGeometry() }
-    onHeightChanged: { updateBlur(); persistGeometry() }
+    onWidthChanged: { updateBlur(); if (!restoringGeometry) persistSize() }
+    onHeightChanged: { updateBlur(); if (!restoringGeometry) persistSize() }
 
     // Resolves this note's effective appearance: its own override where set
     // (req. 4), else the tray Settings dialog's global default — see
@@ -277,6 +304,19 @@ Window {
             contentWidth: width
             contentHeight: editor.height
 
+            // Keeps the caret on-screen when it moves off the visible edge —
+            // whether from typing past the bottom or from arrow-key/Home/End
+            // navigation. editor sits at content-coordinate (0,0) inside
+            // editorFlick (no offsetting ancestor between them), so
+            // editor.cursorRectangle can be compared directly against
+            // contentY/height without any coordinate mapping.
+            function ensureCursorVisible(rect) {
+                if (rect.y < contentY)
+                    contentY = rect.y
+                else if (rect.y + rect.height > contentY + height)
+                    contentY = rect.y + rect.height - height
+            }
+
             // Sole purpose: gives EditorDragFilter below a place in the tree
             // where it's `editor`'s direct parent and nothing else's — see
             // EditorDragFilter's own class comment for why that's required
@@ -342,6 +382,8 @@ Window {
                         if (ready)
                             noteStore.saveNoteContent(noteWindow.noteId, docHandler.toMarkdown())
                     }
+
+                    onCursorRectangleChanged: editorFlick.ensureCursorVisible(cursorRectangle)
                 }
             }
 

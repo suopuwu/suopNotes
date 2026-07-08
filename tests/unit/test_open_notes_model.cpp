@@ -232,7 +232,7 @@ SCENARIO("A newly-opened note exposes its persisted geometry via model roles", "
     }
 }
 
-SCENARIO("updateGeometry persists a note's live geometry without disturbing others", "[open_notes_model]")
+SCENARIO("updateSize persists a note's live size without disturbing others", "[open_notes_model]")
 {
     GIVEN("an OpenNotesModel with two open notes")
     {
@@ -243,11 +243,11 @@ SCENARIO("updateGeometry persists a note's live geometry without disturbing othe
         model.openNote("alpha");
         model.openNote("bravo");
 
-        WHEN("updateGeometry is called for one of them")
+        WHEN("updateSize is called for one of them")
         {
-            model.updateGeometry("alpha", 111, 222, 333, 444, "HDMI-A-1");
+            model.updateSize("alpha", 333, 444);
 
-            THEN("that note's geometry roles reflect the new values")
+            THEN("that note's size roles reflect the new values")
             {
                 int alphaRow = -1;
                 for (int i = 0; i < model.rowCount(); ++i) {
@@ -256,14 +256,11 @@ SCENARIO("updateGeometry persists a note's live geometry without disturbing othe
                 }
                 REQUIRE(alphaRow >= 0);
                 const QModelIndex idx = model.index(alphaRow);
-                CHECK(model.data(idx, OpenNotesModel::XRole).toInt() == 111);
-                CHECK(model.data(idx, OpenNotesModel::YRole).toInt() == 222);
                 CHECK(model.data(idx, OpenNotesModel::WidthRole).toInt() == 333);
                 CHECK(model.data(idx, OpenNotesModel::HeightRole).toInt() == 444);
-                CHECK(model.data(idx, OpenNotesModel::ScreenNameRole).toString() == "HDMI-A-1");
             }
 
-            THEN("the other note's geometry is untouched, and no row was added/removed")
+            THEN("the other note's size is untouched, and no row was added/removed")
             {
                 REQUIRE(model.rowCount() == 2);
             }
@@ -275,8 +272,8 @@ SCENARIO("updateGeometry persists a note's live geometry without disturbing othe
                 for (const auto &state : notes) {
                     if (state.noteId == "alpha") {
                         found = true;
-                        CHECK(state.x == 111);
-                        CHECK(state.screenName == "HDMI-A-1");
+                        CHECK(state.width == 333);
+                        CHECK(state.height == 444);
                     }
                 }
                 CHECK(found);
@@ -285,7 +282,7 @@ SCENARIO("updateGeometry persists a note's live geometry without disturbing othe
     }
 }
 
-SCENARIO("updateGeometry preserves a note's pin state instead of resetting it", "[open_notes_model]")
+SCENARIO("updateSize preserves a note's pin state instead of resetting it", "[open_notes_model]")
 {
     GIVEN("a pinned, open note")
     {
@@ -297,13 +294,56 @@ SCENARIO("updateGeometry preserves a note's pin state instead of resetting it", 
         model.setAlwaysOnTop("alpha", true);
         REQUIRE(model.data(model.index(0), OpenNotesModel::AlwaysOnTopRole).toBool());
 
-        WHEN("updateGeometry is called for it, as a drag/resize would trigger")
+        WHEN("updateSize is called for it, as a resize would trigger")
         {
-            model.updateGeometry("alpha", 10, 20, 30, 40, "DP-4");
+            model.updateSize("alpha", 30, 40);
 
             THEN("it is still pinned afterward")
             {
                 CHECK(model.data(model.index(0), OpenNotesModel::AlwaysOnTopRole).toBool());
+            }
+        }
+    }
+}
+
+SCENARIO("updateSize does not alter a note's existing position or screen", "[open_notes_model]")
+{
+    GIVEN("an open note whose position was saved by a live compositor-driven drag "
+          "(PositionEventService's domain, not this model's)")
+    {
+        QTemporaryDir dir;
+        REQUIRE(dir.isValid());
+        Settings settings(tempConfigPath(dir));
+        OpenNotesModel model(&settings);
+        model.openNote("alpha");
+
+        Settings::NoteSessionState dragged;
+        dragged.noteId = "alpha";
+        dragged.x = 900;
+        dragged.y = 700;
+        dragged.width = 260;
+        dragged.height = 260;
+        dragged.screenName = "DP-2";
+        settings.upsertNoteState(dragged);
+
+        WHEN("updateSize is called afterward, as a resize on that same note would trigger")
+        {
+            // Regression test: this used to be updateGeometry(noteId, x, y,
+            // width, height, screenName), called with NoteWindow's own x/y —
+            // which on Wayland are never live-synced back from a real
+            // compositor-driven drag. Every resize after a drag silently
+            // reverted x/y/screenName to whatever those stale values were,
+            // even though the note visually stayed at the dragged position.
+            model.updateSize("alpha", 500, 600);
+
+            THEN("the note's dragged position and screen are untouched, only size changed")
+            {
+                const QModelIndex idx = model.index(0);
+                CHECK(model.data(idx, OpenNotesModel::XRole).toInt() == 900);
+                CHECK(model.data(idx, OpenNotesModel::YRole).toInt() == 700);
+                CHECK(model.data(idx, OpenNotesModel::ScreenNameRole).toString() == "DP-2");
+                CHECK(model.data(idx, OpenNotesModel::WidthRole).toInt() == 500);
+                CHECK(model.data(idx, OpenNotesModel::HeightRole).toInt() == 600);
             }
         }
     }

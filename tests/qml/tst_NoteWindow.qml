@@ -56,6 +56,14 @@ Item {
         signalName: "appliedTo"
     }
 
+    // Deferred (not instantiated until createObject() is called) so each
+    // test that uses it gets a fresh NoteWindow, unlike soloWindow/
+    // deleteTestWindow above which are created once at file load.
+    Component {
+        id: restoreOrderTestComponent
+        NoteWindow {}
+    }
+
     TestCase {
         name: "NoteWindow"
         when: windowShown
@@ -78,6 +86,46 @@ Item {
         function test_windows_use_tool_flag_to_hide_from_taskbar() {
             for (let i = 0; i < instantiator.count; ++i)
                 verify((instantiator.objectAt(i).flags & Qt.Tool) !== 0)
+        }
+
+        // Regression test: restoring a note's already-persisted width/height
+        // in Component.onCompleted used to fire persistSize() on the very
+        // assignments that were just restoring known-good values (each of
+        // width/height is set imperatively, and each triggers
+        // onWidthChanged/onHeightChanged). In the real app, driven by a live
+        // Instantiator bound to openNotesModel, that write-back could
+        // corrupt the OTHER dimension: the width assignment's persistSize()
+        // call fires before the height assignment has run, so it captures
+        // the window's height still at its 260 default and writes that to
+        // Settings — which round-trips synchronously through
+        // openNotesModel's dataChanged back into this exact delegate's own
+        // live noteHeight property, before the next line ever reads it.
+        // Not practical to reproduce that full loop here without a live
+        // Instantiator bound to openNotesModel (this component is created
+        // standalone), but the fix's actual guarantee is directly
+        // testable: restoring already-known geometry must never write
+        // anything to Settings at all — a note that was never explicitly
+        // opened must not become "open" just because a window showing its
+        // last-known geometry was constructed.
+        function test_restoring_persisted_geometry_applies_it_without_writing_to_settings() {
+            const w = restoreOrderTestComponent.createObject(root, {
+                noteId: "restore-order-test",
+                index: 70,
+                noteX: 0,
+                noteY: 0,
+                noteWidth: 300,
+                noteHeight: 400,
+                screenName: "",
+                alwaysOnTop: false,
+            })
+            verify(w !== null)
+
+            compare(w.width, 300)
+            compare(w.height, 400)
+            verify(!openNotesModel.isOpen("restore-order-test"),
+                   "restoring already-known geometry must not implicitly open/insert a Settings entry")
+
+            w.destroy()
         }
 
         function test_mouse_drag_is_scoped_to_right_button_only() {
@@ -421,6 +469,68 @@ Item {
             wait(50)
 
             verify(flick.contentY > 0, "dragging the scroll handle downward should scroll the note's content")
+
+            win.docHandler.setMarkdown("hi")
+            wait(50)
+        }
+
+        // Feature request: the caret must never be able to drift off-screen —
+        // neither by typing past the bottom of the visible area nor by
+        // navigating there with arrow/Home/End keys. Drives it exactly the
+        // way both of those actually move the cursor: reassigning
+        // editor.cursorPosition (typing appends past the end; arrow keys
+        // move it directly) — not literal key events, since what matters is
+        // that the Flickable reacts to cursorRectangleChanged regardless of
+        // what caused it to move.
+        function test_editor_scrolls_to_keep_cursor_visible_when_it_moves_off_bottom() {
+            const win = instantiator.objectAt(0)
+            const flick = win.editorFlick
+            const editor = win.editor
+
+            let many = ""
+            for (let i = 0; i < 60; ++i)
+                many += "line " + i + "\n\n"
+            win.docHandler.setMarkdown(many)
+            wait(50)
+            verify(flick.contentHeight > flick.height, "precondition: content must overflow for scrolling to mean anything")
+
+            editor.cursorPosition = editor.text.length
+            wait(50)
+
+            const cursorBottom = editor.cursorRectangle.y + editor.cursorRectangle.height
+            verify(flick.contentY > 0,
+                   "moving the cursor to the end of long content should scroll the editor down")
+            verify(cursorBottom - flick.contentY <= flick.height + 1,
+                   "the cursor's line should end up within the visible viewport, not scrolled past it")
+
+            win.docHandler.setMarkdown("hi")
+            wait(50)
+        }
+
+        // Same guarantee in the other direction: scrolled down to the
+        // bottom, moving the cursor back up (Home / arrow-up / click near
+        // the top) must scroll the view back up to reveal it rather than
+        // leaving it hidden above the current viewport.
+        function test_editor_scrolls_to_keep_cursor_visible_when_it_moves_off_top() {
+            const win = instantiator.objectAt(0)
+            const flick = win.editorFlick
+            const editor = win.editor
+
+            let many = ""
+            for (let i = 0; i < 60; ++i)
+                many += "line " + i + "\n\n"
+            win.docHandler.setMarkdown(many)
+            wait(50)
+
+            editor.cursorPosition = editor.text.length
+            wait(50)
+            verify(flick.contentY > 0, "precondition: cursor-at-end must have scrolled the view down")
+
+            editor.cursorPosition = 0
+            wait(50)
+
+            verify(flick.contentY === 0,
+                   "moving the cursor back to the very start should scroll the editor back to the top")
 
             win.docHandler.setMarkdown("hi")
             wait(50)
