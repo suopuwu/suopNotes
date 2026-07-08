@@ -53,6 +53,10 @@ class NoteAppearance : public QObject
     Q_PROPERTY(bool hasFontColorOverride READ hasFontColorOverride NOTIFY fontColorChanged)
     Q_PROPERTY(QString fontFamily READ fontFamily NOTIFY fontFamilyChanged)
     Q_PROPERTY(bool hasFontFamilyOverride READ hasFontFamilyOverride NOTIFY fontFamilyChanged)
+    Q_PROPERTY(QColor highlightColor READ highlightColor NOTIFY highlightColorChanged)
+    Q_PROPERTY(bool hasHighlightColorOverride READ hasHighlightColorOverride NOTIFY highlightColorChanged)
+    Q_PROPERTY(qreal highlightOpacity READ highlightOpacity NOTIFY highlightOpacityChanged)
+    Q_PROPERTY(bool hasHighlightOpacityOverride READ hasHighlightOpacityOverride NOTIFY highlightOpacityChanged)
 
 public:
     explicit NoteAppearance(QObject *parent = nullptr);
@@ -92,6 +96,10 @@ public:
     bool hasFontColorOverride() const;
     QString fontFamily() const;
     bool hasFontFamilyOverride() const;
+    QColor highlightColor() const;
+    bool hasHighlightColorOverride() const;
+    qreal highlightOpacity() const;
+    bool hasHighlightOpacityOverride() const;
 
     Q_INVOKABLE void setWindowRadiusOverride(int radius);
     Q_INVOKABLE void clearWindowRadiusOverride();
@@ -123,6 +131,10 @@ public:
     Q_INVOKABLE void clearFontColorOverride();
     Q_INVOKABLE void setFontFamilyOverride(const QString &family);
     Q_INVOKABLE void clearFontFamilyOverride();
+    Q_INVOKABLE void setHighlightColorOverride(const QColor &color);
+    Q_INVOKABLE void clearHighlightColorOverride();
+    Q_INVOKABLE void setHighlightOpacityOverride(qreal opacity);
+    Q_INVOKABLE void clearHighlightOpacityOverride();
 
 signals:
     void settingsChanged();
@@ -142,6 +154,8 @@ signals:
     void fontSizeChanged();
     void fontColorChanged();
     void fontFamilyChanged();
+    void highlightColorChanged();
+    void highlightOpacityChanged();
 
 private:
     // Re-reads settings->noteOverride(m_noteId) and emits every field's

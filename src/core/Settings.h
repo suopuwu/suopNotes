@@ -33,6 +33,8 @@ class Settings : public QObject
     Q_PROPERTY(int fontSize READ fontSize WRITE setFontSize NOTIFY fontSizeChanged)
     Q_PROPERTY(QColor fontColor READ fontColor WRITE setFontColor NOTIFY fontColorChanged)
     Q_PROPERTY(QString fontFamily READ fontFamily WRITE setFontFamily NOTIFY fontFamilyChanged)
+    Q_PROPERTY(QColor highlightColor READ highlightColor WRITE setHighlightColor NOTIFY highlightColorChanged)
+    Q_PROPERTY(qreal highlightOpacity READ highlightOpacity WRITE setHighlightOpacity NOTIFY highlightOpacityChanged)
     Q_PROPERTY(bool hudAlwaysExpanded READ hudAlwaysExpanded WRITE setHudAlwaysExpanded NOTIFY hudAlwaysExpandedChanged)
 
 public:
@@ -107,6 +109,10 @@ public:
         QColor fontColor;
         bool hasFontFamily = false;
         QString fontFamily;
+        bool hasHighlightColor = false;
+        QColor highlightColor;
+        bool hasHighlightOpacity = false;
+        qreal highlightOpacity = 0.55;
     };
 
     // Appearance properties
@@ -170,6 +176,15 @@ public:
     QString fontFamily() const;
     void setFontFamily(const QString &family);
 
+    // Text selection background. Always opaque — translucency is controlled
+    // separately by highlightOpacity below, the same split as
+    // backgroundColor/windowOpacity.
+    QColor highlightColor() const;
+    void setHighlightColor(const QColor &color);
+
+    qreal highlightOpacity() const;
+    void setHighlightOpacity(qreal opacity);
+
     // Keeps the hover-expand note ribbon (NoteHud) permanently expanded —
     // an escape hatch for when hover-to-reveal isn't reliable/wanted (e.g.
     // touch input, or a corner overlapped by another hover target), rather
@@ -217,6 +232,8 @@ signals:
     void fontSizeChanged();
     void fontColorChanged();
     void fontFamilyChanged();
+    void highlightColorChanged();
+    void highlightOpacityChanged();
     void hudAlwaysExpandedChanged();
     void openNotesChanged();
 

@@ -36,6 +36,8 @@ void NoteAppearance::setSettings(Settings *settings)
         connect(m_settings, &Settings::fontSizeChanged, this, &NoteAppearance::resync);
         connect(m_settings, &Settings::fontColorChanged, this, &NoteAppearance::resync);
         connect(m_settings, &Settings::fontFamilyChanged, this, &NoteAppearance::resync);
+        connect(m_settings, &Settings::highlightColorChanged, this, &NoteAppearance::resync);
+        connect(m_settings, &Settings::highlightOpacityChanged, this, &NoteAppearance::resync);
         connect(m_settings, &Settings::noteOverrideChanged, this, [this](const QString &noteId) {
             if (noteId == m_noteId)
                 resync();
@@ -232,6 +234,30 @@ bool NoteAppearance::hasFontFamilyOverride() const
     return m_override.hasFontFamily;
 }
 
+QColor NoteAppearance::highlightColor() const
+{
+    return m_override.hasHighlightColor
+        ? m_override.highlightColor
+        : (m_settings ? m_settings->highlightColor() : m_override.highlightColor);
+}
+
+bool NoteAppearance::hasHighlightColorOverride() const
+{
+    return m_override.hasHighlightColor;
+}
+
+qreal NoteAppearance::highlightOpacity() const
+{
+    return m_override.hasHighlightOpacity
+        ? m_override.highlightOpacity
+        : (m_settings ? m_settings->highlightOpacity() : m_override.highlightOpacity);
+}
+
+bool NoteAppearance::hasHighlightOpacityOverride() const
+{
+    return m_override.hasHighlightOpacity;
+}
+
 void NoteAppearance::resync()
 {
     m_override = m_settings && !m_noteId.isEmpty() ? m_settings->noteOverride(m_noteId)
@@ -252,6 +278,8 @@ void NoteAppearance::resync()
     emit fontSizeChanged();
     emit fontColorChanged();
     emit fontFamilyChanged();
+    emit highlightColorChanged();
+    emit highlightOpacityChanged();
 }
 
 void NoteAppearance::writeOverride(const std::function<void(Settings::NoteAppearanceOverride &)> &mutate)
@@ -460,4 +488,30 @@ void NoteAppearance::setFontFamilyOverride(const QString &family)
 void NoteAppearance::clearFontFamilyOverride()
 {
     writeOverride([](Settings::NoteAppearanceOverride &o) { o.hasFontFamily = false; });
+}
+
+void NoteAppearance::setHighlightColorOverride(const QColor &color)
+{
+    writeOverride([color](Settings::NoteAppearanceOverride &o) {
+        o.hasHighlightColor = true;
+        o.highlightColor = color;
+    });
+}
+
+void NoteAppearance::clearHighlightColorOverride()
+{
+    writeOverride([](Settings::NoteAppearanceOverride &o) { o.hasHighlightColor = false; });
+}
+
+void NoteAppearance::setHighlightOpacityOverride(qreal opacity)
+{
+    writeOverride([opacity](Settings::NoteAppearanceOverride &o) {
+        o.hasHighlightOpacity = true;
+        o.highlightOpacity = opacity;
+    });
+}
+
+void NoteAppearance::clearHighlightOpacityOverride()
+{
+    writeOverride([](Settings::NoteAppearanceOverride &o) { o.hasHighlightOpacity = false; });
 }

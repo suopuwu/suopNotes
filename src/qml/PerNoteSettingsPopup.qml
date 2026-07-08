@@ -43,6 +43,12 @@ ApplicationWindow {
         onAccepted: root.noteAppearance.setFontColorOverride(color)
     }
 
+    Platform.ColorDialog {
+        id: highlightColorDialog
+        currentColor: root.noteAppearance.highlightColor
+        onAccepted: root.noteAppearance.setHighlightColorOverride(color)
+    }
+
     ScrollView {
         anchors.fill: parent
         anchors.margins: 16
@@ -338,6 +344,48 @@ ApplicationWindow {
                     enabled: fontColorOverride.checked
                     anchors.verticalCenter: parent.verticalCenter
                     MouseArea { anchors.fill: parent; onClicked: fontColorDialog.open() }
+                }
+            }
+
+            Row {
+                spacing: 8
+                CheckBox {
+                    id: highlightColorOverride
+                    text: "Override highlight color"
+                    checked: root.noteAppearance.hasHighlightColorOverride
+                    onToggled: checked ? root.noteAppearance.setHighlightColorOverride(root.noteAppearance.highlightColor)
+                                       : root.noteAppearance.clearHighlightColorOverride()
+                }
+                Rectangle {
+                    width: 24
+                    height: 24
+                    color: root.noteAppearance.highlightColor
+                    border.color: "gray"
+                    enabled: highlightColorOverride.checked
+                    anchors.verticalCenter: parent.verticalCenter
+                    MouseArea { anchors.fill: parent; onClicked: highlightColorDialog.open() }
+                }
+            }
+
+            Column {
+                width: parent.width
+                spacing: 4
+                CheckBox {
+                    id: highlightOpacityOverride
+                    text: "Override highlight opacity"
+                    checked: root.noteAppearance.hasHighlightOpacityOverride
+                    onToggled: checked ? root.noteAppearance.setHighlightOpacityOverride(root.noteAppearance.highlightOpacity)
+                                       : root.noteAppearance.clearHighlightOpacityOverride()
+                }
+                Label { text: "Highlight opacity: " + highlightOpacitySlider.value.toFixed(2); enabled: highlightOpacityOverride.checked }
+                Slider {
+                    id: highlightOpacitySlider
+                    width: parent.width
+                    enabled: highlightOpacityOverride.checked
+                    from: 0
+                    to: 1.0
+                    value: root.noteAppearance.highlightOpacity
+                    onMoved: root.noteAppearance.setHighlightOpacityOverride(value)
                 }
             }
 

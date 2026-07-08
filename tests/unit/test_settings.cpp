@@ -28,9 +28,9 @@ SCENARIO("A fresh Settings instance reports documented defaults", "[settings]")
             REQUIRE(settings.notesFolder() == expected);
         }
 
-        THEN("windowRadius defaults to 12")
+        THEN("windowRadius defaults to 9")
         {
-            REQUIRE(settings.windowRadius() == 12);
+            REQUIRE(settings.windowRadius() == 9);
         }
 
         THEN("backgroundColor defaults to #2b2b2b")
@@ -38,19 +38,19 @@ SCENARIO("A fresh Settings instance reports documented defaults", "[settings]")
             REQUIRE(settings.backgroundColor() == QColor("#2b2b2b"));
         }
 
-        THEN("windowOpacity defaults to 0.9")
+        THEN("windowOpacity defaults to 0.5")
         {
-            REQUIRE(settings.windowOpacity() == 0.9);
+            REQUIRE(settings.windowOpacity() == 0.5);
         }
 
-        THEN("blurEnabled defaults to false")
+        THEN("blurEnabled defaults to true")
         {
-            REQUIRE_FALSE(settings.blurEnabled());
+            REQUIRE(settings.blurEnabled());
         }
 
-        THEN("glassEnabled defaults to false")
+        THEN("glassEnabled defaults to true")
         {
-            REQUIRE_FALSE(settings.glassEnabled());
+            REQUIRE(settings.glassEnabled());
         }
 
         THEN("glassSheenOpacity defaults to 0.12")
@@ -68,9 +68,9 @@ SCENARIO("A fresh Settings instance reports documented defaults", "[settings]")
             REQUIRE(settings.glassSheenSize() == 0.18);
         }
 
-        THEN("glassTintColor defaults to #ffffff")
+        THEN("glassTintColor defaults to #000000")
         {
-            REQUIRE(settings.glassTintColor() == QColor("#ffffff"));
+            REQUIRE(settings.glassTintColor() == QColor("#000000"));
         }
 
         THEN("borderWidth defaults to 0")
@@ -103,9 +103,19 @@ SCENARIO("A fresh Settings instance reports documented defaults", "[settings]")
             REQUIRE(settings.fontFamily().isEmpty());
         }
 
-        THEN("hudAlwaysExpanded defaults to false")
+        THEN("highlightColor defaults to #000000")
         {
-            REQUIRE_FALSE(settings.hudAlwaysExpanded());
+            REQUIRE(settings.highlightColor() == QColor("#000000"));
+        }
+
+        THEN("highlightOpacity defaults to 0.35")
+        {
+            REQUIRE(settings.highlightOpacity() == 0.35);
+        }
+
+        THEN("hudAlwaysExpanded defaults to true")
+        {
+            REQUIRE(settings.hudAlwaysExpanded());
         }
 
         THEN("openNotes defaults to an empty list")
@@ -131,6 +141,8 @@ SCENARIO("A fresh Settings instance reports documented defaults", "[settings]")
             REQUIRE_FALSE(override.hasFontSize);
             REQUIRE_FALSE(override.hasFontColor);
             REQUIRE_FALSE(override.hasFontFamily);
+            REQUIRE_FALSE(override.hasHighlightColor);
+            REQUIRE_FALSE(override.hasHighlightOpacity);
         }
     }
 }
@@ -163,6 +175,8 @@ SCENARIO("Appearance properties persist to disk across instances", "[settings]")
             settings.setFontColor(QColor("#abcdef"));
             settings.setFontFamily("Noto Sans");
             settings.setHudAlwaysExpanded(true);
+            settings.setHighlightColor(QColor("#8899aa"));
+            settings.setHighlightOpacity(0.75);
 
             THEN("a second Settings instance pointed at the same file reads back the new values")
             {
@@ -184,6 +198,8 @@ SCENARIO("Appearance properties persist to disk across instances", "[settings]")
                 REQUIRE(reloaded.fontColor() == QColor("#abcdef"));
                 REQUIRE(reloaded.fontFamily() == "Noto Sans");
                 REQUIRE(reloaded.hudAlwaysExpanded() == true);
+                REQUIRE(reloaded.highlightColor() == QColor("#8899aa"));
+                REQUIRE(reloaded.highlightOpacity() == 0.75);
             }
         }
     }
@@ -314,6 +330,20 @@ SCENARIO("Changing a property emits its NOTIFY signal", "[settings]")
             QSignalSpy spy(&settings, &Settings::scrollbarWidthChanged);
             settings.setScrollbarWidth(12);
             THEN("scrollbarWidthChanged fires once") { REQUIRE(spy.count() == 1); }
+        }
+
+        WHEN("highlightColor is explicitly set")
+        {
+            QSignalSpy spy(&settings, &Settings::highlightColorChanged);
+            settings.setHighlightColor(QColor("#101010"));
+            THEN("highlightColorChanged fires once") { REQUIRE(spy.count() == 1); }
+        }
+
+        WHEN("highlightOpacity is changed")
+        {
+            QSignalSpy spy(&settings, &Settings::highlightOpacityChanged);
+            settings.setHighlightOpacity(0.3);
+            THEN("highlightOpacityChanged fires once") { REQUIRE(spy.count() == 1); }
         }
 
         WHEN("openNotes is replaced via setOpenNotes")
@@ -531,6 +561,38 @@ SCENARIO("alwaysOnTop persists as part of a note's session state", "[settings]")
             {
                 Settings reloaded(path);
                 REQUIRE(reloaded.openNotes().first().alwaysOnTop);
+            }
+        }
+    }
+}
+
+SCENARIO("highlightColor is independent of backgroundColor/fontColor", "[settings]")
+{
+    GIVEN("a Settings instance with the default highlightColor")
+    {
+        QTemporaryDir dir;
+        REQUIRE(dir.isValid());
+        Settings settings(tempConfigPath(dir));
+        REQUIRE(settings.highlightColor() == QColor("#000000"));
+
+        WHEN("backgroundColor and fontColor change")
+        {
+            settings.setBackgroundColor(QColor("#00ff00"));
+            settings.setFontColor(QColor("#123456"));
+
+            THEN("highlightColor is unaffected, unlike the old auto-derived behavior")
+            {
+                REQUIRE(settings.highlightColor() == QColor("#000000"));
+            }
+        }
+
+        WHEN("highlightColor is explicitly set")
+        {
+            settings.setHighlightColor(QColor("#ff00ff"));
+
+            THEN("it persists as set, regardless of backgroundColor/fontColor")
+            {
+                REQUIRE(settings.highlightColor() == QColor("#ff00ff"));
             }
         }
     }

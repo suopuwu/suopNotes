@@ -34,6 +34,8 @@ SCENARIO("NoteAppearance falls back to global Settings values with no override",
         settings.setFontSize(16);
         settings.setFontColor(QColor("#333333"));
         settings.setFontFamily("Noto Sans");
+        settings.setHighlightColor(QColor("#444444"));
+        settings.setHighlightOpacity(0.7);
 
         NoteAppearance appearance;
         appearance.setSettings(&settings);
@@ -56,6 +58,8 @@ SCENARIO("NoteAppearance falls back to global Settings values with no override",
             CHECK(appearance.fontSize() == 16);
             CHECK(appearance.fontColor() == QColor("#333333"));
             CHECK(appearance.fontFamily() == "Noto Sans");
+            CHECK(appearance.highlightColor() == QColor("#444444"));
+            CHECK(appearance.highlightOpacity() == 0.7);
         }
 
         THEN("no field reports itself as overridden")
@@ -75,6 +79,8 @@ SCENARIO("NoteAppearance falls back to global Settings values with no override",
             CHECK_FALSE(appearance.hasFontSizeOverride());
             CHECK_FALSE(appearance.hasFontColorOverride());
             CHECK_FALSE(appearance.hasFontFamilyOverride());
+            CHECK_FALSE(appearance.hasHighlightColorOverride());
+            CHECK_FALSE(appearance.hasHighlightOpacityOverride());
         }
     }
 }
@@ -164,6 +170,92 @@ SCENARIO("NoteAppearance re-resolves when the global Settings value it's current
             THEN("the note's effective fontSize follows it, since it has no override")
             {
                 CHECK(appearance.fontSize() == 22);
+            }
+        }
+    }
+}
+
+SCENARIO("A note's highlightColor override diverges from the global default", "[note_appearance]")
+{
+    GIVEN("a NoteAppearance with no highlightColor override")
+    {
+        QTemporaryDir dir;
+        REQUIRE(dir.isValid());
+        Settings settings(tempConfigPath(dir));
+
+        NoteAppearance appearance;
+        appearance.setSettings(&settings);
+        appearance.setNoteId("note-1");
+
+        THEN("it mirrors the global highlightColor")
+        {
+            CHECK(appearance.highlightColor() == settings.highlightColor());
+            CHECK_FALSE(appearance.hasHighlightColorOverride());
+        }
+
+        WHEN("highlightColor is overridden on this note")
+        {
+            appearance.setHighlightColorOverride(QColor("#ff8800"));
+
+            THEN("this note reflects the override, independent of the global default")
+            {
+                CHECK(appearance.highlightColor() == QColor("#ff8800"));
+                CHECK(appearance.hasHighlightColorOverride());
+            }
+
+            AND_WHEN("the override is cleared")
+            {
+                appearance.clearHighlightColorOverride();
+
+                THEN("it reverts to the global default")
+                {
+                    CHECK(appearance.highlightColor() == settings.highlightColor());
+                    CHECK_FALSE(appearance.hasHighlightColorOverride());
+                }
+            }
+        }
+    }
+}
+
+SCENARIO("A note's highlightOpacity override diverges from the global default", "[note_appearance]")
+{
+    GIVEN("a NoteAppearance with no highlightOpacity override")
+    {
+        QTemporaryDir dir;
+        REQUIRE(dir.isValid());
+        Settings settings(tempConfigPath(dir));
+        settings.setHighlightOpacity(0.55);
+
+        NoteAppearance appearance;
+        appearance.setSettings(&settings);
+        appearance.setNoteId("note-1");
+        REQUIRE(appearance.highlightOpacity() == 0.55);
+        REQUIRE_FALSE(appearance.hasHighlightOpacityOverride());
+
+        WHEN("highlightOpacity is overridden on this note")
+        {
+            appearance.setHighlightOpacityOverride(0.9);
+
+            THEN("this note reflects the override")
+            {
+                CHECK(appearance.highlightOpacity() == 0.9);
+                CHECK(appearance.hasHighlightOpacityOverride());
+            }
+
+            THEN("the global Settings value is untouched")
+            {
+                CHECK(settings.highlightOpacity() == 0.55);
+            }
+
+            AND_WHEN("the override is cleared")
+            {
+                appearance.clearHighlightOpacityOverride();
+
+                THEN("it reverts to the global default")
+                {
+                    CHECK(appearance.highlightOpacity() == 0.55);
+                    CHECK_FALSE(appearance.hasHighlightOpacityOverride());
+                }
             }
         }
     }

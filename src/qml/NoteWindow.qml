@@ -358,6 +358,14 @@ Window {
                     textFormat: TextEdit.MarkdownText
                     selectByMouse: true
                     color: noteAppearance.fontColor
+                    // highlightColor is picked without an alpha slider (its
+                    // own ColorDialog has none, matching backgroundColor's);
+                    // highlightOpacity is the independently adjustable knob
+                    // that actually controls translucency, same split as
+                    // backgroundColor/windowOpacity.
+                    selectionColor: Qt.rgba(noteAppearance.highlightColor.r, noteAppearance.highlightColor.g,
+                                             noteAppearance.highlightColor.b, noteAppearance.highlightOpacity)
+                    selectedTextColor: noteAppearance.fontColor
                     font.pixelSize: noteAppearance.fontSize
                     font.family: noteAppearance.fontFamily.length > 0 ? noteAppearance.fontFamily : Qt.application.font.family
                     background: Item {}

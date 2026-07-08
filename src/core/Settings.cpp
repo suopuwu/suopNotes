@@ -6,15 +6,15 @@
 #include <QStandardPaths>
 
 namespace {
-constexpr int kDefaultWindowRadius = 12;
-constexpr qreal kDefaultWindowOpacity = 0.9;
-constexpr bool kDefaultBlurEnabled = false;
-constexpr bool kDefaultGlassEnabled = false;
+constexpr int kDefaultWindowRadius = 9;
+constexpr qreal kDefaultWindowOpacity = 0.5;
+constexpr bool kDefaultBlurEnabled = true;
+constexpr bool kDefaultGlassEnabled = true;
 constexpr qreal kDefaultGlassSheenOpacity = 0.12;
 constexpr qreal kDefaultGlassSheenStrength = 10;
 constexpr qreal kDefaultGlassSheenSize = 0.18;
-const char *kDefaultGlassTintColor = "#ffffff";
-constexpr bool kDefaultHudAlwaysExpanded = false;
+const char *kDefaultGlassTintColor = "#000000";
+constexpr bool kDefaultHudAlwaysExpanded = true;
 constexpr qreal kDefaultBorderWidth = 0;
 constexpr qreal kDefaultScrollbarWidth = 8;
 constexpr int kDefaultFontSize = 14;
@@ -22,6 +22,8 @@ const char *kDefaultBackgroundColor = "#2b2b2b";
 const char *kDefaultBorderColor = "#00000000";
 const char *kDefaultFontColor = "#ffffff";
 const char *kDefaultFontFamily = "";
+const char *kDefaultHighlightColor = "#000000";
+constexpr qreal kDefaultHighlightOpacity = 0.35;
 
 const char *kGroupAppearance = "Appearance";
 const char *kKeyNotesFolder = "notesFolder";
@@ -40,6 +42,8 @@ const char *kKeyScrollbarWidth = "scrollbarWidth";
 const char *kKeyFontSize = "fontSize";
 const char *kKeyFontColor = "fontColor";
 const char *kKeyFontFamily = "fontFamily";
+const char *kKeyHighlightColor = "highlightColor";
+const char *kKeyHighlightOpacity = "highlightOpacity";
 const char *kKeyHudAlwaysExpanded = "hudAlwaysExpanded";
 
 const char *kArrayOpenNotes = "OpenNotes";
@@ -294,6 +298,32 @@ void Settings::setFontFamily(const QString &family)
     emit fontFamilyChanged();
 }
 
+QColor Settings::highlightColor() const
+{
+    const QString stored = m_settings->value(QString("%1/%2").arg(kGroupAppearance, kKeyHighlightColor)).toString();
+    return colorFromString(stored, QColor(kDefaultHighlightColor));
+}
+
+void Settings::setHighlightColor(const QColor &color)
+{
+    m_settings->setValue(QString("%1/%2").arg(kGroupAppearance, kKeyHighlightColor), color.name(QColor::HexArgb));
+    m_settings->sync();
+    emit highlightColorChanged();
+}
+
+qreal Settings::highlightOpacity() const
+{
+    return m_settings->value(QString("%1/%2").arg(kGroupAppearance, kKeyHighlightOpacity), kDefaultHighlightOpacity)
+        .toReal();
+}
+
+void Settings::setHighlightOpacity(qreal opacity)
+{
+    m_settings->setValue(QString("%1/%2").arg(kGroupAppearance, kKeyHighlightOpacity), opacity);
+    m_settings->sync();
+    emit highlightOpacityChanged();
+}
+
 bool Settings::hudAlwaysExpanded() const
 {
     return m_settings->value(QString("%1/%2").arg(kGroupAppearance, kKeyHudAlwaysExpanded), kDefaultHudAlwaysExpanded).toBool();
@@ -434,6 +464,12 @@ Settings::NoteAppearanceOverride Settings::noteOverride(const QString &noteId) c
     override.hasFontFamily = m_settings->value(group + "/hasFontFamily", false).toBool();
     override.fontFamily = m_settings->value(group + "/fontFamily", override.fontFamily).toString();
 
+    override.hasHighlightColor = m_settings->value(group + "/hasHighlightColor", false).toBool();
+    override.highlightColor = colorFromString(m_settings->value(group + "/highlightColor").toString(), QColor());
+
+    override.hasHighlightOpacity = m_settings->value(group + "/hasHighlightOpacity", false).toBool();
+    override.highlightOpacity = m_settings->value(group + "/highlightOpacity", override.highlightOpacity).toReal();
+
     return override;
 }
 
@@ -485,6 +521,12 @@ void Settings::setNoteOverride(const QString &noteId, const NoteAppearanceOverri
 
     m_settings->setValue(group + "/hasFontFamily", override.hasFontFamily);
     m_settings->setValue(group + "/fontFamily", override.fontFamily);
+
+    m_settings->setValue(group + "/hasHighlightColor", override.hasHighlightColor);
+    m_settings->setValue(group + "/highlightColor", override.highlightColor.name(QColor::HexArgb));
+
+    m_settings->setValue(group + "/hasHighlightOpacity", override.hasHighlightOpacity);
+    m_settings->setValue(group + "/highlightOpacity", override.highlightOpacity);
 
     m_settings->sync();
     emit noteOverrideChanged(noteId);

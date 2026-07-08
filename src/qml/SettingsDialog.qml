@@ -30,6 +30,12 @@ ApplicationWindow {
         onAccepted: settings.fontColor = color
     }
 
+    Platform.ColorDialog {
+        id: highlightColorDialog
+        currentColor: settings.highlightColor
+        onAccepted: settings.highlightColor = color
+    }
+
     Platform.FolderDialog {
         id: notesFolderDialog
         currentFolder: "file://" + settings.notesFolder
@@ -233,6 +239,33 @@ ApplicationWindow {
                     border.color: "gray"
                     anchors.verticalCenter: parent.verticalCenter
                     MouseArea { anchors.fill: parent; onClicked: fontColorDialog.open() }
+                }
+            }
+
+            Row {
+                spacing: 8
+                Label { text: "Text highlight color:"; anchors.verticalCenter: parent.verticalCenter }
+                Rectangle {
+                    width: 24
+                    height: 24
+                    color: settings.highlightColor
+                    border.color: "gray"
+                    anchors.verticalCenter: parent.verticalCenter
+                    MouseArea { anchors.fill: parent; onClicked: highlightColorDialog.open() }
+                }
+            }
+
+            Column {
+                width: parent.width
+                spacing: 4
+                Label { text: "Text highlight opacity: " + highlightOpacitySlider.value.toFixed(2) }
+                Slider {
+                    id: highlightOpacitySlider
+                    width: parent.width
+                    from: 0
+                    to: 1.0
+                    value: settings.highlightOpacity
+                    onMoved: settings.highlightOpacity = value
                 }
             }
 
