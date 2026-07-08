@@ -219,8 +219,14 @@ Window {
         id: mainFrame
         anchors.fill: parent
         radius: noteAppearance.windowRadius
-        color: noteAppearance.backgroundColor
-        opacity: noteAppearance.windowOpacity
+        // windowOpacity is folded into the fill's own alpha (rather than
+        // Rectangle.opacity) so it only thins the background: Item.opacity
+        // is a group opacity that also multiplies border.color and every
+        // child (glass overlay, toolbar, text), which isn't what "background
+        // opacity" is supposed to mean.
+        color: Qt.rgba(noteAppearance.backgroundColor.r, noteAppearance.backgroundColor.g,
+                        noteAppearance.backgroundColor.b,
+                        noteAppearance.backgroundColor.a * noteAppearance.windowOpacity)
         border.width: noteAppearance.borderWidth
         border.color: noteAppearance.borderColor
 

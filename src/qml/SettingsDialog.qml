@@ -78,7 +78,7 @@ ApplicationWindow {
                 Slider {
                     id: opacitySlider
                     width: parent.width
-                    from: 0.1
+                    from: 0
                     to: 1.0
                     value: settings.windowOpacity
                     onMoved: settings.windowOpacity = value

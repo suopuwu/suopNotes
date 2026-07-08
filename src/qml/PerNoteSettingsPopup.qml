@@ -92,7 +92,7 @@ ApplicationWindow {
                     id: opacitySlider
                     width: parent.width
                     enabled: opacityOverride.checked
-                    from: 0.1
+                    from: 0
                     to: 1.0
                     value: root.noteAppearance.windowOpacity
                     onMoved: root.noteAppearance.setWindowOpacityOverride(value)
