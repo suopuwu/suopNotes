@@ -1,0 +1,76 @@
+qt_add_library(suopNotesCore STATIC
+    core/NoteStore.h
+    core/NoteStore.cpp
+    core/NoteFilename.h
+    core/NoteFilename.cpp
+    core/Settings.h
+    core/Settings.cpp
+    core/OpenNotesModel.h
+    core/OpenNotesModel.cpp
+    core/BlurRegion.h
+    core/BlurRegion.cpp
+    core/BlurEffect.h
+    core/BlurEffect.cpp
+    core/TextFormatting.h
+    core/TextFormatting.cpp
+    core/DocumentHandler.h
+    core/DocumentHandler.cpp
+    core/KWinRuleWriter.h
+    core/KWinRuleWriter.cpp
+    core/PositionManager.h
+    core/PositionManager.cpp
+    core/PositionEventService.h
+    core/PositionEventService.cpp
+    core/NoteAppearance.h
+    core/NoteAppearance.cpp
+    core/SingleInstanceGuard.h
+    core/SingleInstanceGuard.cpp
+    core/TrayIconComposer.h
+    core/TrayIconComposer.cpp
+    core/TrayIconProvider.h
+    core/TrayIconProvider.cpp
+)
+
+target_include_directories(suopNotesCore PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+
+target_link_libraries(suopNotesCore PUBLIC
+    Qt6::Core
+    Qt6::Gui
+    Qt6::Quick
+    Qt6::DBus
+    Qt6::Network
+)
+
+if(KF6WindowSystem_FOUND)
+    target_link_libraries(suopNotesCore PUBLIC KF6::WindowSystem)
+    target_compile_definitions(suopNotesCore PUBLIC SUOPNOTES_HAVE_KWINDOWSYSTEM)
+endif()
+
+qt_add_executable(suopNotes
+    main.cpp
+)
+
+qt_add_qml_module(suopNotes
+    URI SuopNotesUi
+    VERSION 1.0
+    QML_FILES
+        qml/Main.qml
+        qml/NoteWindow.qml
+        qml/SettingsDialog.qml
+        qml/NoteHud.qml
+        qml/PerNoteSettingsPopup.qml
+        qml/GlassOverlay.qml
+        qml/ResizeHandle.qml
+)
+
+target_link_libraries(suopNotes PRIVATE
+    suopNotesCore
+    Qt6::Core
+    Qt6::Gui
+    Qt6::Qml
+    Qt6::Quick
+    Qt6::QuickControls2
+    Qt6::Core5Compat
+    Qt6::LabsPlatform
+    Qt6::Widgets
+)
