@@ -237,6 +237,109 @@ Item {
             compare(editor.cursorPosition, editor.length)
         }
 
+        // Pressing Up has nowhere to go once the cursor is already on the
+        // editor's topmost line — rather than leaving it stuck mid-line, it
+        // should jump to that line's start, the same place Home would land.
+        function test_up_arrow_on_top_line_moves_cursor_to_start_of_line() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+
+            win.docHandler.setMarkdown("line one\n\nline two\n")
+            wait(50)
+
+            editor.cursorPosition = editor.text.indexOf("one")
+            win.requestActivate()
+            // requestActivate() only *requests* OS-level window activation;
+            // with several other NoteWindow instances having grabbed it in
+            // earlier tests, the switch isn't synchronous — waiting for
+            // `active` before focusing the editor is what makes keyClick()
+            // (which always targets QGuiApplication::focusWindow(), not a
+            // specific item's window) land on the right window.
+            tryCompare(win, "active", true)
+            editor.forceActiveFocus()
+            tryCompare(editor, "activeFocus", true)
+
+            keyClick(Qt.Key_Up)
+
+            compare(editor.cursorPosition, 0,
+                    "Up on the first line should land at its start, not stay mid-line")
+        }
+
+        // The other half: Down on the editor's bottommost line should jump
+        // to that line's end, the same place End would land, instead of
+        // staying mid-line with nowhere lower to move the cursor into.
+        function test_down_arrow_on_bottom_line_moves_cursor_to_end_of_line() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+
+            win.docHandler.setMarkdown("line one\n\nline two\n")
+            wait(50)
+
+            editor.cursorPosition = editor.text.indexOf("two")
+            win.requestActivate()
+            tryCompare(win, "active", true)
+            editor.forceActiveFocus()
+            tryCompare(editor, "activeFocus", true)
+
+            keyClick(Qt.Key_Down)
+
+            compare(editor.cursorPosition, editor.length,
+                    "Down on the last line should land at its end, not stay mid-line")
+        }
+
+        // Regression guard for the two boundary tests above: Keys.onXxxPressed
+        // handlers default event.accepted to true even when the handler body
+        // never touches it, so an early version of the line-boundary jump
+        // above swallowed every Up/Down press unconditionally — including
+        // ordinary navigation between lines away from either boundary. Down
+        // from the first (non-bottom) line must still move the cursor onto
+        // the next line via TextEdit's own default handling, not get stuck.
+        function test_down_arrow_not_on_bottom_line_moves_cursor_down_normally() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+
+            win.docHandler.setMarkdown("line one\n\nline two\n")
+            wait(50)
+
+            const startPos = editor.text.indexOf("one")
+            editor.cursorPosition = startPos
+            win.requestActivate()
+            tryCompare(win, "active", true)
+            editor.forceActiveFocus()
+            tryCompare(editor, "activeFocus", true)
+
+            keyClick(Qt.Key_Down)
+
+            verify(editor.cursorPosition !== startPos,
+                   "Down on a non-bottom line must not be swallowed — the cursor should move")
+            verify(editor.cursorPosition < editor.length,
+                   "Down from the first line should land on the next line, not jump straight to the document's end")
+        }
+
+        // The other half of the regression guard: Up from the last
+        // (non-top) line must still move the cursor onto the line above.
+        function test_up_arrow_not_on_top_line_moves_cursor_up_normally() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+
+            win.docHandler.setMarkdown("line one\n\nline two\n")
+            wait(50)
+
+            const startPos = editor.text.indexOf("two")
+            editor.cursorPosition = startPos
+            win.requestActivate()
+            tryCompare(win, "active", true)
+            editor.forceActiveFocus()
+            tryCompare(editor, "activeFocus", true)
+
+            keyClick(Qt.Key_Up)
+
+            verify(editor.cursorPosition !== startPos,
+                   "Up on a non-top line must not be swallowed — the cursor should move")
+            verify(editor.cursorPosition > 0,
+                   "Up from the last line should land on the line above, not jump straight to the document's start")
+        }
+
         // A drag-select (not just a click) that starts on the last real
         // line of text and is dragged down into the below-content fill
         // space should extend the selection to the nearest character on

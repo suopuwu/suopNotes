@@ -398,6 +398,40 @@ Window {
                     }
 
                     onCursorRectangleChanged: editorFlick.ensureCursorVisible(cursorRectangle)
+
+                    // Up on the topmost (visual, word-wrap-aware) line has
+                    // nowhere else to go, same for Down on the bottommost —
+                    // rather than leaving the cursor stuck at its current
+                    // column, jump it to that line's start/end, same target
+                    // Home/End would resolve to. positionAt() at x=0/width
+                    // on the cursor's own row mirrors belowContentArea's
+                    // reprojectedPosition() above, which relies on the same
+                    // nearest-x hit-testing to land on a line boundary.
+                    // cursorRectangle is in the same coordinate space as
+                    // contentHeight (both TextEdit-native, unaffected by the
+                    // Control's own padding) — see ensureCursorVisible's
+                    // comment above for why that direct comparison is safe.
+                    //
+                    // event.accepted defaults to true for these per-key
+                    // Keys.onXxxPressed handlers (unlike the general
+                    // Keys.onPressed) — off the boundary line it must be
+                    // explicitly cleared, or every ordinary Up/Down press
+                    // gets swallowed here and never reaches TextEdit's own
+                    // default line-to-line cursor movement underneath.
+                    Keys.onUpPressed: (event) => {
+                        if (cursorRectangle.y < 1) {
+                            cursorPosition = positionAt(0, cursorRectangle.y)
+                        } else {
+                            event.accepted = false
+                        }
+                    }
+                    Keys.onDownPressed: (event) => {
+                        if (cursorRectangle.y + cursorRectangle.height > contentHeight - 1) {
+                            cursorPosition = positionAt(width, cursorRectangle.y)
+                        } else {
+                            event.accepted = false
+                        }
+                    }
                 }
             }
 
