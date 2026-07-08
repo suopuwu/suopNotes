@@ -6,6 +6,7 @@
 
 #include "core/BlurEffect.h"
 #include "core/DocumentHandler.h"
+#include "core/EditorDragFilter.h"
 #include "core/KWinRuleWriter.h"
 #include "core/NoteAppearance.h"
 #include "core/NoteStore.h"
@@ -78,6 +79,7 @@ int main(int argc, char *argv[])
 
     qmlRegisterType<DocumentHandler>("SuopNotesUi", 1, 0, "DocumentHandler");
     qmlRegisterType<NoteAppearance>("SuopNotesUi", 1, 0, "NoteAppearance");
+    qmlRegisterType<EditorDragFilter>("SuopNotesUi", 1, 0, "EditorDragFilter");
 
     Settings settings;
     NoteStore noteStore;

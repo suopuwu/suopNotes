@@ -189,6 +189,111 @@ Item {
             compare(editor.cursorPosition, editor.length)
         }
 
+        // A drag-select (not just a click) that starts on the last real
+        // line of text and is dragged down into the below-content fill
+        // space should extend the selection to the nearest character on
+        // that line — the same requirement as the click tests above, but
+        // for an in-progress selection. Confirmed live (before the fix)
+        // that Qt's own TextEdit drag-selection just freezes once the drag
+        // crosses below the real content, instead of extending at all —
+        // EditorDragFilter (wrapping `editor` in NoteWindow.qml) is what
+        // makes this work. Near the left edge, the selection should stay
+        // anchored close to the start of "line two", not overshoot all the
+        // way to the document's true end (which sits one character past
+        // "line two" itself, behind a trailing newline — see the click
+        // tests' own use of this same distinction).
+        function test_drag_select_below_last_line_near_left_edge_stays_on_last_line() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+            const flick = win.editorFlick
+
+            win.docHandler.setMarkdown("line one\n\nline two\n")
+            wait(50)
+
+            const lastLineStart = editor.text.lastIndexOf("line two")
+            editor.cursorPosition = lastLineStart
+            const startY = editor.positionToRectangle(lastLineStart).y + editor.positionToRectangle(lastLineStart).height / 2
+
+            mouseDrag(flick, 2, startY, 0, flick.height - 5 - startY, Qt.LeftButton, Qt.NoModifier, 50)
+
+            verify(editor.selectionEnd < editor.length,
+                   "dragging near the left edge below the last line should not overshoot to the document's true end")
+            verify(editor.selectionEnd >= lastLineStart,
+                   "the selection should extend to a character on the last line, not freeze at the drag's start")
+        }
+
+        // The other half: dragging down near the *right* edge, past where
+        // the short last line's own text ends, should extend the selection
+        // all the way to the end of that line — same resolution as a plain
+        // click there.
+        function test_drag_select_below_last_line_near_right_edge_selects_to_end_of_last_line() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+            const flick = win.editorFlick
+
+            win.docHandler.setMarkdown("line one\n\nline two\n")
+            wait(50)
+
+            const lastLineStart = editor.text.lastIndexOf("line two")
+            editor.cursorPosition = lastLineStart
+            const startY = editor.positionToRectangle(lastLineStart).y + editor.positionToRectangle(lastLineStart).height / 2
+
+            mouseDrag(flick, flick.width - 2, startY, 0, flick.height - 5 - startY, Qt.LeftButton, Qt.NoModifier, 50)
+
+            compare(editor.selectionEnd, editor.length)
+            compare(editor.selectionStart, lastLineStart)
+        }
+
+        // A drag that *starts* below the last line (not just one that
+        // starts on real text and extends below it) should also produce a
+        // real selection, not just move the cursor to wherever it's
+        // released. Before this fix, the below-content area only supported
+        // a plain click (onClicked, firing once on release) — a
+        // press-drag-release gesture there just relocated the cursor with
+        // no highlighted range at all, regardless of how far the drag
+        // moved. Here the whole gesture stays below the content, dragging
+        // rightward from near the start of "line two" to past its end.
+        function test_drag_select_starting_below_last_line_selects_within_it() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+            const flick = win.editorFlick
+
+            win.docHandler.setMarkdown("line one\n\nline two\n")
+            wait(50)
+
+            const lastLineStart = editor.text.lastIndexOf("line two")
+
+            mouseDrag(flick, 2, flick.height - 5, flick.width - 4, 0, Qt.LeftButton, Qt.NoModifier, 50)
+
+            verify(editor.selectionStart >= lastLineStart && editor.selectionStart < editor.length,
+                   "the drag's anchor (pressed near the left edge) should land near the start of the last line")
+            compare(editor.selectionEnd, editor.length)
+        }
+
+        // The other direction: a drag that starts below the content but is
+        // dragged back UP into real text should extend the selection all
+        // the way up there too — not freeze, and not stay confined to the
+        // below-content strip it started in.
+        function test_drag_select_starting_below_last_line_extends_up_into_real_text() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+            const flick = win.editorFlick
+
+            win.docHandler.setMarkdown("line one\n\nline two\n")
+            wait(50)
+
+            const lastLineStart = editor.text.lastIndexOf("line two")
+            const firstLineRect = editor.positionToRectangle(0)
+            const upwardDy = (firstLineRect.y + firstLineRect.height / 2) - (flick.height - 5)
+
+            mouseDrag(flick, 2, flick.height - 5, 0, upwardDy, Qt.LeftButton, Qt.NoModifier, 50)
+
+            verify(editor.selectionStart <= 1,
+                   "dragging up into the first line should extend the selection there, not stay confined below the content")
+            verify(editor.selectionEnd >= lastLineStart && editor.selectionEnd < editor.length,
+                   "the drag's anchor (pressed near the left edge, below the last line) should land near its start")
+        }
+
         // Regression guard for a real bug: TextArea's own implicitHeight
         // never reactively recomputes after docHandler.setMarkdown()
         // mutates the underlying QTextDocument directly (contentHeight

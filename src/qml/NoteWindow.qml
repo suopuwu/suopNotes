@@ -277,85 +277,139 @@ Window {
             contentWidth: width
             contentHeight: editor.height
 
-            TextArea {
-                id: editor
-
-                property bool ready: false
-
+            // Sole purpose: gives EditorDragFilter below a place in the tree
+            // where it's `editor`'s direct parent and nothing else's — see
+            // EditorDragFilter's own class comment for why that's required
+            // (childMouseEventFilter only ever sees events headed to this
+            // wrapper's own children, so it can't affect the below-content
+            // MouseArea, a sibling of this wrapper rather than a descendant
+            // of it).
+            EditorDragFilter {
+                id: editorDragFilter
                 width: editorFlick.width
-                // Qt bug workaround: TextArea's own implicitHeight (the
-                // default this would fall back to) does not reactively
-                // recompute after docHandler.setMarkdown() mutates the
-                // underlying QTextDocument directly — contentHeight tracks
-                // the real document size correctly (verified: its change
-                // notification fires fine), implicitHeight just never
-                // re-reads it outside of edits routed through TextArea's own
-                // text-editing API. Binding on contentHeight directly
-                // sidesteps that, and the editorFlick.height floor is what
-                // makes the editable box visually fill the whole note (not
-                // just as tall as its content) instead of leaving dead space
-                // below short notes.
-                height: Math.max(contentHeight, editorFlick.height)
-                wrapMode: TextEdit.Wrap
-                textFormat: TextEdit.MarkdownText
-                selectByMouse: true
-                color: noteAppearance.fontColor
-                font.pixelSize: noteAppearance.fontSize
-                font.family: noteAppearance.fontFamily.length > 0 ? noteAppearance.fontFamily : Qt.application.font.family
-                background: Item {}
+                height: editor.height
 
-                // QtQuick Controls' built-in right-click cut/copy/paste menu
-                // (T.ContextMenu, Qt 6.9+) would fight the drag area below
-                // for the same right-button press — right-click is reserved
-                // exclusively for dragging (req. 5), so disable it. Moot in
-                // practice now that the drag area sits on top and claims the
-                // right button before it would ever reach the editor, but
-                // still correct to disable since this control never needs it.
-                ContextMenu.menu: null
+                TextArea {
+                    id: editor
 
-                DocumentHandler {
-                    id: docHandler
-                    document: editor.textDocument
-                }
+                    property bool ready: false
 
-                Component.onCompleted: {
-                    docHandler.setMarkdown(noteStore.loadNoteContent(noteWindow.noteId))
-                    ready = true
-                }
+                    width: editorFlick.width
+                    // Qt bug workaround: TextArea's own implicitHeight (the
+                    // default this would fall back to) does not reactively
+                    // recompute after docHandler.setMarkdown() mutates the
+                    // underlying QTextDocument directly — contentHeight tracks
+                    // the real document size correctly (verified: its change
+                    // notification fires fine), implicitHeight just never
+                    // re-reads it outside of edits routed through TextArea's own
+                    // text-editing API. Binding on contentHeight directly
+                    // sidesteps that, and the editorFlick.height floor is what
+                    // makes the editable box visually fill the whole note (not
+                    // just as tall as its content) instead of leaving dead space
+                    // below short notes.
+                    height: Math.max(contentHeight, editorFlick.height)
+                    wrapMode: TextEdit.Wrap
+                    textFormat: TextEdit.MarkdownText
+                    selectByMouse: true
+                    color: noteAppearance.fontColor
+                    font.pixelSize: noteAppearance.fontSize
+                    font.family: noteAppearance.fontFamily.length > 0 ? noteAppearance.fontFamily : Qt.application.font.family
+                    background: Item {}
 
-                // Debounced + atomic on NoteStore's side (~300ms after the
-                // last keystroke) — instant-feeling without a disk write per
-                // keystroke.
-                onTextChanged: {
-                    if (ready)
-                        noteStore.saveNoteContent(noteWindow.noteId, docHandler.toMarkdown())
+                    // QtQuick Controls' built-in right-click cut/copy/paste menu
+                    // (T.ContextMenu, Qt 6.9+) would fight the drag area below
+                    // for the same right-button press — right-click is reserved
+                    // exclusively for dragging (req. 5), so disable it. Moot in
+                    // practice now that the drag area sits on top and claims the
+                    // right button before it would ever reach the editor, but
+                    // still correct to disable since this control never needs it.
+                    ContextMenu.menu: null
+
+                    DocumentHandler {
+                        id: docHandler
+                        document: editor.textDocument
+                    }
+
+                    Component.onCompleted: {
+                        docHandler.setMarkdown(noteStore.loadNoteContent(noteWindow.noteId))
+                        ready = true
+                    }
+
+                    // Debounced + atomic on NoteStore's side (~300ms after the
+                    // last keystroke) — instant-feeling without a disk write per
+                    // keystroke.
+                    onTextChanged: {
+                        if (ready)
+                            noteStore.saveNoteContent(noteWindow.noteId, docHandler.toMarkdown())
+                    }
                 }
             }
 
-            // Clicking below the real text (in the fill space that makes
-            // editor cover the whole note — see the height binding above)
-            // should land the cursor on the last line, at whichever
-            // character is nearest the click horizontally — not
-            // unconditionally at the very end of the document. Qt's own
-            // hit-testing for a y past the bottom of the laid-out text just
-            // returns the document's last position outright, ignoring x, so
-            // a bare click on editor down there always jumps to the true
-            // end regardless of where you clicked horizontally. This
-            // MouseArea sits after `editor` (topmost sibling wins, same
-            // convention as mouseDragArea below) but only over the strip
-            // below editor's real content — reprojecting the click onto the
-            // bottom edge of that content before hit-testing gets a proper
-            // nearest-x lookup on the last line instead. Zero height (so no
-            // hit at all) once real content already fills or exceeds the
-            // viewport, since there's no fill space left to click into.
+            // Clicking or drag-selecting below the real text (in the fill
+            // space that makes editor cover the whole note — see the height
+            // binding above) should resolve to the last line, at whichever
+            // character is nearest horizontally — not unconditionally at
+            // the very end of the document. Qt's own hit-testing for a y
+            // past the bottom of the laid-out text just returns the
+            // document's last position outright, ignoring x, so a bare
+            // click/drag on editor down there always jumps to the true end
+            // regardless of where you clicked horizontally. This MouseArea
+            // sits after `editor` (topmost sibling wins, same convention as
+            // mouseDragArea below) but only over the strip below editor's
+            // real content — reprojecting onto the bottom edge of that
+            // content before hit-testing gets a proper nearest-x lookup on
+            // the last line instead. Zero height (so no hit at all) once
+            // real content already fills or exceeds the viewport, since
+            // there's no fill space left to click into.
+            //
+            // Handles the full press/drag/release cycle itself (rather than
+            // a plain onClicked) so a drag that *starts* down here — in
+            // either direction, extending up into real text or staying
+            // below it — turns into a real selection, not just a final
+            // cursor placement. This mirrors editor's own selectByMouse
+            // dragging but doesn't share its limitation: since this
+            // MouseArea holds its own press-grab for the whole gesture, it
+            // keeps receiving move events regardless of where the pointer
+            // strays (including back up into real content), unlike
+            // editor's internal drag-selection, which silently stops
+            // updating once a drag that started on IT crosses below its
+            // own content — the reason EditorDragFilter (wrapping `editor`
+            // above) exists to correct for that, separately, for drags
+            // that start the other way around.
             MouseArea {
+                id: belowContentArea
+
+                property int dragAnchor: -1
+
                 x: 0
                 y: editor.contentHeight
                 width: editorFlick.width
                 height: Math.max(0, editor.height - editor.contentHeight)
-                onClicked: (mouse) => {
+
+                // mouse.y is relative to this area's own origin, which
+                // itself sits editor.contentHeight below editor's origin
+                // (both share the same parent and x) — add that back to
+                // get an editor-relative y, then clamp into real content so
+                // positionAt() resolves a genuine nearest-x character
+                // instead of Qt's raw out-of-bounds behavior described
+                // above. A y that's already within real content (dragged
+                // up off the top of this area, into the text) passes
+                // through unclamped, for a normal accurate hit-test there.
+                function reprojectedPosition(mouseX, mouseY) {
+                    const editorY = mouseY + editor.contentHeight
+                    const clampedY = Math.min(Math.max(editorY, 0), Math.max(0, editor.contentHeight - 1))
+                    return editor.positionAt(mouseX, clampedY)
+                }
+
+                onPressed: (mouse) => {
                     editor.forceActiveFocus()
-                    editor.cursorPosition = editor.positionAt(mouse.x, Math.max(0, editor.contentHeight - 1))
+                    dragAnchor = reprojectedPosition(mouse.x, mouse.y)
+                    editor.cursorPosition = dragAnchor
+                }
+                onPositionChanged: (mouse) => {
+                    if (!pressed)
+                        return
+                    editor.select(dragAnchor, reprojectedPosition(mouse.x, mouse.y))
                 }
             }
         }

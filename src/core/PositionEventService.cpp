@@ -2,6 +2,7 @@
 #include "Settings.h"
 
 #include <QDBusConnection>
+#include <QDBusServiceWatcher>
 #include <QDir>
 #include <QProcess>
 #include <QStandardPaths>
@@ -42,19 +43,7 @@ PositionEventService::PositionEventService(Settings &settings, QObject *parent)
     : QObject(parent)
     , m_settings(settings)
 {
-    // Guards against a second suopNotes instance: registerService() fails
-    // if another process already owns this name, in which case there's no
-    // safe callback endpoint for a second script to call into — skip
-    // loading it entirely rather than have two script instances racing to
-    // call one registered service. That instance still gets a safety-net
-    // save via the quit-time capture in main.cpp.
-    m_serviceRegistered = QDBusConnection::sessionBus().registerService(serviceName());
-    if (!m_serviceRegistered)
-        return;
-
-    QDBusConnection::sessionBus().registerObject(QStringLiteral("/PositionService"), this,
-                                                  QDBusConnection::ExportScriptableSlots);
-    loadWatcherScript();
+    tryClaimService();
 }
 
 PositionEventService::~PositionEventService()
@@ -66,6 +55,54 @@ PositionEventService::~PositionEventService()
     }
 }
 
+void PositionEventService::tryClaimService()
+{
+    if (m_serviceRegistered)
+        return;
+
+    if (!QDBusConnection::sessionBus().registerService(serviceName())) {
+        // Almost always a just-replaced predecessor still finishing its own
+        // bounded-but-non-instant shutdown (captureLivePositionsBeforeQuit
+        // does a real KWin round-trip per open note before that process's
+        // own PositionEventService destructor releases this name — see
+        // SingleInstanceGuard's destructor comment for the same timing
+        // issue on its own IPC channel). Confirmed live: a fresh instance
+        // launched while an old one was still mid-quit lost this race and,
+        // before this fix, silently went without live position-saving for
+        // its entire remaining lifetime.
+        //
+        // Rather than give up permanently, watch for the name to become
+        // free and claim it the instant that happens — QDBusServiceWatcher
+        // surfaces the bus's own NameOwnerChanged signal, so this is a real
+        // event, not a poll. If some other process legitimately holds this
+        // name indefinitely (shouldn't happen — SingleInstanceGuard is
+        // supposed to guarantee only one suopNotes process runs at a time),
+        // this simply never fires again; no cost while idle.
+        if (!m_serviceWatcher) {
+            m_serviceWatcher = new QDBusServiceWatcher(serviceName(), QDBusConnection::sessionBus(),
+                                                         QDBusServiceWatcher::WatchForUnregistration, this);
+            connect(m_serviceWatcher, &QDBusServiceWatcher::serviceUnregistered, this,
+                    &PositionEventService::tryClaimService);
+        }
+        return;
+    }
+
+    m_serviceRegistered = true;
+    // deleteLater(), not delete: this can run from inside a slot connected
+    // to m_serviceWatcher's own serviceUnregistered signal, and Qt's own
+    // signal-emission machinery is still on the stack above this call in
+    // that case — safer to defer destruction than to free the object out
+    // from under its own in-flight signal dispatch.
+    if (m_serviceWatcher) {
+        m_serviceWatcher->deleteLater();
+        m_serviceWatcher = nullptr;
+    }
+
+    QDBusConnection::sessionBus().registerObject(QStringLiteral("/PositionService"), this,
+                                                  QDBusConnection::ExportScriptableSlots);
+    loadWatcherScript();
+}
+
 void PositionEventService::notePositionChanged(const QString &windowTitle, int x, int y,
                                                 const QString &screenName)
 {
@@ -73,6 +110,24 @@ void PositionEventService::notePositionChanged(const QString &windowTitle, int x
     if (state.noteId.isEmpty())
         return;
     m_settings.upsertNoteState(state);
+}
+
+void PositionEventService::notePositionChanged(const QString &windowTitle, int x, double y,
+                                                const QString &screenName)
+{
+    notePositionChanged(windowTitle, x, qRound(y), screenName);
+}
+
+void PositionEventService::notePositionChanged(const QString &windowTitle, double x, int y,
+                                                const QString &screenName)
+{
+    notePositionChanged(windowTitle, qRound(x), y, screenName);
+}
+
+void PositionEventService::notePositionChanged(const QString &windowTitle, double x, double y,
+                                                const QString &screenName)
+{
+    notePositionChanged(windowTitle, qRound(x), qRound(y), screenName);
 }
 
 Settings::NoteSessionState PositionEventService::mergeLivePosition(const QList<Settings::NoteSessionState> &notes,

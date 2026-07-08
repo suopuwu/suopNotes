@@ -1,4 +1,5 @@
 #include "DocumentHandler.h"
+#include "MarkdownSerialization.h"
 #include "TextFormatting.h"
 
 #include <QTextDocument>
@@ -25,14 +26,14 @@ QString DocumentHandler::toMarkdown() const
 {
     if (!m_document || !m_document->textDocument())
         return QString();
-    return m_document->textDocument()->toMarkdown();
+    return MarkdownSerialization::toMarkdownPreservingBlankLines(m_document->textDocument());
 }
 
 void DocumentHandler::setMarkdown(const QString &markdown)
 {
     if (!m_document || !m_document->textDocument())
         return;
-    m_document->textDocument()->setMarkdown(markdown);
+    MarkdownSerialization::setMarkdownPreservingBlankLines(m_document->textDocument(), markdown);
 }
 
 QTextCursor DocumentHandler::cursorFor(int selectionStart, int selectionEnd) const

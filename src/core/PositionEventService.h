@@ -6,6 +6,8 @@
 
 #include "Settings.h"
 
+class QDBusServiceWatcher;
+
 // Replaces a fixed-delay "guess the drag is probably over by now" debounce
 // with a real completion event. Confirmed live (dragged a note, watched
 // the log): a QML MouseArea's onReleased/onCanceled never fire after a
@@ -62,7 +64,36 @@ public Q_SLOTS:
     // object existed on the bus, but introspecting it showed only the
     // standard Properties/Introspectable methods, no notePositionChanged
     // at all — the watcher script's callDBus was therefore a silent no-op).
+    //
+    // All four int/double combinations for (x, y) are exported, because
+    // confirmed live (busctl monitor, captured during a real edge-snap
+    // drag) that x and y each independently arrive as either D-Bus "i" or
+    // "d" — the actual wire signature seen was "sdis" (x double, y int) on
+    // one call and "sids" (x int, y double) on another, from the very same
+    // watcher script. window geometry is usually pixel-integral, but KWin's
+    // own layout math can genuinely leave just one axis fractional
+    // (confirmed live separately: a spawn-placement probe logged
+    // "SUOPNOTES_PROBE_... 2489.6666666666665,1485" — x fractional, y not)
+    // — plausibly during snap/tiling-adjacent placement, which lines up
+    // with this bug having been reported as "wonky ... near window edges
+    // aligning and snapping." A same-named (int,int)/(double,double)
+    // overload pair (an earlier, incomplete attempt at this fix) still
+    // misses both mixed cases — Qt's D-Bus dispatch requires an exact
+    // wire-type match per parameter and won't widen/narrow, so every
+    // combination that can actually occur needs its own overload. Each
+    // variant just rounds its double half(s) and delegates to the
+    // int/int implementation — see the .cpp.
     Q_SCRIPTABLE void notePositionChanged(const QString &windowTitle, int x, int y, const QString &screenName);
+    Q_SCRIPTABLE void notePositionChanged(const QString &windowTitle, int x, double y, const QString &screenName);
+    Q_SCRIPTABLE void notePositionChanged(const QString &windowTitle, double x, int y, const QString &screenName);
+    Q_SCRIPTABLE void notePositionChanged(const QString &windowTitle, double x, double y, const QString &screenName);
+
+private Q_SLOTS:
+    // Attempts to claim the well-known D-Bus service name and, on success,
+    // register this object and load the watcher script. Safe to call
+    // whenever the name might have just become free: on construction, and
+    // again each time m_serviceWatcher reports the previous owner let go.
+    void tryClaimService();
 
 private:
     void loadWatcherScript();
@@ -72,4 +103,10 @@ private:
     QString m_pluginName;
     bool m_serviceRegistered = false;
     bool m_scriptLoaded = false;
+    // Only non-null while we've lost the initial race for the service name
+    // (see tryClaimService()) — watches for the current owner to release it
+    // so we can claim it the instant that happens, instead of giving up on
+    // live position-saving for this process's entire lifetime. Event-driven
+    // (a real D-Bus NameOwnerChanged signal under the hood), not a poll.
+    QDBusServiceWatcher *m_serviceWatcher = nullptr;
 };

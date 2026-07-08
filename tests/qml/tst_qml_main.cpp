@@ -6,6 +6,7 @@
 
 #include "core/BlurEffect.h"
 #include "core/DocumentHandler.h"
+#include "core/EditorDragFilter.h"
 #include "core/NoteAppearance.h"
 #include "core/NoteStore.h"
 #include "core/OpenNotesModel.h"
@@ -19,8 +20,8 @@
 // tests either way), and a real PositionManager (a no-op off Linux/without
 // kwriteconfig6 — harmless here too; never touches a real kwinrulesrc in
 // this offscreen test environment since it targets the test system's own,
-// if any). Also registers the DocumentHandler QML type NoteWindow.qml's
-// editor instantiates.
+// if any). Also registers the DocumentHandler and EditorDragFilter QML
+// types NoteWindow.qml's editor instantiates/is wrapped in.
 class Setup : public QObject
 {
     Q_OBJECT
@@ -31,6 +32,7 @@ public:
     {
         qmlRegisterType<DocumentHandler>("SuopNotesUi", 1, 0, "DocumentHandler");
         qmlRegisterType<NoteAppearance>("SuopNotesUi", 1, 0, "NoteAppearance");
+        qmlRegisterType<EditorDragFilter>("SuopNotesUi", 1, 0, "EditorDragFilter");
         m_noteStore.setNotesFolder(m_tempDir.path() + QStringLiteral("/notes"));
     }
 

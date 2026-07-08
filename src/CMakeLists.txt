@@ -15,6 +15,10 @@ qt_add_library(suopNotesCore STATIC
     core/TextFormatting.cpp
     core/DocumentHandler.h
     core/DocumentHandler.cpp
+    core/EditorDragFilter.h
+    core/EditorDragFilter.cpp
+    core/MarkdownSerialization.h
+    core/MarkdownSerialization.cpp
     core/KWinRuleWriter.h
     core/KWinRuleWriter.cpp
     core/PositionManager.h

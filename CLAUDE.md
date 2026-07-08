@@ -24,3 +24,21 @@ The app must use minimal resources when idle/not actively being interacted with.
   without ever running a background loop.
 - Before adding any timer, ask: does this fire *because something happened*, or does it fire
   *unconditionally, on a schedule*? Only the former is acceptable.
+
+## Tests as living documentation
+
+Tests should serve as living documentation of how the code is meant to behave, not just as
+a correctness check.
+
+- Test names and structure should describe the behavior being verified in plain terms, so a
+  reader can understand what a component/function is supposed to do by skimming the test file
+  alone — without needing to read the implementation first.
+- When behavior changes, update the corresponding tests in the same change, so the tests never
+  drift out of sync with what the code actually does. Stale tests are worse than no tests,
+  since they document behavior that no longer exists.
+- Prefer clear, explicit assertions over clever/DRY test helpers that obscure what's actually
+  being checked — a test that's easy to read top-to-bottom is more valuable as documentation
+  than one that's short.
+- When adding a new feature or fixing a bug, add or update a test that captures the expected
+  behavior, so future readers (human or Claude) can trust the test suite to reflect current,
+  intended behavior rather than having to cross-reference commit history.
