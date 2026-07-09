@@ -558,7 +558,16 @@ Item {
             wait(50)
 
             verify(win.scrollIndicator.visible, "precondition: content must overflow for this test to be meaningful")
-            flick.contentY = 0
+            // Starts mid-track, not at contentY 0 (feature request: text
+            // fills the whole note, right up under noteHud's corner —
+            // NoteWindow.qml's editorFlick comment — so a handle scrolled
+            // all the way to the top can sit under the hover-revealed
+            // pin/gear/close icons, an accepted, unrelated tradeoff this
+            // test isn't about). Mid-track keeps the handle clear of that
+            // corner regardless of hover state.
+            const scrollRange = flick.contentHeight - flick.height
+            flick.contentY = scrollRange / 2
+            wait(20)
 
             // Fire the synthetic gesture against scrollIndicator (the
             // stable parent, anchored to editorFlick) rather than
@@ -571,6 +580,7 @@ Item {
             const handle = win.scrollHandle
             const startX = handle.width / 2
             const startY = handle.y + handle.height / 2
+            const contentYBeforeDrag = flick.contentY
 
             // mouseDrag() (not raw mousePress/mouseMove/mouseRelease) is
             // required here — MouseArea.drag needs the drag threshold
@@ -581,7 +591,7 @@ Item {
             mouseDrag(win.scrollIndicator, startX, startY, 0, 80, Qt.LeftButton)
             wait(50)
 
-            verify(flick.contentY > 0, "dragging the scroll handle downward should scroll the note's content")
+            verify(flick.contentY > contentYBeforeDrag, "dragging the scroll handle downward should scroll the note's content")
 
             win.docHandler.setMarkdown("hi")
             wait(50)
@@ -811,6 +821,27 @@ Item {
             verify(/^1\.\s+milk$/.test(md), "expected a decimal-prefixed list item, got: " + md)
         }
 
+        // Regression: the shorthand used to always start the list at 1
+        // regardless of what number was actually typed (createList() never
+        // propagated it) — "5. " should start counting at 5, not silently
+        // reset to 1.
+        function test_typing_a_number_other_than_one_preserves_that_start_number() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+
+            win.docHandler.setMarkdown("")
+            wait(50)
+            win.requestActivate()
+            tryCompare(win, "active", true)
+            editor.forceActiveFocus()
+            tryCompare(editor, "activeFocus", true)
+
+            typeText("5. milk")
+
+            const md = win.docHandler.toMarkdown().trim()
+            verify(/^5\.\s+milk$/.test(md), "expected the list to start at 5, got: " + md)
+        }
+
         // Configurable keyboard shortcuts (feature request): Ctrl+B (the
         // documented default for settings.shortcutBold) must toggle bold the
         // same as clicking the toolbar's "B" button — proves the Shortcut
@@ -851,6 +882,152 @@ Item {
             const md = win.docHandler.toMarkdown()
             verify(md.indexOf("Header 1") !== -1)
             verify(md.indexOf("Header 2") !== -1)
+        }
+
+        // Table row/column editing (feature request): each of the five
+        // functions below is what the popup toolbar's "+R"/"-R"/"+C"/"-C"/
+        // "-▦" buttons call — exercised here through NoteWindow's real, live
+        // QQuickTextDocument, same convention as the insert-table test above.
+        // Position 1 (rather than 0) is used for every call below: it lands
+        // inside "Header 1"'s own text, solidly inside the table's first
+        // cell — position 0 sits right at the table frame's own boundary,
+        // which currentTable() does not resolve as "inside" the table.
+        function test_insert_table_row_adds_a_row() {
+            const win = instantiator.objectAt(0)
+
+            win.docHandler.setMarkdown("")
+            wait(50)
+            win.docHandler.insertTable(0)
+            const rowsBefore = win.docHandler.toMarkdown().split("\n").filter(l => l.startsWith("|")).length
+
+            win.docHandler.insertTableRow(1)
+
+            const rowsAfter = win.docHandler.toMarkdown().split("\n").filter(l => l.startsWith("|")).length
+            compare(rowsAfter, rowsBefore + 1, "inserting a row should add one more table row line")
+        }
+
+        function test_delete_table_row_removes_a_row_but_keeps_the_table() {
+            const win = instantiator.objectAt(0)
+
+            // Seeded directly as markdown, with real content in every row
+            // (rather than built via insertTable()'s starter table, which
+            // only has real text in row 0) — deleting row 0 below leaves an
+            // otherwise entirely-empty-celled table, which trips an
+            // unrelated, pre-existing edge case in this app's own
+            // isBlankSpacerBlock() (see MarkdownSerialization's "A table
+            // with an empty cell..." test): an all-blank table can get its
+            // own delimiter line mistaken for spacer content. Real content
+            // in the surviving row sidesteps that entirely, and is more
+            // representative of an actual table anyway.
+            win.docHandler.setMarkdown("| A | B |\n| --- | --- |\n| 1 | 2 |\n| 3 | 4 |\n")
+            wait(50)
+            const rowsBefore = win.docHandler.toMarkdown().split("\n").filter(l => l.startsWith("|")).length
+
+            // Position 1 sits inside row 0 (the "A"/"B" row itself), so
+            // this actually deletes THAT row, not one of the data rows
+            // beneath it — same as clicking "delete row" with the cursor
+            // still sitting in a real word processor's header row.
+            win.docHandler.deleteTableRow(1)
+
+            const md = win.docHandler.toMarkdown()
+            const lines = md.split("\n").filter(l => l.startsWith("|"))
+            compare(lines.length, rowsBefore - 1, "deleting a row should remove one table row line")
+            verify(md.indexOf("A") === -1, "the deleted row's own text should be gone")
+            verify(md.indexOf("1") !== -1 && md.indexOf("3") !== -1, "the surviving rows' text should remain")
+            // The GFM delimiter row is only "|-|-|" (compact form) once
+            // there's no header text left wide enough to need padding —
+            // not the literal "---" a hand-written table would use, but
+            // still a delimiter line: every character in it is "|", "-",
+            // or whitespace.
+            verify(lines.some(l => /^\|[\s|-]+\|?$/.test(l)),
+                   "a surviving table still has its GFM header delimiter line")
+        }
+
+        function test_delete_table_rows_down_to_the_last_one_removes_the_whole_table() {
+            const win = instantiator.objectAt(0)
+
+            win.docHandler.setMarkdown("")
+            wait(50)
+            win.docHandler.insertTable(0)
+
+            // A starter table has exactly one data row beneath the header —
+            // one deleteTableRow() call removes it, leaving no rows at all.
+            win.docHandler.deleteTableRow(1)
+
+            const md = win.docHandler.toMarkdown()
+            verify(md.indexOf("Header 1") === -1, "the whole table should be gone, not left with zero rows")
+        }
+
+        function test_insert_table_column_adds_a_column() {
+            const win = instantiator.objectAt(0)
+
+            win.docHandler.setMarkdown("")
+            wait(50)
+            win.docHandler.insertTable(0)
+            const headerLineBefore =
+                win.docHandler.toMarkdown().split("\n").find(l => l.startsWith("|"))
+            const pipesBefore = (headerLineBefore.match(/\|/g) || []).length
+
+            win.docHandler.insertTableColumn(1)
+
+            const headerLineAfter =
+                win.docHandler.toMarkdown().split("\n").find(l => l.startsWith("|"))
+            const pipesAfter = (headerLineAfter.match(/\|/g) || []).length
+            compare(pipesAfter, pipesBefore + 1, "inserting a column should add one more pipe to the header row")
+        }
+
+        function test_delete_table_column_removes_a_column_but_keeps_the_table() {
+            const win = instantiator.objectAt(0)
+
+            win.docHandler.setMarkdown("")
+            wait(50)
+            win.docHandler.insertTable(0)
+
+            win.docHandler.deleteTableColumn(1)
+
+            const md = win.docHandler.toMarkdown()
+            verify(md.indexOf("Header 1") === -1, "the deleted column's own header text should be gone")
+            verify(md.indexOf("Header 2") !== -1, "the surviving column's header text should remain")
+        }
+
+        function test_delete_table_columns_down_to_the_last_one_removes_the_whole_table() {
+            const win = instantiator.objectAt(0)
+
+            win.docHandler.setMarkdown("")
+            wait(50)
+            win.docHandler.insertTable(0)
+
+            // A starter table has exactly two columns — one
+            // deleteTableColumn() call removes column 0 (position 1 sits in
+            // "Header 1"), and the whole table only has one column left.
+            win.docHandler.deleteTableColumn(1)
+            win.docHandler.deleteTableColumn(1)
+
+            const md = win.docHandler.toMarkdown()
+            verify(md.indexOf("Header") === -1, "the whole table should be gone, not left with zero columns")
+        }
+
+        function test_delete_table_removes_the_whole_table() {
+            const win = instantiator.objectAt(0)
+
+            // Seeded directly as markdown with the table at the very start
+            // (same "position 1 lands inside the first cell" setup as the
+            // row/column tests above, proven reliable) rather than via
+            // insertTable() partway through "intro\n" — a table's own frame
+            // delimiters occupy real document positions that don't appear
+            // in plain text at all, so deriving a position from
+            // editor.text (tried initially, both via .length to place the
+            // table and via .indexOf("Header 1") to find it afterward)
+            // drifted out of range instead.
+            win.docHandler.setMarkdown("| Header 1 | Header 2 |\n| --- | --- |\n|  |  |\n\nintro\n")
+            wait(50)
+            verify(win.docHandler.toMarkdown().indexOf("Header 1") !== -1, "precondition: the table exists")
+
+            win.docHandler.deleteTable(1)
+
+            const md = win.docHandler.toMarkdown()
+            verify(md.indexOf("Header 1") === -1, "the table should be gone")
+            verify(md.indexOf("intro") !== -1, "surrounding text should survive")
         }
     }
 }

@@ -40,15 +40,15 @@ SCENARIO("Deriving a filename from a note's first line", "[note_filename]")
     }
 }
 
-SCENARIO("A heading takes priority over the first line", "[note_filename]")
+SCENARIO("Markdown headings are treated as plain text, not given priority", "[note_filename]")
 {
-    GIVEN("content whose first line is body text but a heading appears later")
+    GIVEN("content whose first line is body text and a heading appears later")
     {
         const QString content = "Some intro text\n\n## Project Plan\n\nBody.";
 
-        THEN("the heading text is used, not the first line")
+        THEN("the first line is used, not the later heading")
         {
-            CHECK(NoteFilename::deriveBaseName(content) == "Project Plan");
+            CHECK(NoteFilename::deriveBaseName(content) == "Some intro text");
         }
     }
 
@@ -56,17 +56,9 @@ SCENARIO("A heading takes priority over the first line", "[note_filename]")
     {
         const QString content = "# Weekly Standup\n\nNotes go here.";
 
-        THEN("the heading text (without the #'s) is used")
+        THEN("the first line is used verbatim, hashes included")
         {
-            CHECK(NoteFilename::deriveBaseName(content) == "Weekly Standup");
-        }
-    }
-
-    GIVEN("a heading of any level 1-6")
-    {
-        THEN("all levels are recognized")
-        {
-            CHECK(NoteFilename::deriveBaseName("###### Deeply Nested") == "Deeply Nested");
+            CHECK(NoteFilename::deriveBaseName(content) == "# Weekly Standup");
         }
     }
 }

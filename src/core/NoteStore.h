@@ -21,8 +21,8 @@
 //    noteContentChangedExternally()/noteIdsChanged(), without spuriously
 //    reacting to its own debounced writes.
 //  - Keep each note's on-disk filename human-readable: derived from its
-//    first heading (or first line) via NoteFilename::deriveBaseName(),
-//    re-derived and the file renamed on every debounced save. This is
+//    first line via NoteFilename::deriveBaseName(), re-derived and the
+//    file renamed on every debounced save. This is
 //    deliberately decoupled from the note's id: the id is what the rest of
 //    the app (window titles, KWin rules, Settings session/override state)
 //    keys everything on, and none of that may change just because the user

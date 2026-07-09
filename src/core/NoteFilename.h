@@ -9,9 +9,8 @@ namespace NoteFilename
 {
 // Derives a human-readable, filesystem-safe base name (no directory, no
 // ".md" extension) from a note's markdown content:
-//  - The first ATX heading found ANYWHERE in the document (not just the
-//    first line) wins, even if body text precedes it.
-//  - Otherwise, the first non-empty line is used.
+//  - The first non-empty line is used verbatim (no special treatment of
+//    markdown headings).
 //  - The result is stripped of characters that are invalid/risky in
 //    filenames, collapsed to a single line, and truncated to a handful of
 //    words if it's too long.

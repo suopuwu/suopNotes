@@ -10,18 +10,6 @@ namespace
 {
 constexpr int kMaxLength = 60;
 
-QString firstHeadingText(const QString &markdownContent)
-{
-    static const QRegularExpression headingPattern(QStringLiteral("^\\s{0,3}#{1,6}\\s+(.+?)\\s*#*\\s*$"));
-    const QStringList lines = markdownContent.split(QLatin1Char('\n'));
-    for (const QString &line : lines) {
-        const QRegularExpressionMatch match = headingPattern.match(line);
-        if (match.hasMatch())
-            return match.captured(1);
-    }
-    return QString();
-}
-
 QString firstNonEmptyLine(const QString &markdownContent)
 {
     const QStringList lines = markdownContent.split(QLatin1Char('\n'));
@@ -93,9 +81,7 @@ QString truncateToWordBoundary(const QString &text, int maxLength)
 
 QString deriveBaseName(const QString &markdownContent)
 {
-    QString title = firstHeadingText(markdownContent);
-    if (title.isEmpty())
-        title = stripLeadingMarker(firstNonEmptyLine(markdownContent));
+    QString title = stripLeadingMarker(firstNonEmptyLine(markdownContent));
 
     title = sanitize(title);
     title = truncateToWordBoundary(title, kMaxLength);

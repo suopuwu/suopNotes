@@ -30,6 +30,23 @@ public:
     Q_INVOKABLE void toggleNumberedList(int selectionStart, int selectionEnd);
     Q_INVOKABLE void setHeadingLevel(int selectionStart, int selectionEnd, int level);
     Q_INVOKABLE void insertTable(int position);
+    Q_INVOKABLE void insertTableRow(int position);
+    Q_INVOKABLE void deleteTableRow(int position);
+    Q_INVOKABLE void insertTableColumn(int position);
+    Q_INVOKABLE void deleteTableColumn(int position);
+    Q_INVOKABLE void deleteTable(int position);
+
+    // Read-only state queries backing the toolbar's "is this active at the
+    // current selection/cursor" indicator (e.g. a highlighted Bold button
+    // when the selection is already bold). Each mirrors the exact cursor
+    // state its matching toggle*/setHeadingLevel call above reads, via
+    // TextFormatting's own read-only counterparts.
+    Q_INVOKABLE bool isBold(int selectionStart, int selectionEnd) const;
+    Q_INVOKABLE bool isItalic(int selectionStart, int selectionEnd) const;
+    Q_INVOKABLE bool isStrikethrough(int selectionStart, int selectionEnd) const;
+    Q_INVOKABLE int headingLevel(int selectionStart, int selectionEnd) const;
+    Q_INVOKABLE bool isBulletList(int selectionStart, int selectionEnd) const;
+    Q_INVOKABLE bool isNumberedList(int selectionStart, int selectionEnd) const;
 
     // Enter/Return inside a list item (bullet or numbered): continues the
     // list with a new item, or — if the current item is empty — exits the
@@ -50,6 +67,13 @@ public:
 
 signals:
     void documentChanged();
+    // Emitted after any call above that can change the format active at the
+    // cursor/selection (the toggles, setHeadingLevel, and the two list-aware
+    // Enter/autoconvert helpers when they actually mutate something) — lets
+    // QML re-poll the isXxx()/headingLevel() queries above even when the
+    // selection itself hasn't moved, e.g. right after clicking Bold with a
+    // selection still held (see SelectionToolbar.qml's runAction()).
+    void formattingChanged();
 
 private:
     QTextCursor cursorFor(int selectionStart, int selectionEnd) const;

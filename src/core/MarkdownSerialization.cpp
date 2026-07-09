@@ -81,6 +81,19 @@ QString markdownForRun(QTextDocument *document, const Run &run)
     // blank line above it on every single save (confirmed empirically).
     if (startsInTable && markdown.startsWith(QLatin1Char('\n')))
         markdown = markdown.mid(1);
+    // A close cousin of the quirk above, but for a table that ISN'T the
+    // run's first block: Qt's writer doubles the blank line separating
+    // ordinary content (a paragraph, a heading, ...) from a table that
+    // directly follows it — two blank lines where every other block-to-
+    // block transition (including a table followed BY a paragraph) only
+    // ever gets one (confirmed empirically). A run never contains a real,
+    // user-authored multi-blank-line spacer internally — any deliberate
+    // spacer block forces its own run boundary in the splitting loop above
+    // — so any 2+ blank lines directly before a table row here are always
+    // this writer artifact, never intentional spacing, and collapsing them
+    // to the CommonMark-minimum single blank line is always correct.
+    static const QRegularExpression doubledBlankBeforeTable(QStringLiteral("\\n{3,}(?=\\|)"));
+    markdown.replace(doubledBlankBeforeTable, QStringLiteral("\n\n"));
     while (markdown.endsWith(QLatin1Char('\n')))
         markdown.chop(1);
     return markdown;

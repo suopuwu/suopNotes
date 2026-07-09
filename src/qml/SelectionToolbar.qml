@@ -37,7 +37,12 @@ Window {
     // on each button below.
     component ToolbarButtonHighlight: InteractableHighlight {
         anchors.fill: parent
-        active: parent.hovered || parent.down
+        // parent.checked (feature request): shows which formatting is
+        // already active at the tracked note's current selection/cursor,
+        // not just hover/press feedback — e.g. the Bold button stays
+        // highlighted while the selection is bold, even with the pointer
+        // elsewhere entirely.
+        active: parent.hovered || parent.down || parent.checked
     }
 
     // Regression found live (real Wayland run only — never reproduced in
@@ -72,6 +77,8 @@ Window {
     // mouseDragArea/editor aliases follow.
     readonly property alias dragArea: dragArea
     readonly property alias boldButton: boldButton
+    readonly property alias italicButton: italicButton
+    readonly property alias strikethroughButton: strikethroughButton
     readonly property alias background: background
     readonly property alias content: content
     readonly property alias gripDotsGrid: gripDotsGrid
@@ -90,14 +97,26 @@ Window {
     // hover/press highlight clip against the window's edge.
     readonly property int barThickness: 36
     readonly property int buttonSize: 32
-    // gripHandle (9) + divider (1) + 9 buttons * buttonSize (288) + 10
-    // gaps * spacing (20), plus a little breathing room so nothing sits
+    // gripHandle (9) + divider (1) + 14 buttons * buttonSize (448) + 15
+    // gaps * spacing (30), plus a little breathing room so nothing sits
     // flush against background's rounded corners.
-    readonly property int barLength: 330
+    readonly property int barLength: 500
 
     // The grip + divider always stay in the toolbar's first line/column
     // regardless of button count — only the buttons themselves wrap once
-    // there are more than 10 (feature request: "wrap at ten icons").
+    // there are more than maxButtonsBeforeWrap (feature request: "wrap
+    // past N icons"). Kept a little above the current 14-button count —
+    // same one-spare-slot margin the original 9-button/10-threshold
+    // pairing had — rather than exactly matching it, so the next button
+    // added doesn't immediately need this revisited. Deliberately not much
+    // higher than that, though: the wrap path reflows overflow buttons
+    // into a second row/column, but barThickness/barLength below are
+    // still single-line constants that don't grow to fit a second line —
+    // wrapping has never actually been exercised (button count has always
+    // stayed under this line), so a genuinely wrapped toolbar would render
+    // clipped. Grow barThickness/barLength to a real multi-line size
+    // alongside this if button count ever needs to cross it for real.
+    readonly property int maxButtonsBeforeWrap: 15
     readonly property int nonButtonChildCount: 2
 
     // True once a note has been placed to its left or right (column
@@ -178,6 +197,41 @@ Window {
         bar.show()
         bar.hide()
         bar.show()
+        updateBlur()
+    }
+
+    // Mirrors the tracked note's real compositor blur-behind (feature
+    // request — the toolbar never had it before, unlike the glass sheen
+    // above which already mimics the note). background.radius (a fixed 6,
+    // not noteAppearance.windowRadius) is passed as the blur region's corner
+    // radius since the bar's own frame always uses that fixed radius
+    // regardless of the tracked note's own window-radius setting. Same
+    // no-note-tracked fallback as background/GlassOverlay above: blur is
+    // simply disabled rather than left at whatever the previously-tracked
+    // note had.
+    function updateBlur() {
+        blurEffect.applyTo(bar, bar.noteWindow ? bar.noteWindow.noteAppearance.blurEnabled : false, background.radius)
+    }
+
+    // Re-derives the blur region whenever this window's own size changes —
+    // same reasoning as NoteWindow.qml's own onWidthChanged/onHeightChanged:
+    // the region KWindowEffects blurs is tied to the window's current
+    // dimensions, and the bar's size does change (barThickness/barLength
+    // swap between row and column layout — see isVertical/reposition).
+    onWidthChanged: updateBlur()
+    onHeightChanged: updateBlur()
+
+    // The tracked note itself can change while still focused (its blur
+    // toggle lives in PerNoteSettingsPopup, reachable without losing
+    // focus) — re-applies whenever the CURRENTLY tracked note's own
+    // blurEnabled flips, mirroring NoteWindow.qml's own
+    // onBlurEnabledChanged: noteWindow.updateBlur(). A plain
+    // `target: bar.noteWindow.noteAppearance` binding re-targets itself
+    // automatically as noteWindow changes, including to null (Connections
+    // simply goes inert with a null target).
+    Connections {
+        target: bar.noteWindow ? bar.noteWindow.noteAppearance : null
+        function onBlurEnabledChanged() { bar.updateBlur() }
     }
 
     // Recomputes the default position only when the tracked note *changes*
@@ -193,6 +247,7 @@ Window {
         dragArea.enabled = tracking
         if (tracking)
             reposition()
+        updateBlur()
     }
 
     // Tries each edge of the note in priority order — top, left, right,
@@ -375,14 +430,14 @@ Window {
         visible: false
         anchors.centerIn: parent
         // flow/columns/rows (not a plain fixed `columns: children.length`):
-        // wraps once there are more than 10 *buttons* (feature request),
-        // while the grip+divider — always the first two children — stay
-        // on the toolbar's first line/column regardless (see
-        // nonButtonChildCount's own comment). -1 tells GridLayout to
+        // wraps once there are more than maxButtonsBeforeWrap *buttons*
+        // (feature request), while the grip+divider — always the first two
+        // children — stay on the toolbar's first line/column regardless
+        // (see nonButtonChildCount's own comment). -1 tells GridLayout to
         // compute that dimension automatically from the other one.
         flow: bar.isVertical ? GridLayout.TopToBottom : GridLayout.LeftToRight
-        columns: bar.isVertical ? -1 : (10 + bar.nonButtonChildCount)
-        rows: bar.isVertical ? (10 + bar.nonButtonChildCount) : -1
+        columns: bar.isVertical ? -1 : (bar.maxButtonsBeforeWrap + bar.nonButtonChildCount)
+        rows: bar.isVertical ? (bar.maxButtonsBeforeWrap + bar.nonButtonChildCount) : -1
         rowSpacing: 2
         columnSpacing: 2
         // Disables every button at once whenever there's no tracked note,
@@ -459,10 +514,17 @@ Window {
         // horizontal (row) layout, a horizontal rule under a vertical
         // (column) one.
         Rectangle {
-            width: bar.isVertical ? 18 : 1
-            height: bar.isVertical ? 1 : 18
+            implicitWidth: bar.isVertical ? 18 : 1
+            implicitHeight: bar.isVertical ? 1 : 18
             color: Qt.rgba(1, 1, 1, 0.15)
             Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
+            // A little breathing room from gripHandle beyond the grid's
+            // own rowSpacing/columnSpacing (2px, shared by every other
+            // gap) — otherwise the divider sits flush against the grip's
+            // dots. Applied on whichever side actually faces the grip in
+            // the current flow direction.
+            Layout.leftMargin: bar.isVertical ? 0 : 4
+            Layout.topMargin: bar.isVertical ? 4 : 0
         }
 
         ToolButton {
@@ -474,9 +536,12 @@ Window {
             Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
             background: ToolbarButtonHighlight {}
             contentItem: ToolbarButtonLabel {}
+            checkable: true
+            checked: bar.noteWindow ? bar.noteWindow.currentBold : false
             onClicked: bar.runAction(() => bar.noteWindow.docHandler.toggleBold(bar.noteWindow.editor.selectionStart, bar.noteWindow.editor.selectionEnd))
         }
         ToolButton {
+            id: italicButton
             text: "I"
             font.italic: true
             implicitWidth: bar.buttonSize
@@ -484,9 +549,12 @@ Window {
             Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
             background: ToolbarButtonHighlight {}
             contentItem: ToolbarButtonLabel {}
+            checkable: true
+            checked: bar.noteWindow ? bar.noteWindow.currentItalic : false
             onClicked: bar.runAction(() => bar.noteWindow.docHandler.toggleItalic(bar.noteWindow.editor.selectionStart, bar.noteWindow.editor.selectionEnd))
         }
         ToolButton {
+            id: strikethroughButton
             text: "S"
             font.strikeout: true
             implicitWidth: bar.buttonSize
@@ -494,6 +562,8 @@ Window {
             Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
             background: ToolbarButtonHighlight {}
             contentItem: ToolbarButtonLabel {}
+            checkable: true
+            checked: bar.noteWindow ? bar.noteWindow.currentStrikethrough : false
             onClicked: bar.runAction(() => bar.noteWindow.docHandler.toggleStrikethrough(bar.noteWindow.editor.selectionStart, bar.noteWindow.editor.selectionEnd))
         }
         ToolButton {
@@ -503,6 +573,8 @@ Window {
             Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
             background: ToolbarButtonHighlight {}
             contentItem: ToolbarButtonLabel {}
+            checkable: true
+            checked: bar.noteWindow ? bar.noteWindow.currentHeadingLevel === 1 : false
             onClicked: bar.runAction(() => bar.noteWindow.docHandler.setHeadingLevel(bar.noteWindow.editor.selectionStart, bar.noteWindow.editor.selectionEnd, 1))
         }
         ToolButton {
@@ -512,6 +584,8 @@ Window {
             Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
             background: ToolbarButtonHighlight {}
             contentItem: ToolbarButtonLabel {}
+            checkable: true
+            checked: bar.noteWindow ? bar.noteWindow.currentHeadingLevel === 2 : false
             onClicked: bar.runAction(() => bar.noteWindow.docHandler.setHeadingLevel(bar.noteWindow.editor.selectionStart, bar.noteWindow.editor.selectionEnd, 2))
         }
         ToolButton {
@@ -521,6 +595,8 @@ Window {
             Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
             background: ToolbarButtonHighlight {}
             contentItem: ToolbarButtonLabel {}
+            checkable: true
+            checked: bar.noteWindow ? bar.noteWindow.currentHeadingLevel === 0 : false
             onClicked: bar.runAction(() => bar.noteWindow.docHandler.setHeadingLevel(bar.noteWindow.editor.selectionStart, bar.noteWindow.editor.selectionEnd, 0))
         }
         ToolButton {
@@ -530,6 +606,8 @@ Window {
             Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
             background: ToolbarButtonHighlight {}
             contentItem: ToolbarButtonLabel {}
+            checkable: true
+            checked: bar.noteWindow ? bar.noteWindow.currentBulletList : false
             onClicked: bar.runAction(() => bar.noteWindow.docHandler.toggleBulletList(bar.noteWindow.editor.selectionStart, bar.noteWindow.editor.selectionEnd))
         }
         ToolButton {
@@ -539,6 +617,8 @@ Window {
             Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
             background: ToolbarButtonHighlight {}
             contentItem: ToolbarButtonLabel {}
+            checkable: true
+            checked: bar.noteWindow ? bar.noteWindow.currentNumberedList : false
             onClicked: bar.runAction(() => bar.noteWindow.docHandler.toggleNumberedList(bar.noteWindow.editor.selectionStart, bar.noteWindow.editor.selectionEnd))
         }
         ToolButton {
@@ -549,6 +629,54 @@ Window {
             background: ToolbarButtonHighlight {}
             contentItem: ToolbarButtonLabel {}
             onClicked: bar.runAction(() => bar.noteWindow.docHandler.insertTable(bar.noteWindow.editor.selectionEnd))
+        }
+        // The five below each act on whichever table the cursor is
+        // currently inside, and no-op (per TextFormatting.h) when it isn't
+        // in one at all.
+        ToolButton {
+            text: "+R"
+            implicitWidth: bar.buttonSize
+            implicitHeight: bar.buttonSize
+            Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
+            background: ToolbarButtonHighlight {}
+            contentItem: ToolbarButtonLabel {}
+            onClicked: bar.runAction(() => bar.noteWindow.docHandler.insertTableRow(bar.noteWindow.editor.selectionEnd))
+        }
+        ToolButton {
+            text: "-R"
+            implicitWidth: bar.buttonSize
+            implicitHeight: bar.buttonSize
+            Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
+            background: ToolbarButtonHighlight {}
+            contentItem: ToolbarButtonLabel {}
+            onClicked: bar.runAction(() => bar.noteWindow.docHandler.deleteTableRow(bar.noteWindow.editor.selectionEnd))
+        }
+        ToolButton {
+            text: "+C"
+            implicitWidth: bar.buttonSize
+            implicitHeight: bar.buttonSize
+            Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
+            background: ToolbarButtonHighlight {}
+            contentItem: ToolbarButtonLabel {}
+            onClicked: bar.runAction(() => bar.noteWindow.docHandler.insertTableColumn(bar.noteWindow.editor.selectionEnd))
+        }
+        ToolButton {
+            text: "-C"
+            implicitWidth: bar.buttonSize
+            implicitHeight: bar.buttonSize
+            Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
+            background: ToolbarButtonHighlight {}
+            contentItem: ToolbarButtonLabel {}
+            onClicked: bar.runAction(() => bar.noteWindow.docHandler.deleteTableColumn(bar.noteWindow.editor.selectionEnd))
+        }
+        ToolButton {
+            text: "-▦"
+            implicitWidth: bar.buttonSize
+            implicitHeight: bar.buttonSize
+            Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
+            background: ToolbarButtonHighlight {}
+            contentItem: ToolbarButtonLabel {}
+            onClicked: bar.runAction(() => bar.noteWindow.docHandler.deleteTable(bar.noteWindow.editor.selectionEnd))
         }
     }
 

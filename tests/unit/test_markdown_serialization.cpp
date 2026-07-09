@@ -361,6 +361,42 @@ SCENARIO("A table sitting between two paragraphs survives a save/reload cycle", 
     }
 }
 
+SCENARIO("Deleting a table between two paragraphs leaves them intact after a save/reload cycle", "[markdown_serialization]")
+{
+    GIVEN("a document with a paragraph, a 2x2 table, and another paragraph")
+    {
+        QTextDocument doc;
+        QTextCursor cursor(&doc);
+        cursor.insertText("intro");
+        cursor.insertBlock();
+        QTextTableFormat format;
+        QTextTable *table = cursor.insertTable(2, 2, format);
+        cursor.movePosition(QTextCursor::End);
+        cursor.insertBlock();
+        cursor.insertText("outro");
+
+        WHEN("the table is deleted, then the document is saved and reloaded")
+        {
+            QTextCursor tableCursor(&doc);
+            tableCursor.setPosition(table->firstPosition());
+            TextFormatting::deleteTable(tableCursor);
+
+            const QString saved = toMarkdownPreservingBlankLines(&doc);
+            QTextDocument reloaded;
+            setMarkdownPreservingBlankLines(&reloaded, saved);
+
+            THEN("intro and outro survive, the table doesn't, and reloading is stable")
+            {
+                CHECK(saved.contains("intro"));
+                CHECK(saved.contains("outro"));
+                CHECK(!saved.contains("Header"));
+                CHECK(!saved.contains("---"));
+                CHECK(toMarkdownPreservingBlankLines(&reloaded) == saved);
+            }
+        }
+    }
+}
+
 SCENARIO("A table with an empty cell is not mistaken for a blank spacer block", "[markdown_serialization]")
 {
     GIVEN("a table whose second header cell is left empty")
@@ -403,6 +439,76 @@ SCENARIO("Loading empty markdown produces an empty document", "[markdown_seriali
                 CHECK(doc.blockCount() == 1);
                 CHECK(doc.begin().text().isEmpty());
             }
+        }
+    }
+}
+
+SCENARIO("Inserting a table right after pressing Enter leaves no phantom blank paragraph", "[markdown_serialization]")
+{
+    GIVEN("text, a single Enter to a fresh empty line, then a table inserted on that line")
+    {
+        QTextDocument doc;
+        QTextCursor cursor(&doc);
+        cursor.insertText("intro");
+        cursor.insertBlock();
+        TextFormatting::insertTable(cursor);
+
+        THEN("the table sits directly after \"intro\" — no orphan empty block between them")
+        {
+            const QTextBlock first = doc.begin();
+            CHECK(first.text() == QStringLiteral("intro"));
+            const QTextBlock second = first.next();
+            CHECK(QTextCursor(second).currentTable() != nullptr);
+        }
+    }
+}
+
+SCENARIO("A table right after text (single Enter, no deliberate blank line) survives a save/reload cycle", "[markdown_serialization]")
+{
+    GIVEN("intro, Enter, a table, Enter, outro — matching the toolbar's own insert-table flow")
+    {
+        QTextDocument doc;
+        QTextCursor cursor(&doc);
+        cursor.insertText("intro");
+        cursor.insertBlock();
+        TextFormatting::insertTable(cursor);
+        cursor.movePosition(QTextCursor::End);
+        cursor.insertBlock();
+        cursor.insertText("outro");
+
+        const QString saved = toMarkdownPreservingBlankLines(&doc);
+
+        THEN("exactly one blank line separates intro/table and table/outro — matching the single Enter")
+        {
+            CHECK(saved == QStringLiteral("intro\n\n|Header 1|Header 2|\n|--------|--------|\n"
+                                           "|        |        |\n\noutro\n"));
+        }
+
+        THEN("reloading it reproduces the exact same text — no growth on repeated save/reload")
+        {
+            QTextDocument reloaded;
+            setMarkdownPreservingBlankLines(&reloaded, saved);
+            CHECK(toMarkdownPreservingBlankLines(&reloaded) == saved);
+        }
+    }
+}
+
+SCENARIO("A table inserted with the cursor still mid-paragraph (no Enter pressed) round-trips the same way", "[markdown_serialization]")
+{
+    GIVEN("intro with the cursor at its end, a table inserted with no Enter first")
+    {
+        QTextDocument doc;
+        QTextCursor cursor(&doc);
+        cursor.insertText("intro");
+        TextFormatting::insertTable(cursor);
+        cursor.movePosition(QTextCursor::End);
+        cursor.insertText("outro");
+
+        THEN("the saved markdown matches the single-Enter case exactly — same visible spacing either way")
+        {
+            CHECK(toMarkdownPreservingBlankLines(&doc)
+                  == QStringLiteral("intro\n\n|Header 1|Header 2|\n|--------|--------|\n"
+                                     "|        |        |\n\noutro\n"));
         }
     }
 }

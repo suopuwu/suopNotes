@@ -26,6 +26,41 @@ Window {
     // must not fire on those two specific assignments.
     property bool restoringGeometry: false
 
+    // Live "is this format active at the current cursor/selection" state
+    // (feature request: the toolbar should show, not just apply, formatting
+    // — e.g. the Bold button should look pressed when the selection is
+    // already bold). Plain properties refreshed imperatively by
+    // refreshFormatState() below, not declarative bindings on
+    // docHandler.isBold()/etc — those calls only re-run when a QML property
+    // they *read* changes, and nothing here reads editor.selectionStart/End
+    // on every keystroke or toolbar click, so a plain binding would go stale
+    // exactly when a selection is held and a toolbar button is clicked
+    // (selectionStart/End don't move, only the format underneath them does).
+    property bool currentBold: false
+    property bool currentItalic: false
+    property bool currentStrikethrough: false
+    property int currentHeadingLevel: 0
+    property bool currentBulletList: false
+    property bool currentNumberedList: false
+
+    // Re-polls every currentXxx property above from the editor's real
+    // selection and the document's own format at that selection. Called
+    // whenever either could have changed: the cursor/selection moves (see
+    // editor's onSelectionStartChanged/onSelectionEndChanged), or a
+    // formatting call mutates the document without moving the selection at
+    // all (see docHandler's onFormattingChanged — e.g. clicking Bold on a
+    // held selection).
+    function refreshFormatState() {
+        const start = editor.selectionStart
+        const end = editor.selectionEnd
+        currentBold = docHandler.isBold(start, end)
+        currentItalic = docHandler.isItalic(start, end)
+        currentStrikethrough = docHandler.isStrikethrough(start, end)
+        currentHeadingLevel = docHandler.headingLevel(start, end)
+        currentBulletList = docHandler.isBulletList(start, end)
+        currentNumberedList = docHandler.isNumberedList(start, end)
+    }
+
     // Exposed for tests only (structural verification of drag-gesture
     // config); not used by app code outside this file.
     readonly property alias mouseDragArea: mouseDragArea
@@ -222,7 +257,7 @@ Window {
         // windowOpacity is folded into the fill's own alpha (rather than
         // Rectangle.opacity) so it only thins the background: Item.opacity
         // is a group opacity that also multiplies border.color and every
-        // child (glass overlay, toolbar, text), which isn't what "background
+        // child (glass overlay, text), which isn't what "background
         // opacity" is supposed to mean.
         color: Qt.rgba(noteAppearance.backgroundColor.r, noteAppearance.backgroundColor.g,
                         noteAppearance.backgroundColor.b,
@@ -241,70 +276,6 @@ Window {
 
         HoverHandler {
             id: noteHoverHandler
-        }
-
-        Row {
-            id: toolbar
-            // Above mouseDragArea (z: 1, declared below): without this the
-            // drag area — not any button — would be the topmost item for
-            // cursor-shape resolution across the whole toolbar row, hiding
-            // the pointing-hand cursor set below and leaving the default
-            // arrow instead (clicks already reach the buttons regardless,
-            // since mouseDragArea only claims the right mouse button — see
-            // mouseDragArea's own comment — but cursor resolution has no
-            // equivalent per-button fallthrough).
-            z: 2
-            anchors.top: parent.top
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.margins: 4
-            spacing: 2
-
-            HoverHandler { cursorShape: Qt.PointingHandCursor }
-
-            // Formatting is only ever reachable via these buttons (or their
-            // matching keyboard shortcuts) — never by typing raw markdown
-            // syntax, since Qt's MarkdownText mode doesn't live-convert
-            // typed "**"/"#" (Spike A). That is what makes this WYSIWYG.
-            ToolButton {
-                text: "B"
-                font.bold: true
-                onClicked: docHandler.toggleBold(editor.selectionStart, editor.selectionEnd)
-            }
-            ToolButton {
-                text: "I"
-                font.italic: true
-                onClicked: docHandler.toggleItalic(editor.selectionStart, editor.selectionEnd)
-            }
-            ToolButton {
-                text: "S"
-                font.strikeout: true
-                onClicked: docHandler.toggleStrikethrough(editor.selectionStart, editor.selectionEnd)
-            }
-            ToolButton {
-                text: "H1"
-                onClicked: docHandler.setHeadingLevel(editor.selectionStart, editor.selectionEnd, 1)
-            }
-            ToolButton {
-                text: "H2"
-                onClicked: docHandler.setHeadingLevel(editor.selectionStart, editor.selectionEnd, 2)
-            }
-            ToolButton {
-                text: "¶" // pilcrow — back to a normal paragraph
-                onClicked: docHandler.setHeadingLevel(editor.selectionStart, editor.selectionEnd, 0)
-            }
-            ToolButton {
-                text: "•" // bullet
-                onClicked: docHandler.toggleBulletList(editor.selectionStart, editor.selectionEnd)
-            }
-            ToolButton {
-                text: "1."
-                onClicked: docHandler.toggleNumberedList(editor.selectionStart, editor.selectionEnd)
-            }
-            ToolButton {
-                text: "▦" // insert a starter table
-                onClicked: docHandler.insertTable(editor.selectionEnd)
-            }
         }
 
         // Configurable formatting shortcuts (feature request): sequences
@@ -354,11 +325,21 @@ Window {
 
         Flickable {
             id: editorFlick
-            anchors.top: toolbar.bottom
+            anchors.top: parent.top
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.bottom: parent.bottom
             anchors.margins: 8
+            // Text fills the whole note, right up under noteHud's
+            // top-right footprint (feature request) — deliberately not
+            // reserving a top-margin gap for it (that just wasted screen
+            // space while the note isn't hovered). noteHud is z: 3, above
+            // both editorFlick and scrollIndicator (anchored to its top),
+            // so while the note IS hovered and the HUD is showing, its
+            // pin/gear/close icons take priority over clicks in that corner
+            // — including the scrollbar handle, if it happens to be
+            // scrolled near the top. Accepted tradeoff: an occasionally
+            // obscured scrollbar corner beats permanent dead space.
             clip: true
             contentWidth: width
             contentHeight: editor.height
@@ -449,12 +430,25 @@ Window {
                     DocumentHandler {
                         id: docHandler
                         document: editor.textDocument
+                        // Catches formatting changes that don't move the
+                        // selection at all — e.g. clicking Bold on a held
+                        // selection (persistentSelection keeps selectionStart/
+                        // End exactly where they were) — see
+                        // refreshFormatState()'s own comment above.
+                        onFormattingChanged: noteWindow.refreshFormatState()
                     }
 
                     Component.onCompleted: {
                         docHandler.setMarkdown(noteStore.loadNoteContent(noteWindow.noteId))
                         ready = true
+                        noteWindow.refreshFormatState()
                     }
+
+                    // Covers the other half: the cursor/selection itself
+                    // moving into (or out of) differently-formatted text,
+                    // with no formatting call involved at all.
+                    onSelectionStartChanged: noteWindow.refreshFormatState()
+                    onSelectionEndChanged: noteWindow.refreshFormatState()
 
                     // Debounced + atomic on NoteStore's side (~300ms after the
                     // last keystroke) — instant-feeling without a disk write per
@@ -606,19 +600,18 @@ Window {
         // normalized position/extent — no manual contentY/contentHeight
         // math needed). Deliberately a plain non-interactive Rectangle, not
         // QtQuick.Controls' ScrollBar — everything else in this file
-        // (toolbar, HUD, resize handles) is hand-rolled to control its
-        // exact look, and a QQC2 control would pull in a platform style
-        // whose default chrome wouldn't match or take the glass treatment
-        // below consistently.
+        // (HUD, resize handles) is hand-rolled to control its exact look,
+        // and a QQC2 control would pull in a platform style whose default
+        // chrome wouldn't match or take the glass treatment below
+        // consistently.
         Item {
             id: scrollIndicator
-            // Above mouseDragArea (z: 1, declared below) for the same two
-            // reasons the toolbar itself needs z: 2 above it (see toolbar's
-            // own comment): so this MouseArea's PointingHandCursor wins
-            // cursor resolution instead of mouseDragArea's IBeam/Arrow, and
-            // so a drag press actually starts here rather than falling
-            // through — matches the toolbar's tier, not resizeBorders' (2),
-            // to fully own the region without competing with either.
+            // Above mouseDragArea (z: 1, declared below), matching
+            // resizeBorders' own tier (2): without this, mouseDragArea's
+            // IBeam/Arrow cursor logic — not this MouseArea's own
+            // PointingHandCursor — would win cursor resolution here, and a
+            // drag press would fall through to mouseDragArea instead of
+            // starting the scroll drag.
             z: 2
             anchors.top: editorFlick.top
             anchors.bottom: editorFlick.bottom
@@ -769,7 +762,7 @@ Window {
         // sidesteps this because it participates in Qt Quick's legacy
         // top-most-hit-test: since acceptedButtons excludes Left, a
         // left-button press isn't a hit here at all and keeps searching
-        // underneath (reaching the toolbar/editor normally), while a
+        // underneath (reaching the editor normally), while a
         // right-button press *is* a hit here — intercepted before it ever
         // reaches TextInput underneath, so no competing exclusive grab
         // exists to fight over. (A bare Item with only a PointerHandler
@@ -783,7 +776,7 @@ Window {
         // own. Reflecting it explicitly (whenever the pointer is over
         // editorFlick — its real text or the dead space below the last
         // line, both) is what makes the cursor look right again; over the
-        // toolbar above it, the default arrow stands.
+        // thin top margin above it, the default arrow stands.
         MouseArea {
             id: mouseDragArea
             anchors.fill: parent
@@ -805,7 +798,7 @@ Window {
         // separate mechanism from blurEnabled's real compositor blur-behind
         // above. Sits on top of the content (declared last) but has no
         // input handling of its own, so it never blocks clicks reaching the
-        // toolbar/editor/HUD/resize borders underneath.
+        // editor/HUD/resize borders underneath.
         GlassOverlay {
             anchors.fill: parent
             cornerRadius: mainFrame.radius

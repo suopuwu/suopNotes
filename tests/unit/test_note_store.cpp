@@ -443,14 +443,15 @@ SCENARIO("A note's on-disk filename tracks its content", "[note_store]")
             }
         }
 
-        WHEN("the content has a heading further down than the first line")
+        WHEN("the content has a markdown heading further down than the first line")
         {
             store.saveNoteContent(id, "some intro\n\n## Project Plan\n\nbody text");
             QTest::qWait(kPastDebounceMs);
 
-            THEN("the heading wins over the first line")
+            THEN("the first line still wins, the later heading is not given priority")
             {
-                CHECK(QFile::exists(tempDir.filePath("Project Plan.md")));
+                CHECK(QFile::exists(tempDir.filePath("some intro.md")));
+                CHECK_FALSE(QFile::exists(tempDir.filePath("Project Plan.md")));
             }
         }
 

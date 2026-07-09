@@ -40,6 +40,16 @@ Item {
         id: bar
     }
 
+    // Shared across every NoteWindow in this file too (blurEffect is a
+    // single app-wide singleton, same as in tst_NoteWindow.qml) — tests
+    // below filter signalArguments for `bar` itself rather than assuming
+    // it's the only emitter.
+    SignalSpy {
+        id: blurSpy
+        target: blurEffect
+        signalName: "appliedTo"
+    }
+
     TestCase {
         name: "SelectionToolbar"
         when: windowShown
@@ -222,11 +232,12 @@ Item {
             wait(20)
 
             compare(bar.isVertical, false, "top/bottom placement should keep the bar as a horizontal row")
-            // columns is capped at "10 buttons + grip/divider" (see
-            // nonButtonChildCount), deliberately higher than the current
-            // button count so a future 10th button still wraps instead of
-            // silently growing the bar past its fixed barLength — so this
-            // only needs to prove no wrap occurred yet, not an exact match.
+            // columns is capped at "maxButtonsBeforeWrap buttons + grip/
+            // divider" (see nonButtonChildCount), deliberately higher than
+            // the current button count so a future button still wraps
+            // instead of silently growing the bar past its fixed
+            // barLength — so this only needs to prove no wrap occurred
+            // yet, not an exact match.
             verify(bar.content.columns >= bar.content.children.length,
                    "the row's column capacity must fit every current child without wrapping")
             compare(bar.width, bar.barLength)
@@ -276,11 +287,132 @@ Item {
                    "clicking Bold on the shared toolbar should format the tracked note's own selection")
         }
 
+        // Feature request: the toolbar previously never blurred at all,
+        // regardless of the tracked note's own blur setting — it should
+        // inherit that setting like the glass sheen (GlassOverlay) already
+        // does.
+        function test_blur_is_applied_to_the_bar_when_a_note_with_blur_enabled_is_tracked() {
+            settings.blurEnabled = true
+            blurSpy.clear()
+
+            bar.noteWindow = noteA
+            wait(20)
+
+            let found = false
+            for (let i = 0; i < blurSpy.count; ++i) {
+                if (blurSpy.signalArguments[i][0] === bar && blurSpy.signalArguments[i][1] === true)
+                    found = true
+            }
+            verify(found, "tracking a note with blur enabled should apply blur to the bar itself, not just the note")
+        }
+
+        function test_blur_is_turned_off_again_once_the_tracked_note_is_cleared() {
+            bar.noteWindow = noteA
+            wait(20)
+            blurSpy.clear()
+
+            bar.noteWindow = null
+
+            let found = false
+            for (let i = 0; i < blurSpy.count; ++i) {
+                if (blurSpy.signalArguments[i][0] === bar && blurSpy.signalArguments[i][1] === false)
+                    found = true
+            }
+            verify(found, "clearing the tracked note should turn the bar's own blur back off")
+        }
+
+        // Mirrors tst_NoteWindow.qml's own
+        // test_blur_is_reapplied_when_blurEnabled_changes: the bar must
+        // react live, not just at the moment tracking starts, since the
+        // per-note blur toggle (PerNoteSettingsPopup) is reachable without
+        // the note ever losing focus.
+        function test_blur_is_reapplied_when_the_tracked_notes_blurEnabled_changes() {
+            bar.noteWindow = noteA
+            wait(20)
+            blurSpy.clear()
+
+            settings.blurEnabled = !settings.blurEnabled
+
+            let found = false
+            for (let i = 0; i < blurSpy.count; ++i) {
+                if (blurSpy.signalArguments[i][0] === bar)
+                    found = true
+            }
+            verify(found, "the bar should re-apply blur when the tracked note's own blurEnabled changes")
+
+            settings.blurEnabled = !settings.blurEnabled
+        }
+
         // Structural check mirroring NoteWindow's own mouseDragArea test:
         // the drag area must be scoped to the right button only, so the
         // left button still reaches the buttons underneath it.
         function test_drag_area_is_scoped_to_the_right_button_only() {
             compare(bar.dragArea.acceptedButtons, Qt.RightButton)
+        }
+
+        // Feature request: the toolbar should show, not just apply,
+        // formatting — a button reflects whether its formatting is already
+        // active at the tracked note's current selection, not just
+        // hover/press feedback.
+        function test_bold_button_shows_checked_when_the_selection_is_already_bold() {
+            noteA.docHandler.setMarkdown("bold me\n")
+            wait(50)
+            noteA.editor.select(0, "bold me".length)
+            noteA.docHandler.toggleBold(0, "bold me".length)
+
+            bar.noteWindow = noteA
+            wait(20)
+
+            compare(bar.boldButton.checked, true,
+                    "the Bold button should show checked when the selection is already bold")
+        }
+
+        function test_bold_button_is_not_checked_for_plain_unformatted_text() {
+            noteA.docHandler.setMarkdown("plain text\n")
+            wait(50)
+            noteA.editor.select(0, "plain text".length)
+
+            bar.noteWindow = noteA
+            wait(20)
+
+            compare(bar.boldButton.checked, false,
+                    "the Bold button should not show checked for plain, unformatted text")
+        }
+
+        // Clicking Bold must flip the button's own checked state immediately
+        // — not just the document's formatting — even though a held
+        // selection's start/end never move across the click
+        // (persistentSelection keeps them exactly where they were; see
+        // runAction()'s own comment).
+        function test_bold_button_becomes_checked_immediately_after_clicking_it() {
+            noteA.docHandler.setMarkdown("bold me\n")
+            wait(50)
+            noteA.editor.select(0, "bold me".length)
+
+            bar.noteWindow = noteA
+            wait(20)
+            compare(bar.boldButton.checked, false, "precondition: not bold yet")
+
+            mouseClick(bar.boldButton, bar.boldButton.width / 2, bar.boldButton.height / 2)
+
+            compare(bar.boldButton.checked, true,
+                    "the Bold button should flip to checked right after toggling bold on the held selection")
+        }
+
+        // Each formatting button tracks its own, independent state — proves
+        // the whole set is wired up, not just Bold.
+        function test_italic_and_strikethrough_buttons_track_their_own_independent_state() {
+            noteA.docHandler.setMarkdown("emphasis\n")
+            wait(50)
+            noteA.editor.select(0, "emphasis".length)
+            noteA.docHandler.toggleItalic(0, "emphasis".length)
+
+            bar.noteWindow = noteA
+            wait(20)
+
+            compare(bar.italicButton.checked, true, "italic is active, so the Italic button should be checked")
+            compare(bar.strikethroughButton.checked, false,
+                    "strikethrough was never applied, so its button should not be checked")
         }
     }
 }

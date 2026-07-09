@@ -53,31 +53,37 @@ QTextCursor DocumentHandler::cursorFor(int selectionStart, int selectionEnd) con
 void DocumentHandler::toggleBold(int selectionStart, int selectionEnd)
 {
     TextFormatting::toggleBold(cursorFor(selectionStart, selectionEnd));
+    emit formattingChanged();
 }
 
 void DocumentHandler::toggleItalic(int selectionStart, int selectionEnd)
 {
     TextFormatting::toggleItalic(cursorFor(selectionStart, selectionEnd));
+    emit formattingChanged();
 }
 
 void DocumentHandler::toggleStrikethrough(int selectionStart, int selectionEnd)
 {
     TextFormatting::toggleStrikethrough(cursorFor(selectionStart, selectionEnd));
+    emit formattingChanged();
 }
 
 void DocumentHandler::toggleBulletList(int selectionStart, int selectionEnd)
 {
     TextFormatting::toggleBulletList(cursorFor(selectionStart, selectionEnd));
+    emit formattingChanged();
 }
 
 void DocumentHandler::toggleNumberedList(int selectionStart, int selectionEnd)
 {
     TextFormatting::toggleNumberedList(cursorFor(selectionStart, selectionEnd));
+    emit formattingChanged();
 }
 
 void DocumentHandler::setHeadingLevel(int selectionStart, int selectionEnd, int level)
 {
     TextFormatting::setHeadingLevel(cursorFor(selectionStart, selectionEnd), level);
+    emit formattingChanged();
 }
 
 void DocumentHandler::insertTable(int position)
@@ -88,6 +94,56 @@ void DocumentHandler::insertTable(int position)
     QTextCursor cursor(m_document->textDocument());
     cursor.setPosition(position);
     TextFormatting::insertTable(cursor);
+}
+
+void DocumentHandler::insertTableRow(int position)
+{
+    if (!m_document || !m_document->textDocument())
+        return;
+
+    QTextCursor cursor(m_document->textDocument());
+    cursor.setPosition(position);
+    TextFormatting::insertTableRow(cursor);
+}
+
+void DocumentHandler::deleteTableRow(int position)
+{
+    if (!m_document || !m_document->textDocument())
+        return;
+
+    QTextCursor cursor(m_document->textDocument());
+    cursor.setPosition(position);
+    TextFormatting::deleteTableRow(cursor);
+}
+
+void DocumentHandler::insertTableColumn(int position)
+{
+    if (!m_document || !m_document->textDocument())
+        return;
+
+    QTextCursor cursor(m_document->textDocument());
+    cursor.setPosition(position);
+    TextFormatting::insertTableColumn(cursor);
+}
+
+void DocumentHandler::deleteTableColumn(int position)
+{
+    if (!m_document || !m_document->textDocument())
+        return;
+
+    QTextCursor cursor(m_document->textDocument());
+    cursor.setPosition(position);
+    TextFormatting::deleteTableColumn(cursor);
+}
+
+void DocumentHandler::deleteTable(int position)
+{
+    if (!m_document || !m_document->textDocument())
+        return;
+
+    QTextCursor cursor(m_document->textDocument());
+    cursor.setPosition(position);
+    TextFormatting::deleteTable(cursor);
 }
 
 bool DocumentHandler::tryContinueList(int cursorPosition)
@@ -134,10 +190,11 @@ bool DocumentHandler::tryAutoConvertListShorthand(int cursorPosition)
     const QString textBeforeCursor = block.text().left(cursorPosition - block.position());
 
     static const QRegularExpression bulletShorthand(QStringLiteral("^[-*] $"));
-    static const QRegularExpression numberedShorthand(QStringLiteral("^\\d+\\. $"));
+    static const QRegularExpression numberedShorthand(QStringLiteral("^(\\d+)\\. $"));
 
     const bool isBullet = bulletShorthand.match(textBeforeCursor).hasMatch();
-    const bool isNumbered = !isBullet && numberedShorthand.match(textBeforeCursor).hasMatch();
+    const QRegularExpressionMatch numberedMatch = numberedShorthand.match(textBeforeCursor);
+    const bool isNumbered = !isBullet && numberedMatch.hasMatch();
     if (!isBullet && !isNumbered)
         return false;
 
@@ -147,8 +204,41 @@ bool DocumentHandler::tryAutoConvertListShorthand(int cursorPosition)
     stripCursor.removeSelectedText();
 
     if (isNumbered)
-        TextFormatting::toggleNumberedList(stripCursor);
+        // Preserves whatever number the user actually typed (e.g. "5. "
+        // starts the list at 5, not silently resetting to 1) — Qt's own
+        // auto-numbering still increments normally for every item after it.
+        TextFormatting::toggleNumberedList(stripCursor, numberedMatch.captured(1).toInt());
     else
         TextFormatting::toggleBulletList(stripCursor);
     return true;
+}
+
+bool DocumentHandler::isBold(int selectionStart, int selectionEnd) const
+{
+    return TextFormatting::isBold(cursorFor(selectionStart, selectionEnd));
+}
+
+bool DocumentHandler::isItalic(int selectionStart, int selectionEnd) const
+{
+    return TextFormatting::isItalic(cursorFor(selectionStart, selectionEnd));
+}
+
+bool DocumentHandler::isStrikethrough(int selectionStart, int selectionEnd) const
+{
+    return TextFormatting::isStrikethrough(cursorFor(selectionStart, selectionEnd));
+}
+
+int DocumentHandler::headingLevel(int selectionStart, int selectionEnd) const
+{
+    return TextFormatting::headingLevel(cursorFor(selectionStart, selectionEnd));
+}
+
+bool DocumentHandler::isBulletList(int selectionStart, int selectionEnd) const
+{
+    return TextFormatting::isBulletList(cursorFor(selectionStart, selectionEnd));
+}
+
+bool DocumentHandler::isNumberedList(int selectionStart, int selectionEnd) const
+{
+    return TextFormatting::isNumberedList(cursorFor(selectionStart, selectionEnd));
 }
