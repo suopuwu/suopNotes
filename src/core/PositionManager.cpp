@@ -45,6 +45,13 @@ void PositionManager::removePosition(const QString &noteId)
     worker->start();
 }
 
+void PositionManager::moveWindow(const QString &windowTitle, int x, int y)
+{
+    QThread *worker = QThread::create([windowTitle, x, y]() { KWinRuleApplier::moveWindow(windowTitle, x, y); });
+    QObject::connect(worker, &QThread::finished, worker, &QObject::deleteLater);
+    worker->start();
+}
+
 bool PositionManager::suppressCleanupOnQuit() const
 {
     return m_suppressCleanupOnQuit;

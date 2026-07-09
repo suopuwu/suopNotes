@@ -31,6 +31,15 @@ public:
 
     Q_INVOKABLE void removePosition(const QString &noteId);
 
+    // Live-moves an already-open window (matched by exact title) to a new
+    // global position — see KWinRuleApplier::moveWindow's own comment for
+    // why this exists separately from applyPosition (whose position rule
+    // only ever takes effect at the window's first creation). Runs off
+    // the main thread, same reasoning as removePosition: this shells out
+    // to a handful of qdbus6 calls plus a short settle sleep, and nothing
+    // here needs to finish before the caller proceeds.
+    Q_INVOKABLE void moveWindow(const QString &windowTitle, int x, int y);
+
     bool suppressCleanupOnQuit() const;
     void setSuppressCleanupOnQuit(bool suppress);
 

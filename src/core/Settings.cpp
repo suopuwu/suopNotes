@@ -15,6 +15,15 @@ constexpr qreal kDefaultGlassSheenStrength = 10;
 constexpr qreal kDefaultGlassSheenSize = 0.18;
 const char *kDefaultGlassTintColor = "#000000";
 constexpr bool kDefaultHudAlwaysExpanded = true;
+const char *kDefaultShortcutBold = "Ctrl+B";
+const char *kDefaultShortcutItalic = "Ctrl+I";
+const char *kDefaultShortcutStrikethrough = "Ctrl+Shift+X";
+const char *kDefaultShortcutHeading1 = "Ctrl+Alt+1";
+const char *kDefaultShortcutHeading2 = "Ctrl+Alt+2";
+const char *kDefaultShortcutParagraph = "Ctrl+Alt+0";
+const char *kDefaultShortcutBulletList = "Ctrl+Shift+8";
+const char *kDefaultShortcutNumberedList = "Ctrl+Shift+7";
+const char *kDefaultShortcutInsertTable = "Ctrl+Alt+T";
 constexpr qreal kDefaultBorderWidth = 0;
 constexpr qreal kDefaultScrollbarWidth = 8;
 constexpr int kDefaultFontSize = 14;
@@ -24,6 +33,11 @@ const char *kDefaultFontColor = "#ffffff";
 const char *kDefaultFontFamily = "";
 const char *kDefaultHighlightColor = "#000000";
 constexpr qreal kDefaultHighlightOpacity = 0.35;
+const char *kDefaultInteractableHighlightColor = "#4da6ff";
+constexpr qreal kDefaultInteractableHighlightOpacity = 0.18;
+constexpr bool kDefaultInteractableHighlightGlassEnabled = false;
+constexpr bool kDefaultChromeGlassFollowsNote = true;
+constexpr bool kDefaultChromeGlassEnabled = false;
 
 const char *kGroupAppearance = "Appearance";
 const char *kKeyNotesFolder = "notesFolder";
@@ -44,7 +58,23 @@ const char *kKeyFontColor = "fontColor";
 const char *kKeyFontFamily = "fontFamily";
 const char *kKeyHighlightColor = "highlightColor";
 const char *kKeyHighlightOpacity = "highlightOpacity";
+const char *kKeyInteractableHighlightColor = "interactableHighlightColor";
+const char *kKeyInteractableHighlightOpacity = "interactableHighlightOpacity";
+const char *kKeyInteractableHighlightGlassEnabled = "interactableHighlightGlassEnabled";
+const char *kKeyChromeGlassFollowsNote = "chromeGlassFollowsNote";
+const char *kKeyChromeGlassEnabled = "chromeGlassEnabled";
 const char *kKeyHudAlwaysExpanded = "hudAlwaysExpanded";
+
+const char *kGroupShortcuts = "Shortcuts";
+const char *kKeyShortcutBold = "bold";
+const char *kKeyShortcutItalic = "italic";
+const char *kKeyShortcutStrikethrough = "strikethrough";
+const char *kKeyShortcutHeading1 = "heading1";
+const char *kKeyShortcutHeading2 = "heading2";
+const char *kKeyShortcutParagraph = "paragraph";
+const char *kKeyShortcutBulletList = "bulletList";
+const char *kKeyShortcutNumberedList = "numberedList";
+const char *kKeyShortcutInsertTable = "insertTable";
 
 const char *kArrayOpenNotes = "OpenNotes";
 const char *kKeyNoteId = "noteId";
@@ -66,6 +96,11 @@ QColor colorFromString(const QString &text, const QColor &fallback)
         return fallback;
     const QColor color(text);
     return color.isValid() ? color : fallback;
+}
+
+QString shortcutOrDefault(const QString &stored, const QString &fallback)
+{
+    return stored.isEmpty() ? fallback : stored;
 }
 }
 
@@ -324,6 +359,77 @@ void Settings::setHighlightOpacity(qreal opacity)
     emit highlightOpacityChanged();
 }
 
+QColor Settings::interactableHighlightColor() const
+{
+    const QString stored =
+        m_settings->value(QString("%1/%2").arg(kGroupAppearance, kKeyInteractableHighlightColor)).toString();
+    return colorFromString(stored, QColor(kDefaultInteractableHighlightColor));
+}
+
+void Settings::setInteractableHighlightColor(const QColor &color)
+{
+    m_settings->setValue(QString("%1/%2").arg(kGroupAppearance, kKeyInteractableHighlightColor),
+                          color.name(QColor::HexArgb));
+    m_settings->sync();
+    emit interactableHighlightColorChanged();
+}
+
+qreal Settings::interactableHighlightOpacity() const
+{
+    return m_settings
+        ->value(QString("%1/%2").arg(kGroupAppearance, kKeyInteractableHighlightOpacity),
+                kDefaultInteractableHighlightOpacity)
+        .toReal();
+}
+
+void Settings::setInteractableHighlightOpacity(qreal opacity)
+{
+    m_settings->setValue(QString("%1/%2").arg(kGroupAppearance, kKeyInteractableHighlightOpacity), opacity);
+    m_settings->sync();
+    emit interactableHighlightOpacityChanged();
+}
+
+bool Settings::interactableHighlightGlassEnabled() const
+{
+    return m_settings
+        ->value(QString("%1/%2").arg(kGroupAppearance, kKeyInteractableHighlightGlassEnabled),
+                kDefaultInteractableHighlightGlassEnabled)
+        .toBool();
+}
+
+void Settings::setInteractableHighlightGlassEnabled(bool enabled)
+{
+    m_settings->setValue(QString("%1/%2").arg(kGroupAppearance, kKeyInteractableHighlightGlassEnabled), enabled);
+    m_settings->sync();
+    emit interactableHighlightGlassEnabledChanged();
+}
+
+bool Settings::chromeGlassFollowsNote() const
+{
+    return m_settings->value(QString("%1/%2").arg(kGroupAppearance, kKeyChromeGlassFollowsNote), kDefaultChromeGlassFollowsNote)
+        .toBool();
+}
+
+void Settings::setChromeGlassFollowsNote(bool followsNote)
+{
+    m_settings->setValue(QString("%1/%2").arg(kGroupAppearance, kKeyChromeGlassFollowsNote), followsNote);
+    m_settings->sync();
+    emit chromeGlassFollowsNoteChanged();
+}
+
+bool Settings::chromeGlassEnabled() const
+{
+    return m_settings->value(QString("%1/%2").arg(kGroupAppearance, kKeyChromeGlassEnabled), kDefaultChromeGlassEnabled)
+        .toBool();
+}
+
+void Settings::setChromeGlassEnabled(bool enabled)
+{
+    m_settings->setValue(QString("%1/%2").arg(kGroupAppearance, kKeyChromeGlassEnabled), enabled);
+    m_settings->sync();
+    emit chromeGlassEnabledChanged();
+}
+
 bool Settings::hudAlwaysExpanded() const
 {
     return m_settings->value(QString("%1/%2").arg(kGroupAppearance, kKeyHudAlwaysExpanded), kDefaultHudAlwaysExpanded).toBool();
@@ -334,6 +440,123 @@ void Settings::setHudAlwaysExpanded(bool alwaysExpanded)
     m_settings->setValue(QString("%1/%2").arg(kGroupAppearance, kKeyHudAlwaysExpanded), alwaysExpanded);
     m_settings->sync();
     emit hudAlwaysExpandedChanged();
+}
+
+QString Settings::shortcutBold() const
+{
+    const QString stored = m_settings->value(QString("%1/%2").arg(kGroupShortcuts, kKeyShortcutBold)).toString();
+    return shortcutOrDefault(stored, QString(kDefaultShortcutBold));
+}
+
+void Settings::setShortcutBold(const QString &sequence)
+{
+    m_settings->setValue(QString("%1/%2").arg(kGroupShortcuts, kKeyShortcutBold), sequence);
+    m_settings->sync();
+    emit shortcutBoldChanged();
+}
+
+QString Settings::shortcutItalic() const
+{
+    const QString stored = m_settings->value(QString("%1/%2").arg(kGroupShortcuts, kKeyShortcutItalic)).toString();
+    return shortcutOrDefault(stored, QString(kDefaultShortcutItalic));
+}
+
+void Settings::setShortcutItalic(const QString &sequence)
+{
+    m_settings->setValue(QString("%1/%2").arg(kGroupShortcuts, kKeyShortcutItalic), sequence);
+    m_settings->sync();
+    emit shortcutItalicChanged();
+}
+
+QString Settings::shortcutStrikethrough() const
+{
+    const QString stored = m_settings->value(QString("%1/%2").arg(kGroupShortcuts, kKeyShortcutStrikethrough)).toString();
+    return shortcutOrDefault(stored, QString(kDefaultShortcutStrikethrough));
+}
+
+void Settings::setShortcutStrikethrough(const QString &sequence)
+{
+    m_settings->setValue(QString("%1/%2").arg(kGroupShortcuts, kKeyShortcutStrikethrough), sequence);
+    m_settings->sync();
+    emit shortcutStrikethroughChanged();
+}
+
+QString Settings::shortcutHeading1() const
+{
+    const QString stored = m_settings->value(QString("%1/%2").arg(kGroupShortcuts, kKeyShortcutHeading1)).toString();
+    return shortcutOrDefault(stored, QString(kDefaultShortcutHeading1));
+}
+
+void Settings::setShortcutHeading1(const QString &sequence)
+{
+    m_settings->setValue(QString("%1/%2").arg(kGroupShortcuts, kKeyShortcutHeading1), sequence);
+    m_settings->sync();
+    emit shortcutHeading1Changed();
+}
+
+QString Settings::shortcutHeading2() const
+{
+    const QString stored = m_settings->value(QString("%1/%2").arg(kGroupShortcuts, kKeyShortcutHeading2)).toString();
+    return shortcutOrDefault(stored, QString(kDefaultShortcutHeading2));
+}
+
+void Settings::setShortcutHeading2(const QString &sequence)
+{
+    m_settings->setValue(QString("%1/%2").arg(kGroupShortcuts, kKeyShortcutHeading2), sequence);
+    m_settings->sync();
+    emit shortcutHeading2Changed();
+}
+
+QString Settings::shortcutParagraph() const
+{
+    const QString stored = m_settings->value(QString("%1/%2").arg(kGroupShortcuts, kKeyShortcutParagraph)).toString();
+    return shortcutOrDefault(stored, QString(kDefaultShortcutParagraph));
+}
+
+void Settings::setShortcutParagraph(const QString &sequence)
+{
+    m_settings->setValue(QString("%1/%2").arg(kGroupShortcuts, kKeyShortcutParagraph), sequence);
+    m_settings->sync();
+    emit shortcutParagraphChanged();
+}
+
+QString Settings::shortcutBulletList() const
+{
+    const QString stored = m_settings->value(QString("%1/%2").arg(kGroupShortcuts, kKeyShortcutBulletList)).toString();
+    return shortcutOrDefault(stored, QString(kDefaultShortcutBulletList));
+}
+
+void Settings::setShortcutBulletList(const QString &sequence)
+{
+    m_settings->setValue(QString("%1/%2").arg(kGroupShortcuts, kKeyShortcutBulletList), sequence);
+    m_settings->sync();
+    emit shortcutBulletListChanged();
+}
+
+QString Settings::shortcutNumberedList() const
+{
+    const QString stored = m_settings->value(QString("%1/%2").arg(kGroupShortcuts, kKeyShortcutNumberedList)).toString();
+    return shortcutOrDefault(stored, QString(kDefaultShortcutNumberedList));
+}
+
+void Settings::setShortcutNumberedList(const QString &sequence)
+{
+    m_settings->setValue(QString("%1/%2").arg(kGroupShortcuts, kKeyShortcutNumberedList), sequence);
+    m_settings->sync();
+    emit shortcutNumberedListChanged();
+}
+
+QString Settings::shortcutInsertTable() const
+{
+    const QString stored = m_settings->value(QString("%1/%2").arg(kGroupShortcuts, kKeyShortcutInsertTable)).toString();
+    return shortcutOrDefault(stored, QString(kDefaultShortcutInsertTable));
+}
+
+void Settings::setShortcutInsertTable(const QString &sequence)
+{
+    m_settings->setValue(QString("%1/%2").arg(kGroupShortcuts, kKeyShortcutInsertTable), sequence);
+    m_settings->sync();
+    emit shortcutInsertTableChanged();
 }
 
 QList<Settings::NoteSessionState> Settings::openNotes() const

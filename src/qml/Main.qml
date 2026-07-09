@@ -14,10 +14,85 @@ import Qt.labs.platform as Platform
 Item {
     id: root
 
+    // The note currently holding OS-level focus, or null when none is —
+    // the single source of truth SelectionToolbar (the app-wide floating
+    // formatting toolbar) binds to below. Each delegate's own
+    // activeChanged is the one signal that can actually tell us this;
+    // there's no equivalent "any window somewhere became active" signal
+    // at the Instantiator/model level.
+    property var activeNoteWindow: null
+
+    // Third design of this focus-tracking logic (see git history for the
+    // two earlier attempts) — both of those tried to force OS focus back
+    // to the note the instant the toolbar took it, and both failed for
+    // the same underlying reason: this window MUST be allowed to actually
+    // hold focus for its own buttons to receive clicks at all (an earlier
+    // Qt.WindowDoesNotAcceptFocus attempt silently swallowed clicks
+    // outright on this compositor), but re-activating the note the moment
+    // the toolbar's `active` turns true fires on mouse-*press*, before
+    // onClicked ever runs on release — yanking focus away mid-click and
+    // cancelling the button's own press/release gesture, breaking every
+    // button rather than just the untracked ones.
+    //
+    // This version doesn't fight the OS for focus at all: the toolbar is
+    // considered "in use" — and stays visible — for as long as EITHER the
+    // tracked note OR the toolbar itself is the active window. Only when
+    // focus moves to something that's neither (another note, another app,
+    // the desktop) does it actually clear. A click anywhere in the
+    // toolbar (a button, the grip, dead space) is then just a normal
+    // click in a normal window — nothing to race, nothing to swallow.
+    function noteOrToolbarActive() {
+        return (root.activeNoteWindow && root.activeNoteWindow.active) || selectionToolbar.active
+    }
+
+    // Debounces clearing activeNoteWindow to null, restarted by every real
+    // "the tracked note just deactivated" event (never runs on a schedule
+    // — see CLAUDE.md on polling timers) and re-checked (not just delayed)
+    // at fire time via noteOrToolbarActive() above, so a still-focused
+    // toolbar never gets cleared out from under itself.
+    Timer {
+        id: activeNoteWindowClearDebounce
+        interval: 150
+        repeat: false
+        onTriggered: {
+            if (!root.noteOrToolbarActive())
+                root.activeNoteWindow = null
+        }
+    }
+
     Instantiator {
         id: noteInstantiator
         model: openNotesModel
-        delegate: NoteWindow {}
+        delegate: NoteWindow {
+            id: thisNoteWindow
+            onActiveChanged: {
+                if (active) {
+                    activeNoteWindowClearDebounce.stop()
+                    root.activeNoteWindow = thisNoteWindow
+                } else if (root.activeNoteWindow === thisNoteWindow) {
+                    activeNoteWindowClearDebounce.restart()
+                }
+            }
+        }
+    }
+
+    // Single, app-wide instance (feature request) — see SelectionToolbar.qml's
+    // own header comment for why exactly one shared window, rather than one
+    // per note, is what makes "follows whichever note is focused" possible.
+    SelectionToolbar {
+        id: selectionToolbar
+        noteWindow: root.activeNoteWindow
+
+        // The toolbar itself just lost focus — if the tracked note didn't
+        // pick it back up either (the user clicked away to something
+        // else entirely, not back into their note), re-arm the debounce
+        // so the bar still hides shortly after, rather than staying stuck
+        // forever (the Timer above only ever checks at the moment it
+        // fires; it never reschedules itself on its own).
+        onActiveChanged: {
+            if (!active && root.activeNoteWindow && !root.activeNoteWindow.active)
+                activeNoteWindowClearDebounce.restart()
+        }
     }
 
     SettingsDialog {

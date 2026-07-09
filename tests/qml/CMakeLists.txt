@@ -21,8 +21,17 @@ set_source_files_properties(${CMAKE_SOURCE_DIR}/src/qml/GlassOverlay.qml
 set_source_files_properties(${CMAKE_SOURCE_DIR}/src/qml/PerNoteSettingsPopup.qml
     PROPERTIES QT_RESOURCE_ALIAS "PerNoteSettingsPopup.qml"
 )
+set_source_files_properties(${CMAKE_SOURCE_DIR}/src/qml/InteractableHighlight.qml
+    PROPERTIES QT_RESOURCE_ALIAS "InteractableHighlight.qml"
+)
 set_source_files_properties(${CMAKE_SOURCE_DIR}/src/qml/ResizeHandle.qml
     PROPERTIES QT_RESOURCE_ALIAS "ResizeHandle.qml"
+)
+set_source_files_properties(${CMAKE_SOURCE_DIR}/src/qml/SelectionToolbar.qml
+    PROPERTIES QT_RESOURCE_ALIAS "SelectionToolbar.qml"
+)
+set_source_files_properties(${CMAKE_SOURCE_DIR}/src/qml/ShortcutField.qml
+    PROPERTIES QT_RESOURCE_ALIAS "ShortcutField.qml"
 )
 
 qt_add_qml_module(suopNotes_qml_tests
@@ -33,7 +42,10 @@ qt_add_qml_module(suopNotes_qml_tests
         ${CMAKE_SOURCE_DIR}/src/qml/NoteHud.qml
         ${CMAKE_SOURCE_DIR}/src/qml/GlassOverlay.qml
         ${CMAKE_SOURCE_DIR}/src/qml/PerNoteSettingsPopup.qml
+        ${CMAKE_SOURCE_DIR}/src/qml/InteractableHighlight.qml
         ${CMAKE_SOURCE_DIR}/src/qml/ResizeHandle.qml
+        ${CMAKE_SOURCE_DIR}/src/qml/SelectionToolbar.qml
+        ${CMAKE_SOURCE_DIR}/src/qml/ShortcutField.qml
 )
 
 target_link_libraries(suopNotes_qml_tests PRIVATE

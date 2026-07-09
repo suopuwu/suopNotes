@@ -140,6 +140,13 @@ Settings::NoteSessionState PositionEventService::mergeLivePosition(const QList<S
 
     const QString noteId = windowTitle.mid(prefix.size());
 
+    // Defense in depth: the KWin watcher script (loadWatcherScript) already
+    // excludes SelectionToolbar's own window by title, but this rejects the
+    // one pseudo-id that would otherwise alias it either way, in case that
+    // exclusion is ever missed by a future caller of this method.
+    if (noteId == QStringLiteral("selectionToolbar"))
+        return Settings::NoteSessionState{};
+
     // Preserve width/height (tracked separately, live, via QML's own
     // onWidthChanged/onHeightChanged) rather than clobbering them with
     // this struct's defaults.
@@ -172,9 +179,28 @@ void PositionEventService::loadWatcherScript()
     // ("suopNotes-<noteId>", see NoteWindow.qml); wmclass is shared by
     // every note so title is what actually identifies one from another,
     // same convention KWinRuleWriter's rules use.
+    //
+    // Bug found live: the "suopNotes-" prefix match also caught
+    // SelectionToolbar.qml's own singleton window (title
+    // "suopNotes-selectionToolbar" — a fixed pseudo-note-id it uses purely
+    // as a KWinRuleApplier rule-group key, never a real note). Finishing a
+    // right-click-drag on the toolbar fired this exact same callback,
+    // which strips the "suopNotes-" prefix to derive a "noteId" — handing
+    // mergeLivePosition() the literal string "selectionToolbar" as if it
+    // were a genuine note, which then got upserted into the persisted
+    // OpenNotes list. On the next launch that phantom entry spawned a real
+    // NoteWindow whose own title (again "suopNotes-" + noteId) exactly
+    // matched the toolbar's — after which KWinRuleApplier::moveWindow's
+    // title-matching script (see its own file) moved BOTH windows
+    // together any time either "moved", since it can't tell them apart.
+    // Excluding that one fixed title here stops the bogus session entry
+    // from ever being written again; any stale entry from before this fix
+    // is a normal "open note with no backing file", which
+    // Main.qml's reconcileNotesWithDisk() already closes automatically.
     const QString script = QStringLiteral(
         "function hook(w) {\n"
         "    if (String(w.caption).indexOf(\"suopNotes-\") !== 0) return;\n"
+        "    if (String(w.caption) === \"suopNotes-selectionToolbar\") return;\n"
         "    w.interactiveMoveResizeFinished.connect(function() {\n"
         "        callDBus(\"%1\", \"/PositionService\", \"%1\", \"notePositionChanged\",\n"
         "                 w.caption, w.frameGeometry.x, w.frameGeometry.y, w.output.name);\n"

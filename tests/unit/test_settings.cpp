@@ -113,6 +113,31 @@ SCENARIO("A fresh Settings instance reports documented defaults", "[settings]")
             REQUIRE(settings.highlightOpacity() == 0.35);
         }
 
+        THEN("interactableHighlightColor defaults to #4da6ff")
+        {
+            REQUIRE(settings.interactableHighlightColor() == QColor("#4da6ff"));
+        }
+
+        THEN("interactableHighlightOpacity defaults to 0.18")
+        {
+            REQUIRE(settings.interactableHighlightOpacity() == 0.18);
+        }
+
+        THEN("interactableHighlightGlassEnabled defaults to false")
+        {
+            REQUIRE_FALSE(settings.interactableHighlightGlassEnabled());
+        }
+
+        THEN("chromeGlassFollowsNote defaults to true")
+        {
+            REQUIRE(settings.chromeGlassFollowsNote());
+        }
+
+        THEN("chromeGlassEnabled defaults to false")
+        {
+            REQUIRE_FALSE(settings.chromeGlassEnabled());
+        }
+
         THEN("hudAlwaysExpanded defaults to true")
         {
             REQUIRE(settings.hudAlwaysExpanded());
@@ -121,6 +146,51 @@ SCENARIO("A fresh Settings instance reports documented defaults", "[settings]")
         THEN("openNotes defaults to an empty list")
         {
             REQUIRE(settings.openNotes().isEmpty());
+        }
+
+        THEN("shortcutBold defaults to Ctrl+B")
+        {
+            REQUIRE(settings.shortcutBold() == "Ctrl+B");
+        }
+
+        THEN("shortcutItalic defaults to Ctrl+I")
+        {
+            REQUIRE(settings.shortcutItalic() == "Ctrl+I");
+        }
+
+        THEN("shortcutStrikethrough defaults to Ctrl+Shift+X")
+        {
+            REQUIRE(settings.shortcutStrikethrough() == "Ctrl+Shift+X");
+        }
+
+        THEN("shortcutHeading1 defaults to Ctrl+Alt+1")
+        {
+            REQUIRE(settings.shortcutHeading1() == "Ctrl+Alt+1");
+        }
+
+        THEN("shortcutHeading2 defaults to Ctrl+Alt+2")
+        {
+            REQUIRE(settings.shortcutHeading2() == "Ctrl+Alt+2");
+        }
+
+        THEN("shortcutParagraph defaults to Ctrl+Alt+0")
+        {
+            REQUIRE(settings.shortcutParagraph() == "Ctrl+Alt+0");
+        }
+
+        THEN("shortcutBulletList defaults to Ctrl+Shift+8")
+        {
+            REQUIRE(settings.shortcutBulletList() == "Ctrl+Shift+8");
+        }
+
+        THEN("shortcutNumberedList defaults to Ctrl+Shift+7")
+        {
+            REQUIRE(settings.shortcutNumberedList() == "Ctrl+Shift+7");
+        }
+
+        THEN("shortcutInsertTable defaults to Ctrl+Alt+T")
+        {
+            REQUIRE(settings.shortcutInsertTable() == "Ctrl+Alt+T");
         }
 
         THEN("a note with no override group returns an all-default (use-global) override")
@@ -177,6 +247,20 @@ SCENARIO("Appearance properties persist to disk across instances", "[settings]")
             settings.setHudAlwaysExpanded(true);
             settings.setHighlightColor(QColor("#8899aa"));
             settings.setHighlightOpacity(0.75);
+            settings.setInteractableHighlightColor(QColor("#ff8800"));
+            settings.setInteractableHighlightOpacity(0.4);
+            settings.setInteractableHighlightGlassEnabled(true);
+            settings.setChromeGlassFollowsNote(false);
+            settings.setChromeGlassEnabled(true);
+            settings.setShortcutBold("Ctrl+Shift+B");
+            settings.setShortcutItalic("Ctrl+Shift+I");
+            settings.setShortcutStrikethrough("Ctrl+Alt+X");
+            settings.setShortcutHeading1("Ctrl+1");
+            settings.setShortcutHeading2("Ctrl+2");
+            settings.setShortcutParagraph("Ctrl+0");
+            settings.setShortcutBulletList("Ctrl+8");
+            settings.setShortcutNumberedList("Ctrl+7");
+            settings.setShortcutInsertTable("Ctrl+T");
 
             THEN("a second Settings instance pointed at the same file reads back the new values")
             {
@@ -200,6 +284,20 @@ SCENARIO("Appearance properties persist to disk across instances", "[settings]")
                 REQUIRE(reloaded.hudAlwaysExpanded() == true);
                 REQUIRE(reloaded.highlightColor() == QColor("#8899aa"));
                 REQUIRE(reloaded.highlightOpacity() == 0.75);
+                REQUIRE(reloaded.interactableHighlightColor() == QColor("#ff8800"));
+                REQUIRE(reloaded.interactableHighlightOpacity() == 0.4);
+                REQUIRE(reloaded.interactableHighlightGlassEnabled() == true);
+                REQUIRE(reloaded.chromeGlassFollowsNote() == false);
+                REQUIRE(reloaded.chromeGlassEnabled() == true);
+                REQUIRE(reloaded.shortcutBold() == "Ctrl+Shift+B");
+                REQUIRE(reloaded.shortcutItalic() == "Ctrl+Shift+I");
+                REQUIRE(reloaded.shortcutStrikethrough() == "Ctrl+Alt+X");
+                REQUIRE(reloaded.shortcutHeading1() == "Ctrl+1");
+                REQUIRE(reloaded.shortcutHeading2() == "Ctrl+2");
+                REQUIRE(reloaded.shortcutParagraph() == "Ctrl+0");
+                REQUIRE(reloaded.shortcutBulletList() == "Ctrl+8");
+                REQUIRE(reloaded.shortcutNumberedList() == "Ctrl+7");
+                REQUIRE(reloaded.shortcutInsertTable() == "Ctrl+T");
             }
         }
     }
@@ -346,11 +444,60 @@ SCENARIO("Changing a property emits its NOTIFY signal", "[settings]")
             THEN("highlightOpacityChanged fires once") { REQUIRE(spy.count() == 1); }
         }
 
+        WHEN("interactableHighlightColor is changed")
+        {
+            QSignalSpy spy(&settings, &Settings::interactableHighlightColorChanged);
+            settings.setInteractableHighlightColor(QColor("#00ffcc"));
+            THEN("interactableHighlightColorChanged fires once") { REQUIRE(spy.count() == 1); }
+        }
+
+        WHEN("interactableHighlightOpacity is changed")
+        {
+            QSignalSpy spy(&settings, &Settings::interactableHighlightOpacityChanged);
+            settings.setInteractableHighlightOpacity(0.5);
+            THEN("interactableHighlightOpacityChanged fires once") { REQUIRE(spy.count() == 1); }
+        }
+
+        WHEN("interactableHighlightGlassEnabled is changed")
+        {
+            QSignalSpy spy(&settings, &Settings::interactableHighlightGlassEnabledChanged);
+            settings.setInteractableHighlightGlassEnabled(true);
+            THEN("interactableHighlightGlassEnabledChanged fires once") { REQUIRE(spy.count() == 1); }
+        }
+
+        WHEN("chromeGlassFollowsNote is changed")
+        {
+            QSignalSpy spy(&settings, &Settings::chromeGlassFollowsNoteChanged);
+            settings.setChromeGlassFollowsNote(false);
+            THEN("chromeGlassFollowsNoteChanged fires once") { REQUIRE(spy.count() == 1); }
+        }
+
+        WHEN("chromeGlassEnabled is changed")
+        {
+            QSignalSpy spy(&settings, &Settings::chromeGlassEnabledChanged);
+            settings.setChromeGlassEnabled(true);
+            THEN("chromeGlassEnabledChanged fires once") { REQUIRE(spy.count() == 1); }
+        }
+
         WHEN("openNotes is replaced via setOpenNotes")
         {
             QSignalSpy spy(&settings, &Settings::openNotesChanged);
             settings.setOpenNotes({});
             THEN("openNotesChanged fires once") { REQUIRE(spy.count() == 1); }
+        }
+
+        WHEN("shortcutBold is changed")
+        {
+            QSignalSpy spy(&settings, &Settings::shortcutBoldChanged);
+            settings.setShortcutBold("Ctrl+Shift+B");
+            THEN("shortcutBoldChanged fires once") { REQUIRE(spy.count() == 1); }
+        }
+
+        WHEN("shortcutInsertTable is changed")
+        {
+            QSignalSpy spy(&settings, &Settings::shortcutInsertTableChanged);
+            settings.setShortcutInsertTable("Ctrl+T");
+            THEN("shortcutInsertTableChanged fires once") { REQUIRE(spy.count() == 1); }
         }
     }
 }

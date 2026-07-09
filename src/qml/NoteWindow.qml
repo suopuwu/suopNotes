@@ -297,6 +297,59 @@ Window {
                 text: "•" // bullet
                 onClicked: docHandler.toggleBulletList(editor.selectionStart, editor.selectionEnd)
             }
+            ToolButton {
+                text: "1."
+                onClicked: docHandler.toggleNumberedList(editor.selectionStart, editor.selectionEnd)
+            }
+            ToolButton {
+                text: "▦" // insert a starter table
+                onClicked: docHandler.insertTable(editor.selectionEnd)
+            }
+        }
+
+        // Configurable formatting shortcuts (feature request): sequences
+        // come from Settings (rebindable via the tray Settings dialog's
+        // Keyboard Shortcuts section — see SettingsDialog.qml/
+        // ShortcutField.qml) rather than being hardcoded here, so a
+        // conflicting binding or non-QWERTY layout doesn't require editing
+        // the app itself. Qt's default Shortcut context (Qt.WindowShortcut)
+        // already scopes each of these to this specific NoteWindow, so
+        // multiple open notes never fight over the same key press.
+        Shortcut {
+            sequence: settings.shortcutBold
+            onActivated: docHandler.toggleBold(editor.selectionStart, editor.selectionEnd)
+        }
+        Shortcut {
+            sequence: settings.shortcutItalic
+            onActivated: docHandler.toggleItalic(editor.selectionStart, editor.selectionEnd)
+        }
+        Shortcut {
+            sequence: settings.shortcutStrikethrough
+            onActivated: docHandler.toggleStrikethrough(editor.selectionStart, editor.selectionEnd)
+        }
+        Shortcut {
+            sequence: settings.shortcutHeading1
+            onActivated: docHandler.setHeadingLevel(editor.selectionStart, editor.selectionEnd, 1)
+        }
+        Shortcut {
+            sequence: settings.shortcutHeading2
+            onActivated: docHandler.setHeadingLevel(editor.selectionStart, editor.selectionEnd, 2)
+        }
+        Shortcut {
+            sequence: settings.shortcutParagraph
+            onActivated: docHandler.setHeadingLevel(editor.selectionStart, editor.selectionEnd, 0)
+        }
+        Shortcut {
+            sequence: settings.shortcutBulletList
+            onActivated: docHandler.toggleBulletList(editor.selectionStart, editor.selectionEnd)
+        }
+        Shortcut {
+            sequence: settings.shortcutNumberedList
+            onActivated: docHandler.toggleNumberedList(editor.selectionStart, editor.selectionEnd)
+        }
+        Shortcut {
+            sequence: settings.shortcutInsertTable
+            onActivated: docHandler.insertTable(editor.selectionEnd)
         }
 
         Flickable {
@@ -357,6 +410,20 @@ Window {
                     wrapMode: TextEdit.Wrap
                     textFormat: TextEdit.MarkdownText
                     selectByMouse: true
+                    // Regression found live (popup toolbar feature): with
+                    // this left at its default (false), the selection was
+                    // cleared the instant this TextArea lost active focus
+                    // — which now happens on every legitimate click of the
+                    // toolbar's own buttons, since that window accepts OS
+                    // focus (see SelectionToolbar.qml's flags comment).
+                    // Each button reads editor.selectionStart/selectionEnd
+                    // to know what to format; by the time the click was
+                    // actually handled, the selection had already collapsed
+                    // to nothing, so nothing ever got formatted. true keeps
+                    // the selection intact (and visible) across a focus
+                    // change to another window, exactly this app's own use
+                    // case.
+                    persistentSelection: true
                     color: noteAppearance.fontColor
                     // highlightColor is picked without an alpha slider (its
                     // own ColorDialog has none, matching backgroundColor's);
@@ -393,11 +460,40 @@ Window {
                     // last keystroke) — instant-feeling without a disk write per
                     // keystroke.
                     onTextChanged: {
-                        if (ready)
-                            noteStore.saveNoteContent(noteWindow.noteId, docHandler.toMarkdown())
+                        if (!ready)
+                            return
+                        // Auto-list shorthand (feature request): typing
+                        // "- "/"* "/"1. " at the start of an otherwise-plain
+                        // line converts it into a real list, consuming the
+                        // typed marker. This mutates the document, which
+                        // re-enters onTextChanged recursively — harmless and
+                        // self-terminating, since the shorthand text is
+                        // already gone by the second pass, so the regex
+                        // simply stops matching.
+                        docHandler.tryAutoConvertListShorthand(cursorPosition)
+                        noteStore.saveNoteContent(noteWindow.noteId, docHandler.toMarkdown())
                     }
 
                     onCursorRectangleChanged: editorFlick.ensureCursorVisible(cursorRectangle)
+
+                    // Enter/Return inside a list item continues the list (or,
+                    // on an empty item, exits back to a plain paragraph) —
+                    // see DocumentHandler::tryContinueList. Falls through to
+                    // TextArea's own default Return handling (a plain
+                    // paragraph break) whenever the cursor isn't in a list at
+                    // all.
+                    Keys.onReturnPressed: (event) => {
+                        if (docHandler.tryContinueList(cursorPosition))
+                            event.accepted = true
+                        else
+                            event.accepted = false
+                    }
+                    Keys.onEnterPressed: (event) => {
+                        if (docHandler.tryContinueList(cursorPosition))
+                            event.accepted = true
+                        else
+                            event.accepted = false
+                    }
 
                     // Up on the topmost (visual, word-wrap-aware) line has
                     // nowhere else to go, same for Down on the bottommost —
@@ -535,6 +631,15 @@ Window {
             width: noteAppearance.scrollbarWidth
             visible: editorFlick.visibleArea.heightRatio < 1.0
 
+            // Whether the scrollbar should render its glass material
+            // (feature request): by default mirrors the note's own glass
+            // setting, same as before; settings.chromeGlassFollowsNote lets
+            // that be pinned to a fixed settings.chromeGlassEnabled value
+            // instead, independent of this particular note.
+            readonly property bool chromeGlassActive: settings.chromeGlassFollowsNote
+                ? noteAppearance.glassEnabled
+                : settings.chromeGlassEnabled
+
             // Normalized 0..1 position within the *scrollable* range (i.e.
             // dividing out heightRatio), not raw visibleArea.yPosition —
             // needed so the handle's own min-height clamp below doesn't
@@ -568,8 +673,8 @@ Window {
                 // lets the same sheen/rim decoration read the same way on
                 // both. Off glass mode keeps the original font-color-tinted
                 // look (adapts to whatever text color the note uses).
-                color: noteAppearance.glassEnabled ? Qt.rgba(0, 0, 0, 0.28) : noteAppearance.fontColor
-                opacity: noteAppearance.glassEnabled
+                color: scrollIndicator.chromeGlassActive ? Qt.rgba(0, 0, 0, 0.28) : noteAppearance.fontColor
+                opacity: scrollIndicator.chromeGlassActive
                     ? 1.0
                     : (scrollDrag.pressed || scrollHoverHandler.hovered ? 0.55 : 0.35)
                 Behavior on opacity { NumberAnimation { duration: 120 } }
@@ -621,18 +726,31 @@ Window {
                 drag.maximumY: scrollIndicator._trackRange
             }
 
-            // Glass-textured when the note itself has glass mode on, using
+            // Glass-textured when scrollIndicator.chromeGlassActive (default:
+            // mirrors the note's own glass mode; settings.chromeGlassFollowsNote
+            // — feature request — can pin it to a fixed on/off instead), using
             // the same appearance properties mainFrame's and NoteHud's own
             // GlassOverlay instances use, so the scrollbar reads as the
             // same material rather than a plain flat bar.
             GlassOverlay {
                 anchors.fill: scrollHandle
                 cornerRadius: scrollHandle.radius
-                visible: noteAppearance.glassEnabled
+                visible: scrollIndicator.chromeGlassActive
                 tintColor: noteAppearance.glassTintColor
                 sheenOpacity: noteAppearance.glassSheenOpacity
                 ringCount: noteAppearance.glassSheenStrength
                 sheenSize: noteAppearance.glassSheenSize
+            }
+
+            // Configurable hover/press highlight box (feature request) —
+            // same InteractableHighlight the popup toolbar's buttons and
+            // NoteHud's glyphs use, so the scrollbar's own hover feedback
+            // is tunable from the same Settings knobs instead of the
+            // ad hoc opacity bump above.
+            InteractableHighlight {
+                anchors.fill: scrollHandle
+                radius: scrollHandle.radius
+                active: scrollDrag.pressed || scrollHoverHandler.hovered
             }
         }
 

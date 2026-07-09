@@ -33,6 +33,13 @@ bool isBlankSpacerBlock(const QTextBlock &block)
         return false;
     if (format.headingLevel() != 0)
         return false;
+    // An empty table cell's block has no text of its own, but it is real
+    // table structure, not vertical spacing between top-level blocks —
+    // without this check it would be miscounted as a spacer and run-split
+    // logic below would slice the run boundary through the middle of the
+    // table.
+    if (QTextCursor(block).currentTable())
+        return false;
     return true;
 }
 
@@ -52,6 +59,7 @@ QString markdownForRun(QTextDocument *document, const Run &run)
 {
     const QTextBlock startBlock = document->findBlockByNumber(run.startBlockNumber);
     const QTextBlock endBlock = document->findBlockByNumber(run.endBlockNumber);
+    const bool startsInTable = QTextCursor(startBlock).currentTable() != nullptr;
 
     QTextCursor cursor(document);
     // If a selection's very first block is fenced-code-formatted and there's
@@ -65,6 +73,14 @@ QString markdownForRun(QTextDocument *document, const Run &run)
     cursor.setPosition(endBlock.position() + endBlock.length() - 1, QTextCursor::KeepAnchor);
 
     QString markdown = cursor.selection().toMarkdown();
+    // The opposite quirk from the fence case above: when a run's very first
+    // block is table structure, Qt's writer unconditionally prefixes one
+    // blank line of its own before the table's "|...|" syntax — even though
+    // this file already inserts its own controlled blank-line separator
+    // between runs. Left alone, every table would gain one extra phantom
+    // blank line above it on every single save (confirmed empirically).
+    if (startsInTable && markdown.startsWith(QLatin1Char('\n')))
+        markdown = markdown.mid(1);
     while (markdown.endsWith(QLatin1Char('\n')))
         markdown.chop(1);
     return markdown;

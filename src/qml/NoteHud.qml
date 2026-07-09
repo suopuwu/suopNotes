@@ -138,33 +138,67 @@ Rectangle {
         anchors.verticalCenter: parent.verticalCenter
         spacing: 12
 
-        // "⚲" not the pushpin emoji "📌" — the reference file (TileGridHud)
-        // notes the pushpin emoji renders in fixed color regardless of the
-        // font, ignoring any `color:` binding entirely and silently
-        // breaking an on/off color indicator. "⚲" is plain-presentation
-        // and actually responds to it.
-        Text {
-            id: pinGlyph
-            objectName: "pinGlyph"
-            text: "⚲"
-            font.pixelSize: 14
-            color: hud.pinned ? hud.accentColor : hud.iconColor
-            opacity: pinHov.hovered ? 1.0 : 0.7
+        // Each glyph sits inside a fixed-size wrapper (feature request: a
+        // configurable highlight box behind each interactable, matching
+        // the popup toolbar's and scrollbar's own InteractableHighlight —
+        // see that file) rather than highlighting the bare glyph text
+        // itself, so the hoverable/tappable area and the visible highlight
+        // agree on the same bounds. HoverHandler/TapHandler move to the
+        // wrapper (was on the Text itself) so the whole box — not just the
+        // glyph's own tiny text bounds — is interactive; the Text
+        // keeps its own id/objectName/color/opacity bindings unchanged, so
+        // existing tests reading e.g. `pinGlyphItem.color` are unaffected.
+        Item {
+            width: 22
+            height: 22
             anchors.verticalCenter: parent.verticalCenter
-            Behavior on opacity { NumberAnimation { duration: 120 } }
+
+            InteractableHighlight {
+                anchors.fill: parent
+                active: pinHov.hovered
+            }
+
+            // "⚲" not the pushpin emoji "📌" — the reference file
+            // (TileGridHud) notes the pushpin emoji renders in fixed color
+            // regardless of the font, ignoring any `color:` binding
+            // entirely and silently breaking an on/off color indicator.
+            // "⚲" is plain-presentation and actually responds to it.
+            Text {
+                id: pinGlyph
+                objectName: "pinGlyph"
+                text: "⚲"
+                font.pixelSize: 14
+                color: hud.pinned ? hud.accentColor : hud.iconColor
+                opacity: pinHov.hovered ? 1.0 : 0.7
+                anchors.centerIn: parent
+                Behavior on opacity { NumberAnimation { duration: 120 } }
+            }
+
             HoverHandler { id: pinHov; cursorShape: Qt.PointingHandCursor }
             TapHandler { onTapped: hud.pinToggleRequested() }
         }
 
-        Text {
-            id: gearGlyph
-            objectName: "gearGlyph"
-            text: "⚙"
-            font.pixelSize: 16
-            color: hud.iconColor
-            opacity: gearHov.hovered ? 1.0 : 0.7
+        Item {
+            width: 22
+            height: 22
             anchors.verticalCenter: parent.verticalCenter
-            Behavior on opacity { NumberAnimation { duration: 120 } }
+
+            InteractableHighlight {
+                anchors.fill: parent
+                active: gearHov.hovered
+            }
+
+            Text {
+                id: gearGlyph
+                objectName: "gearGlyph"
+                text: "⚙"
+                font.pixelSize: 16
+                color: hud.iconColor
+                opacity: gearHov.hovered ? 1.0 : 0.7
+                anchors.centerIn: parent
+                Behavior on opacity { NumberAnimation { duration: 120 } }
+            }
+
             HoverHandler { id: gearHov; cursorShape: Qt.PointingHandCursor }
             TapHandler { onTapped: hud.settingsRequested() }
         }
@@ -173,15 +207,27 @@ Rectangle {
         // putting close last. Deleting a note's file can't be undone, so
         // this requires two taps (arm, then confirm) rather than firing
         // closeRequested() on the first — see closeArmTimeoutMs above.
-        Text {
-            id: closeGlyph
-            objectName: "closeGlyph"
-            text: "✕"
-            font.pixelSize: 14
-            color: hud._closeArmed ? hud.dangerColor : hud.iconColor
-            opacity: closeHov.hovered || hud._closeArmed ? 1.0 : 0.7
+        Item {
+            width: 22
+            height: 22
             anchors.verticalCenter: parent.verticalCenter
-            Behavior on opacity { NumberAnimation { duration: 120 } }
+
+            InteractableHighlight {
+                anchors.fill: parent
+                active: closeHov.hovered || hud._closeArmed
+            }
+
+            Text {
+                id: closeGlyph
+                objectName: "closeGlyph"
+                text: "✕"
+                font.pixelSize: 14
+                color: hud._closeArmed ? hud.dangerColor : hud.iconColor
+                opacity: closeHov.hovered || hud._closeArmed ? 1.0 : 0.7
+                anchors.centerIn: parent
+                Behavior on opacity { NumberAnimation { duration: 120 } }
+            }
+
             HoverHandler { id: closeHov; cursorShape: Qt.PointingHandCursor }
             TapHandler {
                 onTapped: {

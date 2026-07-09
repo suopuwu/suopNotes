@@ -3,6 +3,8 @@
 #include <QTextCursor>
 #include <QTextDocument>
 #include <QTextList>
+#include <QTextTable>
+#include <QTextTableFormat>
 
 #include "core/MarkdownSerialization.h"
 #include "core/TextFormatting.h"
@@ -320,6 +322,68 @@ SCENARIO("A fenced code block with an internal blank line survives a reload", "[
             {
                 CHECK(reserialized == markdown);
             }
+        }
+    }
+}
+
+SCENARIO("A table sitting between two paragraphs survives a save/reload cycle", "[markdown_serialization]")
+{
+    GIVEN("a document with a paragraph, a 2x2 table, and another paragraph")
+    {
+        QTextDocument doc;
+        QTextCursor cursor(&doc);
+        cursor.insertText("intro");
+        cursor.insertBlock();
+        TextFormatting::insertTable(cursor);
+        // insertTable() leaves the cursor inside the table's first cell — move
+        // past the table before continuing, mirroring how a real user would
+        // click below it to keep typing.
+        cursor.movePosition(QTextCursor::End);
+        cursor.insertBlock();
+        cursor.insertText("outro");
+
+        THEN("the table's header row and cell text both survive serialization")
+        {
+            const QString md = toMarkdownPreservingBlankLines(&doc);
+            CHECK(md.contains("Header 1"));
+            CHECK(md.contains("Header 2"));
+            CHECK(md.contains("intro"));
+            CHECK(md.contains("outro"));
+        }
+
+        THEN("reloading that markdown reproduces the same table and surrounding text")
+        {
+            const QString saved = toMarkdownPreservingBlankLines(&doc);
+            QTextDocument reloaded;
+            setMarkdownPreservingBlankLines(&reloaded, saved);
+            CHECK(toMarkdownPreservingBlankLines(&reloaded) == saved);
+        }
+    }
+}
+
+SCENARIO("A table with an empty cell is not mistaken for a blank spacer block", "[markdown_serialization]")
+{
+    GIVEN("a table whose second header cell is left empty")
+    {
+        QTextDocument doc;
+        QTextCursor cursor(&doc);
+        cursor.insertText("intro");
+        cursor.insertBlock();
+        QTextTableFormat format;
+        QTextTable *table = cursor.insertTable(1, 2, format);
+        table->cellAt(0, 0).firstCursorPosition().insertText("Filled");
+        // Cell (0, 1) is deliberately left with an empty block — this is the
+        // case isBlankSpacerBlock() must not misidentify as vertical spacing.
+        cursor.movePosition(QTextCursor::End);
+        cursor.insertBlock();
+        cursor.insertText("outro");
+
+        THEN("the run splitter keeps intro/table/outro as one contiguous run, not sliced apart")
+        {
+            const QString md = toMarkdownPreservingBlankLines(&doc);
+            CHECK(md.contains("Filled"));
+            CHECK(md.contains("intro"));
+            CHECK(md.contains("outro"));
         }
     }
 }

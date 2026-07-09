@@ -68,6 +68,16 @@ Item {
         name: "NoteWindow"
         when: windowShown
 
+        // This Qt version's QML TestCase has no built-in "type this whole
+        // string" helper (only keyClick(), one key/char at a time) — a
+        // plain per-character loop over keyClick() is the simplest way to
+        // simulate real typing for the auto-list-shorthand/list-continuation
+        // tests below.
+        function typeText(text) {
+            for (let i = 0; i < text.length; ++i)
+                keyClick(text[i])
+        }
+
         function test_instantiator_creates_one_window_per_model_entry() {
             compare(instantiator.count, 3)
         }
@@ -702,6 +712,145 @@ Item {
             verify(!openNotesModel.isOpen(id))
             verify(!deleteTestWindow.noteAppearance.hasWindowRadiusOverride,
                    "the per-note override must be cleared, not left orphaned for a future note that reuses this id")
+        }
+
+        // The app-wide floating formatting toolbar (SelectionToolbar.qml) is
+        // no longer part of NoteWindow itself — it's a single shared
+        // instance owned by Main.qml, bound to whichever note has focus.
+        // See tst_SelectionToolbar.qml for its own behavioral tests.
+
+        // Enter/Return inside a list item continues the list (DocumentHandler::
+        // tryContinueList), the same "keep hitting Enter to add items"
+        // behavior as Notion/Word/Google Docs, rather than breaking out to a
+        // plain paragraph on every press.
+        function test_pressing_enter_in_a_bullet_list_item_continues_the_list() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+
+            win.docHandler.setMarkdown("- item one\n")
+            wait(50)
+
+            editor.cursorPosition = editor.length
+            win.requestActivate()
+            tryCompare(win, "active", true)
+            editor.forceActiveFocus()
+            tryCompare(editor, "activeFocus", true)
+
+            keyClick(Qt.Key_Return)
+            typeText("item two")
+
+            const md = win.docHandler.toMarkdown()
+            verify(md.indexOf("item one") !== -1)
+            verify(md.indexOf("item two") !== -1)
+            verify(/^- item one\n- item two/m.test(md) || md.indexOf("- item one\n- item two") !== -1,
+                   "expected a second bullet, not a plain paragraph:\n" + md)
+        }
+
+        // The other half: pressing Enter on an EMPTY list item (i.e. hitting
+        // Enter twice in a row) is the standard escape hatch back to a plain
+        // paragraph, rather than adding an empty bullet forever.
+        function test_pressing_enter_on_an_empty_list_item_exits_the_list() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+
+            win.docHandler.setMarkdown("- item one\n")
+            wait(50)
+
+            editor.cursorPosition = editor.length
+            win.requestActivate()
+            tryCompare(win, "active", true)
+            editor.forceActiveFocus()
+            tryCompare(editor, "activeFocus", true)
+
+            keyClick(Qt.Key_Return) // new, empty list item
+            keyClick(Qt.Key_Return) // empty item -> exit the list
+            typeText("plain paragraph")
+
+            const md = win.docHandler.toMarkdown()
+            verify(md.indexOf("- item one") !== -1)
+            verify(md.indexOf("plain paragraph") !== -1)
+            verify(md.indexOf("- plain paragraph") === -1,
+                   "the second Enter on an empty item should exit the list, not add another bullet:\n" + md)
+        }
+
+        // Auto-list shorthand (feature request): typing "- " at the very
+        // start of an otherwise-plain line converts it into a real bullet
+        // list, consuming the typed marker — DocumentHandler::
+        // tryAutoConvertListShorthand, wired off TextArea.onTextChanged.
+        function test_typing_dash_space_at_line_start_converts_to_a_bullet_list() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+
+            win.docHandler.setMarkdown("")
+            wait(50)
+            win.requestActivate()
+            tryCompare(win, "active", true)
+            editor.forceActiveFocus()
+            tryCompare(editor, "activeFocus", true)
+
+            typeText("- milk")
+
+            compare(win.docHandler.toMarkdown().trim(), "- milk")
+        }
+
+        // Same shorthand, numbered variant: "1. " at the start of a line.
+        function test_typing_one_dot_space_at_line_start_converts_to_a_numbered_list() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+
+            win.docHandler.setMarkdown("")
+            wait(50)
+            win.requestActivate()
+            tryCompare(win, "active", true)
+            editor.forceActiveFocus()
+            tryCompare(editor, "activeFocus", true)
+
+            typeText("1. milk")
+
+            const md = win.docHandler.toMarkdown().trim()
+            verify(/^1\.\s+milk$/.test(md), "expected a decimal-prefixed list item, got: " + md)
+        }
+
+        // Configurable keyboard shortcuts (feature request): Ctrl+B (the
+        // documented default for settings.shortcutBold) must toggle bold the
+        // same as clicking the toolbar's "B" button — proves the Shortcut
+        // item in NoteWindow.qml is actually wired to Settings and to
+        // docHandler, not just present.
+        function test_ctrl_b_shortcut_toggles_bold_on_the_current_selection() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+
+            win.docHandler.setMarkdown("bold me\n")
+            wait(50)
+
+            win.requestActivate()
+            tryCompare(win, "active", true)
+            editor.forceActiveFocus()
+            tryCompare(editor, "activeFocus", true)
+
+            editor.select(0, "bold me".length)
+            keyClick(Qt.Key_B, Qt.ControlModifier)
+
+            verify(win.docHandler.toMarkdown().indexOf("**bold me**") !== -1,
+                   "Ctrl+B should toggle bold the same as the toolbar button")
+        }
+
+        // Starter table insertion (feature request): docHandler.insertTable()
+        // is what both the toolbar's "▦" button and the Ctrl+Alt+T shortcut
+        // call — this exercises it through NoteWindow's real, live
+        // QQuickTextDocument (not just the standalone unit tests against a
+        // bare QTextDocument).
+        function test_insert_table_creates_a_table_with_a_header_row() {
+            const win = instantiator.objectAt(0)
+
+            win.docHandler.setMarkdown("")
+            wait(50)
+
+            win.docHandler.insertTable(0)
+
+            const md = win.docHandler.toMarkdown()
+            verify(md.indexOf("Header 1") !== -1)
+            verify(md.indexOf("Header 2") !== -1)
         }
     }
 }

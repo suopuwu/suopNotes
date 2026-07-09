@@ -159,5 +159,86 @@ SCENARIO("Toggling a bullet list on the current block", "[text_formatting]")
                 CHECK(md == "Buy milk");
             }
         }
+
+        WHEN("numbered list is toggled on while a bullet list is already active")
+        {
+            QTextCursor cursor(&doc);
+            TextFormatting::toggleBulletList(cursor);
+            TextFormatting::toggleNumberedList(cursor);
+
+            THEN("the same list converts in place to numbered, not a dash bullet")
+            {
+                const QString md = doc.toMarkdown().trimmed();
+                CHECK(md == "1.  Buy milk");
+            }
+        }
+    }
+}
+
+SCENARIO("Toggling a numbered list on the current block", "[text_formatting]")
+{
+    GIVEN("a document with a single paragraph")
+    {
+        QTextDocument doc;
+        doc.setPlainText("Buy milk");
+
+        WHEN("numbered list is toggled on")
+        {
+            QTextCursor cursor(&doc);
+            TextFormatting::toggleNumberedList(cursor);
+
+            THEN("the markdown serialization is a decimal-prefixed list item")
+            {
+                CHECK(doc.toMarkdown().contains("1.  Buy milk"));
+            }
+        }
+
+        WHEN("numbered list is toggled on, then off again")
+        {
+            QTextCursor cursor(&doc);
+            TextFormatting::toggleNumberedList(cursor);
+            TextFormatting::toggleNumberedList(cursor);
+
+            THEN("it is a plain paragraph again")
+            {
+                const QString md = doc.toMarkdown().trimmed();
+                CHECK(md == "Buy milk");
+            }
+        }
+
+        WHEN("bullet list is toggled on while a numbered list is already active")
+        {
+            QTextCursor cursor(&doc);
+            TextFormatting::toggleNumberedList(cursor);
+            TextFormatting::toggleBulletList(cursor);
+
+            THEN("the same list converts in place to a dash bullet, not numbered")
+            {
+                const QString md = doc.toMarkdown().trimmed();
+                CHECK(md == "- Buy milk");
+            }
+        }
+    }
+}
+
+SCENARIO("Inserting a starter table at the cursor", "[text_formatting]")
+{
+    GIVEN("an empty document")
+    {
+        QTextDocument doc;
+
+        WHEN("a table is inserted")
+        {
+            QTextCursor cursor(&doc);
+            TextFormatting::insertTable(cursor);
+
+            THEN("the markdown serialization is a 2x2 GFM table with a header row")
+            {
+                const QString md = doc.toMarkdown();
+                CHECK(md.contains("Header 1"));
+                CHECK(md.contains("Header 2"));
+                CHECK(md.contains("---"));
+            }
+        }
     }
 }

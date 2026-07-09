@@ -64,7 +64,10 @@ qt_add_qml_module(suopNotes
         qml/NoteHud.qml
         qml/PerNoteSettingsPopup.qml
         qml/GlassOverlay.qml
+        qml/InteractableHighlight.qml
         qml/ResizeHandle.qml
+        qml/SelectionToolbar.qml
+        qml/ShortcutField.qml
 )
 
 target_link_libraries(suopNotes PRIVATE

@@ -60,6 +60,29 @@ SCENARIO("mergeLivePosition ignores window titles that aren't suopNotes note win
     }
 }
 
+SCENARIO("mergeLivePosition ignores SelectionToolbar's own pseudo-note title",
+         "[position_event_service]")
+{
+    GIVEN("SelectionToolbar.qml's singleton window, titled \"suopNotes-selectionToolbar\" "
+          "(a fixed KWinRuleApplier rule-group key, never a real note)")
+    {
+        WHEN("a KWin drag-finished event fires for it, same as it would for a real note")
+        {
+            const auto result =
+                PositionEventService::mergeLivePosition({}, "suopNotes-selectionToolbar", 100, 200, "DP-1");
+
+            THEN("the returned state has an empty noteId, signaling \"ignore this\" — "
+                 "regression test: this used to be upserted as a real note with id "
+                 "\"selectionToolbar\", which on the next launch spawned a phantom NoteWindow "
+                 "sharing the toolbar's own window title, so KWin's title-matching move script "
+                 "dragged both windows together")
+            {
+                CHECK(result.noteId.isEmpty());
+            }
+        }
+    }
+}
+
 SCENARIO("mergeLivePosition handles a note not yet present in the session list",
          "[position_event_service]")
 {

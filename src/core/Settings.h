@@ -35,7 +35,27 @@ class Settings : public QObject
     Q_PROPERTY(QString fontFamily READ fontFamily WRITE setFontFamily NOTIFY fontFamilyChanged)
     Q_PROPERTY(QColor highlightColor READ highlightColor WRITE setHighlightColor NOTIFY highlightColorChanged)
     Q_PROPERTY(qreal highlightOpacity READ highlightOpacity WRITE setHighlightOpacity NOTIFY highlightOpacityChanged)
+    Q_PROPERTY(QColor interactableHighlightColor READ interactableHighlightColor WRITE setInteractableHighlightColor NOTIFY interactableHighlightColorChanged)
+    Q_PROPERTY(qreal interactableHighlightOpacity READ interactableHighlightOpacity WRITE setInteractableHighlightOpacity NOTIFY interactableHighlightOpacityChanged)
+    Q_PROPERTY(bool interactableHighlightGlassEnabled READ interactableHighlightGlassEnabled WRITE setInteractableHighlightGlassEnabled NOTIFY interactableHighlightGlassEnabledChanged)
+    Q_PROPERTY(bool chromeGlassFollowsNote READ chromeGlassFollowsNote WRITE setChromeGlassFollowsNote NOTIFY chromeGlassFollowsNoteChanged)
+    Q_PROPERTY(bool chromeGlassEnabled READ chromeGlassEnabled WRITE setChromeGlassEnabled NOTIFY chromeGlassEnabledChanged)
     Q_PROPERTY(bool hudAlwaysExpanded READ hudAlwaysExpanded WRITE setHudAlwaysExpanded NOTIFY hudAlwaysExpandedChanged)
+
+    // Editor formatting shortcuts (feature request): each is a QKeySequence
+    // string (e.g. "Ctrl+B"), rebindable via the tray Settings dialog's
+    // Keyboard Shortcuts section rather than hardcoded in NoteWindow.qml, so
+    // a user with a conflicting binding (or a non-QWERTY layout) can change
+    // it without editing the app.
+    Q_PROPERTY(QString shortcutBold READ shortcutBold WRITE setShortcutBold NOTIFY shortcutBoldChanged)
+    Q_PROPERTY(QString shortcutItalic READ shortcutItalic WRITE setShortcutItalic NOTIFY shortcutItalicChanged)
+    Q_PROPERTY(QString shortcutStrikethrough READ shortcutStrikethrough WRITE setShortcutStrikethrough NOTIFY shortcutStrikethroughChanged)
+    Q_PROPERTY(QString shortcutHeading1 READ shortcutHeading1 WRITE setShortcutHeading1 NOTIFY shortcutHeading1Changed)
+    Q_PROPERTY(QString shortcutHeading2 READ shortcutHeading2 WRITE setShortcutHeading2 NOTIFY shortcutHeading2Changed)
+    Q_PROPERTY(QString shortcutParagraph READ shortcutParagraph WRITE setShortcutParagraph NOTIFY shortcutParagraphChanged)
+    Q_PROPERTY(QString shortcutBulletList READ shortcutBulletList WRITE setShortcutBulletList NOTIFY shortcutBulletListChanged)
+    Q_PROPERTY(QString shortcutNumberedList READ shortcutNumberedList WRITE setShortcutNumberedList NOTIFY shortcutNumberedListChanged)
+    Q_PROPERTY(QString shortcutInsertTable READ shortcutInsertTable WRITE setShortcutInsertTable NOTIFY shortcutInsertTableChanged)
 
 public:
     // Uses QStandardPaths::AppConfigLocation (e.g. ~/.config/suopNotes on Linux).
@@ -185,6 +205,27 @@ public:
     qreal highlightOpacity() const;
     void setHighlightOpacity(qreal opacity);
 
+    // Highlight box shown behind hoverable interactable controls (toolbar
+    // buttons, note menu icons, scrollbar), independent of the text
+    // selection highlight above.
+    QColor interactableHighlightColor() const;
+    void setInteractableHighlightColor(const QColor &color);
+
+    qreal interactableHighlightOpacity() const;
+    void setInteractableHighlightOpacity(qreal opacity);
+
+    bool interactableHighlightGlassEnabled() const;
+    void setInteractableHighlightGlassEnabled(bool enabled);
+
+    // Whether the app's chrome (floating toolbar window + note scrollbar)
+    // mirrors each note's own glassEnabled setting (true, the default) or
+    // uses chromeGlassEnabled's fixed value instead.
+    bool chromeGlassFollowsNote() const;
+    void setChromeGlassFollowsNote(bool followsNote);
+
+    bool chromeGlassEnabled() const;
+    void setChromeGlassEnabled(bool enabled);
+
     // Keeps the hover-expand note ribbon (NoteHud) permanently expanded —
     // an escape hatch for when hover-to-reveal isn't reliable/wanted (e.g.
     // touch input, or a corner overlapped by another hover target), rather
@@ -192,6 +233,36 @@ public:
     // blurEnabled/glassEnabled instead of in NoteAppearanceOverride.
     bool hudAlwaysExpanded() const;
     void setHudAlwaysExpanded(bool alwaysExpanded);
+
+    // Editor formatting shortcuts. Each getter returns a QKeySequence-parsable
+    // string; empty is never returned (falls back to the documented default),
+    // so QML's Shortcut.sequence is never bound to an empty/invalid string.
+    QString shortcutBold() const;
+    void setShortcutBold(const QString &sequence);
+
+    QString shortcutItalic() const;
+    void setShortcutItalic(const QString &sequence);
+
+    QString shortcutStrikethrough() const;
+    void setShortcutStrikethrough(const QString &sequence);
+
+    QString shortcutHeading1() const;
+    void setShortcutHeading1(const QString &sequence);
+
+    QString shortcutHeading2() const;
+    void setShortcutHeading2(const QString &sequence);
+
+    QString shortcutParagraph() const;
+    void setShortcutParagraph(const QString &sequence);
+
+    QString shortcutBulletList() const;
+    void setShortcutBulletList(const QString &sequence);
+
+    QString shortcutNumberedList() const;
+    void setShortcutNumberedList(const QString &sequence);
+
+    QString shortcutInsertTable() const;
+    void setShortcutInsertTable(const QString &sequence);
 
     // Session state (list of open notes)
     QList<NoteSessionState> openNotes() const;
@@ -234,8 +305,22 @@ signals:
     void fontFamilyChanged();
     void highlightColorChanged();
     void highlightOpacityChanged();
+    void interactableHighlightColorChanged();
+    void interactableHighlightOpacityChanged();
+    void interactableHighlightGlassEnabledChanged();
+    void chromeGlassFollowsNoteChanged();
+    void chromeGlassEnabledChanged();
     void hudAlwaysExpandedChanged();
     void openNotesChanged();
+    void shortcutBoldChanged();
+    void shortcutItalicChanged();
+    void shortcutStrikethroughChanged();
+    void shortcutHeading1Changed();
+    void shortcutHeading2Changed();
+    void shortcutParagraphChanged();
+    void shortcutBulletListChanged();
+    void shortcutNumberedListChanged();
+    void shortcutInsertTableChanged();
 
 private:
     void init();

@@ -277,3 +277,40 @@ LivePosition KWinRuleApplier::captureLivePosition(const QString &windowTitle)
     result.screenName = parts.at(1);
     return result;
 }
+
+void KWinRuleApplier::moveWindow(const QString &windowTitle, int x, int y)
+{
+    if (!isAvailable())
+        return;
+
+    QTemporaryFile scriptFile(QDir::tempPath() + QStringLiteral("/suopNotes-move-XXXXXX.js"));
+    if (!scriptFile.open())
+        return;
+
+    // A plain {x,y,width,height} object (not Qt.rect(), which isn't
+    // guaranteed available in KWin's own scripting JS context) — KWin's
+    // QJSEngine binding accepts this for a QRect-typed property like
+    // frameGeometry. width/height are read back from the window's own
+    // current geometry so this call only ever moves it, never resizes it.
+    const QString script = QStringLiteral(
+        "for (const w of workspace.windowList()) {\n"
+        "    if (String(w.caption) === \"%1\") {\n"
+        "        w.frameGeometry = { x: %2, y: %3, width: w.frameGeometry.width, height: w.frameGeometry.height };\n"
+        "    }\n"
+        "}\n").arg(windowTitle).arg(x).arg(y);
+
+    scriptFile.write(script.toUtf8());
+    scriptFile.close();
+
+    const QString pluginName = QStringLiteral("suopNotesMoveWindow");
+    if (!runProcess(QStringLiteral("qdbus6"),
+                     { "org.kde.KWin", "/Scripting", "loadScript", scriptFile.fileName(), pluginName }))
+        return;
+
+    runProcess(QStringLiteral("qdbus6"), { "org.kde.KWin", "/Scripting", "start" });
+    // Same reasoning as captureLivePosition's own settle delay: "start"
+    // only queues the script, it doesn't wait for it to actually run —
+    // unloading immediately after could race the script's own execution.
+    QThread::msleep(50);
+    runProcess(QStringLiteral("qdbus6"), { "org.kde.KWin", "/Scripting", "unloadScript", pluginName });
+}

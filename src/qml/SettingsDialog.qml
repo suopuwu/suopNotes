@@ -54,6 +54,12 @@ ApplicationWindow {
         onAccepted: settings.glassTintColor = color
     }
 
+    Platform.ColorDialog {
+        id: interactableHighlightColorDialog
+        currentColor: settings.interactableHighlightColor
+        onAccepted: settings.interactableHighlightColor = color
+    }
+
     ScrollView {
         anchors.fill: parent
         anchors.margins: 16
@@ -162,6 +168,66 @@ ApplicationWindow {
                 text: "Always show note controls (pin/settings/close)"
                 checked: settings.hudAlwaysExpanded
                 onToggled: settings.hudAlwaysExpanded = checked
+            }
+
+            Column {
+                width: parent.width
+                spacing: 8
+
+                Label { text: "Interactable Highlights"; font.bold: true }
+
+                Row {
+                    spacing: 8
+                    Label { text: "Highlight color:"; anchors.verticalCenter: parent.verticalCenter }
+                    Rectangle {
+                        width: 24
+                        height: 24
+                        color: settings.interactableHighlightColor
+                        border.color: "gray"
+                        anchors.verticalCenter: parent.verticalCenter
+                        MouseArea { anchors.fill: parent; onClicked: interactableHighlightColorDialog.open() }
+                    }
+                }
+
+                Column {
+                    width: parent.width
+                    spacing: 4
+                    Label { text: "Highlight opacity: " + interactableHighlightOpacitySlider.value.toFixed(2) }
+                    Slider {
+                        id: interactableHighlightOpacitySlider
+                        width: parent.width
+                        from: 0
+                        to: 1.0
+                        value: settings.interactableHighlightOpacity
+                        onMoved: settings.interactableHighlightOpacity = value
+                    }
+                }
+
+                CheckBox {
+                    text: "Glass effect on highlights"
+                    checked: settings.interactableHighlightGlassEnabled
+                    onToggled: settings.interactableHighlightGlassEnabled = checked
+                }
+            }
+
+            Column {
+                width: parent.width
+                spacing: 8
+
+                Label { text: "Toolbar & Scrollbar Glass"; font.bold: true }
+
+                CheckBox {
+                    text: "Follow each note's own glass setting"
+                    checked: settings.chromeGlassFollowsNote
+                    onToggled: settings.chromeGlassFollowsNote = checked
+                }
+
+                CheckBox {
+                    text: "Enable glass effect"
+                    enabled: !settings.chromeGlassFollowsNote
+                    checked: settings.chromeGlassEnabled
+                    onToggled: settings.chromeGlassEnabled = checked
+                }
             }
 
             Column {
@@ -286,6 +352,86 @@ ApplicationWindow {
                         id: browseButton
                         text: "Browse…"
                         onClicked: notesFolderDialog.open()
+                    }
+                }
+            }
+
+            Column {
+                width: parent.width
+                spacing: 8
+
+                Label { text: "Keyboard Shortcuts"; font.bold: true }
+
+                Row {
+                    spacing: 8
+                    Label { width: 90; text: "Bold"; anchors.verticalCenter: parent.verticalCenter }
+                    ShortcutField {
+                        sequence: settings.shortcutBold
+                        onRecorded: (newSequence) => settings.shortcutBold = newSequence
+                    }
+                }
+                Row {
+                    spacing: 8
+                    Label { width: 90; text: "Italic"; anchors.verticalCenter: parent.verticalCenter }
+                    ShortcutField {
+                        sequence: settings.shortcutItalic
+                        onRecorded: (newSequence) => settings.shortcutItalic = newSequence
+                    }
+                }
+                Row {
+                    spacing: 8
+                    Label { width: 90; text: "Strikethrough"; anchors.verticalCenter: parent.verticalCenter }
+                    ShortcutField {
+                        sequence: settings.shortcutStrikethrough
+                        onRecorded: (newSequence) => settings.shortcutStrikethrough = newSequence
+                    }
+                }
+                Row {
+                    spacing: 8
+                    Label { width: 90; text: "Heading 1"; anchors.verticalCenter: parent.verticalCenter }
+                    ShortcutField {
+                        sequence: settings.shortcutHeading1
+                        onRecorded: (newSequence) => settings.shortcutHeading1 = newSequence
+                    }
+                }
+                Row {
+                    spacing: 8
+                    Label { width: 90; text: "Heading 2"; anchors.verticalCenter: parent.verticalCenter }
+                    ShortcutField {
+                        sequence: settings.shortcutHeading2
+                        onRecorded: (newSequence) => settings.shortcutHeading2 = newSequence
+                    }
+                }
+                Row {
+                    spacing: 8
+                    Label { width: 90; text: "Paragraph"; anchors.verticalCenter: parent.verticalCenter }
+                    ShortcutField {
+                        sequence: settings.shortcutParagraph
+                        onRecorded: (newSequence) => settings.shortcutParagraph = newSequence
+                    }
+                }
+                Row {
+                    spacing: 8
+                    Label { width: 90; text: "Bullet list"; anchors.verticalCenter: parent.verticalCenter }
+                    ShortcutField {
+                        sequence: settings.shortcutBulletList
+                        onRecorded: (newSequence) => settings.shortcutBulletList = newSequence
+                    }
+                }
+                Row {
+                    spacing: 8
+                    Label { width: 90; text: "Numbered list"; anchors.verticalCenter: parent.verticalCenter }
+                    ShortcutField {
+                        sequence: settings.shortcutNumberedList
+                        onRecorded: (newSequence) => settings.shortcutNumberedList = newSequence
+                    }
+                }
+                Row {
+                    spacing: 8
+                    Label { width: 90; text: "Insert table"; anchors.verticalCenter: parent.verticalCenter }
+                    ShortcutField {
+                        sequence: settings.shortcutInsertTable
+                        onRecorded: (newSequence) => settings.shortcutInsertTable = newSequence
                     }
                 }
             }

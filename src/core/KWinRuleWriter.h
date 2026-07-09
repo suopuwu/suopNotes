@@ -74,6 +74,20 @@ public:
     // returns its current on-screen position + output name.
     static LivePosition captureLivePosition(const QString &windowTitle);
 
+    // Live-moves an already-open window (matched by exact title, same
+    // technique captureLivePosition uses for reading) to a new global
+    // (virtual-desktop) position, via a one-shot KWin script that sets
+    // frameGeometry directly. Needed for windows that are shown once and
+    // then repositioned many times afterward (e.g. the app-wide selection
+    // toolbar following whichever note is focused): unlike a note's first
+    // spawn position, which the Apply-Initially rule in applyRule()
+    // handles, a plain QML x/y assignment on an already-mapped Wayland
+    // top-level window is not honored by KWin at all (confirmed live —
+    // the window stayed wherever KWin's own default placement put it,
+    // ignoring the requested coordinates) — an actual KWin-side move is
+    // required for every reposition after the first.
+    static void moveWindow(const QString &windowTitle, int x, int y);
+
 private:
     static QString groupNameFor(const QString &noteId);
     static QString kwinRulesFilePath();
