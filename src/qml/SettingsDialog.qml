@@ -8,6 +8,8 @@ import Qt.labs.platform as Platform
 ApplicationWindow {
     id: root
 
+    readonly property alias fontFamilyCombo: fontFamilyCombo
+
     title: "suopNotes Settings"
     width: 400
     height: 520
@@ -279,6 +281,34 @@ ApplicationWindow {
                     to: 48
                     value: settings.fontSize
                     onValueModified: settings.fontSize = value
+                }
+            }
+
+            Row {
+                spacing: 8
+                Label { text: "Font family:"; anchors.verticalCenter: parent.verticalCenter }
+                ComboBox {
+                    id: fontFamilyCombo
+                    model: Qt.fontFamilies()
+                    // Previews the selected family in the closed box; each
+                    // dropdown entry gets its own font via the delegate below.
+                    font.family: currentText
+                    currentIndex: {
+                        var idx = find(settings.fontFamily)
+                        if (idx < 0)
+                            idx = find(Qt.application.font.family)
+                        return idx
+                    }
+                    delegate: ItemDelegate {
+                        required property string modelData
+                        required property int index
+
+                        width: fontFamilyCombo.width
+                        text: modelData
+                        font.family: modelData
+                        highlighted: fontFamilyCombo.highlightedIndex === index
+                    }
+                    onActivated: settings.fontFamily = currentText
                 }
             }
 

@@ -378,7 +378,23 @@ Window {
             // obscured scrollbar corner beats permanent dead space.
             clip: true
             contentWidth: width
-            contentHeight: editor.height
+            // "Scroll past end" (feature request): extends contentHeight
+            // far enough past the real text that the scrollRange clamps
+            // below (wheel handler, scrollbar drag, middle-click
+            // autoscroll — each computed as contentHeight - height) can
+            // carry the *last line* all the way to the top of the note,
+            // not just its bottom. positionToRectangle(length) reads that
+            // last line's own top-left y straight off the laid-out text —
+            // exact regardless of font metrics/line height — added to
+            // `height` gives a contentHeight whose remainder above `height`
+            // is exactly that y. Only applied once real content actually
+            // overflows the viewport (editor.contentHeight > height);
+            // short notes keep the old editor.height value (itself already
+            // floored to `height` — see editor.height's own comment below)
+            // so nothing scrolls when there's nothing to scroll past.
+            contentHeight: editor.contentHeight > height
+                ? editor.positionToRectangle(editor.length).y + height
+                : editor.height
             // Feature request/bugfix: a left-mouse-drag over the note used
             // to compete with (and sometimes win over) TextInput's own
             // drag-text-selection — Flickable's childMouseEventFilter can
@@ -431,13 +447,28 @@ Window {
             // angleDelta left scrolling completely dead for exactly that
             // input class, since 0 was silently subtracted every time.
             // pixelDelta, when present, is already a real pixel amount, so
-            // it's used directly (no scaling) in preference to angleDelta.
+            // it's used directly in preference to angleDelta.
+            //
+            // angleDelta itself is scaled down rather than used as pixels
+            // directly (previous behavior): its raw 120-per-notch, taken
+            // literally as 120px, scrolled noticeably further per click
+            // than KDE/GTK/Qt Widgets do by default — they all resolve one
+            // notch to QApplication::wheelScrollLines() (3) lines of text.
+            // Dividing by 120 first gives the notch count regardless of the
+            // wheel's own resolution (a high-res wheel reports several
+            // smaller deltas per physical click instead of one ±120 — this
+            // still scales proportionally), then that's converted to pixels
+            // via the note's own font size so the tick stays proportional
+            // to whatever text size the note is actually showing.
             MouseArea {
                 anchors.fill: parent
                 acceptedButtons: Qt.NoButton
                 onWheel: (event) => {
                     const scrollRange = Math.max(0, editorFlick.contentHeight - editorFlick.height)
-                    const delta = event.pixelDelta.y !== 0 ? event.pixelDelta.y : event.angleDelta.y
+                    const lineHeight = noteAppearance.fontSize * 1.2
+                    const delta = event.pixelDelta.y !== 0
+                        ? event.pixelDelta.y
+                        : (event.angleDelta.y / 120) * 3 * lineHeight
                     editorFlick.contentY = Math.max(0, Math.min(scrollRange,
                         editorFlick.contentY - delta))
                 }
@@ -669,7 +700,6 @@ Window {
                     // is what stops the built-in handling from ALSO firing
                     // afterward (same convention as Tab above).
                     Keys.onPressed: (event) => {
-                        console.warn("DEBUG onPressed fired, key=" + event.key + " accepted=" + event.accepted)
                         if (event.matches(StandardKey.Copy)) {
                             noteWindow.performCopy()
                             event.accepted = true

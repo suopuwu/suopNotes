@@ -33,6 +33,9 @@ set_source_files_properties(${CMAKE_SOURCE_DIR}/src/qml/SelectionToolbar.qml
 set_source_files_properties(${CMAKE_SOURCE_DIR}/src/qml/ShortcutField.qml
     PROPERTIES QT_RESOURCE_ALIAS "ShortcutField.qml"
 )
+set_source_files_properties(${CMAKE_SOURCE_DIR}/src/qml/SettingsDialog.qml
+    PROPERTIES QT_RESOURCE_ALIAS "SettingsDialog.qml"
+)
 
 qt_add_qml_module(suopNotes_qml_tests
     URI SuopNotesUi
@@ -46,6 +49,7 @@ qt_add_qml_module(suopNotes_qml_tests
         ${CMAKE_SOURCE_DIR}/src/qml/ResizeHandle.qml
         ${CMAKE_SOURCE_DIR}/src/qml/SelectionToolbar.qml
         ${CMAKE_SOURCE_DIR}/src/qml/ShortcutField.qml
+        ${CMAKE_SOURCE_DIR}/src/qml/SettingsDialog.qml
 )
 
 target_link_libraries(suopNotes_qml_tests PRIVATE

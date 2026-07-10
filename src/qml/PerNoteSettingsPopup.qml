@@ -13,6 +13,8 @@ ApplicationWindow {
     id: root
 
     required property NoteAppearance noteAppearance
+    readonly property alias fontFamilyCombo: fontFamilyCombo
+    readonly property alias fontFamilyOverrideCheckBox: fontFamilyOverride
 
     title: "Note Settings"
     width: 380
@@ -398,10 +400,29 @@ ApplicationWindow {
                     onToggled: checked ? root.noteAppearance.setFontFamilyOverride(root.noteAppearance.fontFamily)
                                        : root.noteAppearance.clearFontFamilyOverride()
                 }
-                TextField {
+                ComboBox {
+                    id: fontFamilyCombo
                     enabled: fontFamilyOverride.checked
-                    text: root.noteAppearance.fontFamily
-                    onEditingFinished: root.noteAppearance.setFontFamilyOverride(text)
+                    model: Qt.fontFamilies()
+                    // Previews the selected family in the closed box; each
+                    // dropdown entry gets its own font via the delegate below.
+                    font.family: currentText
+                    currentIndex: {
+                        var idx = find(root.noteAppearance.fontFamily)
+                        if (idx < 0)
+                            idx = find(Qt.application.font.family)
+                        return idx
+                    }
+                    delegate: ItemDelegate {
+                        required property string modelData
+                        required property int index
+
+                        width: fontFamilyCombo.width
+                        text: modelData
+                        font.family: modelData
+                        highlighted: fontFamilyCombo.highlightedIndex === index
+                    }
+                    onActivated: root.noteAppearance.setFontFamilyOverride(currentText)
                 }
             }
 
