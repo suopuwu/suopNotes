@@ -1,10 +1,12 @@
 #include "TextFormatting.h"
 
+#include <QAbstractTextDocumentLayout>
 #include <QFontMetricsF>
 #include <QRegularExpression>
 #include <QTextBlockFormat>
 #include <QTextCharFormat>
 #include <QTextDocument>
+#include <QTextLayout>
 #include <QTextList>
 #include <QTextTable>
 #include <QTextTableFormat>
@@ -47,21 +49,25 @@ enum class HandRolledKind { None = 0, Numbered = 1, Checkbox = 2 };
 constexpr int HandRolledKindProperty = QTextFormat::UserProperty + 1;
 
 // The two literal marker prefixes hand-rolled checkbox blocks carry as
-// real, selectable text — chosen to already BE valid GFM task-list syntax
-// verbatim ("- [ ] "/"- [x] "), so saving one needs no special-case
-// translation at all (see MarkdownSerialization's own use of
-// convertNativeListsToHandRolled for the other direction, loading).
+// real, selectable text — a genuine checkbox glyph (☐/☑, feature request)
+// rather than literal "- [ ] "/"- [x] " GFM task-list syntax, which read as
+// raw markdown rather than an actual checkbox. Unlike the numbered marker
+// below, this is NOT valid markdown verbatim, so it needs an explicit
+// translation back to real GFM syntax on save — see
+// MarkdownSerialization's own use of handRolledBlockMarkdownText — the
+// inverse of convertNativeListsToHandRolled's own checkbox branch, which
+// converts the other way on load.
 const QString &uncheckedMarker()
 {
-    static const QString marker = QStringLiteral("- [ ] ");
+    static const QString marker = QStringLiteral("☐ "); // "☐ "
     return marker;
 }
 const QString &checkedMarker()
 {
-    static const QString marker = QStringLiteral("- [x] ");
+    static const QString marker = QStringLiteral("☑ "); // "☑ "
     return marker;
 }
-constexpr int checkboxMarkerLength = 6; // both markers above are the same length
+constexpr int checkboxMarkerLength = 2; // both markers above are the same length
 
 // QTextCursor::mergeBlockFormat() merges: a property ABSENT from the
 // argument format is left completely untouched on the destination, so
@@ -87,7 +93,7 @@ const QRegularExpression &numberedMarkerPattern()
 
 bool isCheckedMarkerText(const QString &text)
 {
-    return text.startsWith(checkedMarker()) || text.startsWith(QLatin1String("- [X] "));
+    return text.startsWith(checkedMarker());
 }
 
 bool isHandRolledCheckboxText(const QString &text)
@@ -387,9 +393,26 @@ bool tryToggleCheckboxAtPosition(QTextCursor cursor)
 
 bool continueHandRolledList(QTextCursor cursor)
 {
-    const HandRolledKind kind = handRolledKind(cursor.block());
+    const QTextBlock originalBlock = cursor.block();
+    const HandRolledKind kind = handRolledKind(originalBlock);
     if (kind == HandRolledKind::None)
         return false;
+
+    // Pressing Enter AT OR BEFORE the marker itself (not just after it, in
+    // the item's real text) must not split the marker away from its own
+    // item — insertBlock() below splits at the cursor's literal position,
+    // so with no clamp, a cursor sitting inside/before the marker would
+    // carry that whole marker into the new block, which then got ANOTHER
+    // fresh one inserted in front of it (confirmed empirically: pressing
+    // Enter at the very start of "1. some text" produced "0. 1. some
+    // text" — the "1. " travelled into the new block whole, then this
+    // function inserted "0. " ahead of it, none the wiser). Clamping the
+    // effective split point to just past the marker makes Enter anywhere
+    // at or before it behave the same as pressing it right after —
+    // inserting a new blank item, leaving the original text untouched.
+    const int markerEnd = originalBlock.position() + markerLength(kind, originalBlock.text());
+    if (cursor.position() < markerEnd)
+        cursor.setPosition(markerEnd);
 
     // insertBlock() with no arguments copies the CURRENT block's format
     // (including HandRolledKindProperty and the hanging-indent margins)
@@ -423,15 +446,51 @@ bool isHandRolledListItemEmpty(QTextCursor cursor)
     return block.text().length() == markerLength(kind, block.text());
 }
 
+void maintainHandRolledListNumbering(QTextCursor cursor)
+{
+    const HandRolledKind kind = handRolledKind(cursor.block());
+    if (kind != HandRolledKind::Numbered)
+        return; // checkbox markers never need renumbering, only their (constant) shared width
+    renumberRun(cursor.block(), kind, runStartNumber(cursor.block(), kind));
+}
+
 void setHeadingLevel(QTextCursor cursor, int level)
 {
     QTextBlockFormat blockFormat = cursor.blockFormat();
     blockFormat.setHeadingLevel(level);
     cursor.mergeBlockFormat(blockFormat);
 
-    // Qt's default stylesheet renders heading blocks bold/larger based on
-    // headingLevel alone; no extra char-format changes needed for display,
-    // and toMarkdown() serializes headingLevel back to "#"..."######" runs.
+    // headingLevel alone has NO visual effect when applied this way
+    // (confirmed empirically: toggling it via the toolbar saved correctly
+    // but changed nothing on screen) — Qt's markdown *parser* bakes heading
+    // appearance (bold + a scaled font size) into the actual CHAR format
+    // only when building a heading block fresh from "# " syntax; it's
+    // never derived from headingLevel at paint time. FontSizeAdjustment is
+    // a multiplier RELATIVE to the block's own base font (confirmed
+    // empirically: adjustment 3 = 2x, matching Qt's own h1 scaling;
+    // adjustment 2 = 1.5x, matching h2) rather than an absolute size, so
+    // toggling back to level 0 exactly restores the original size
+    // regardless of the note's own configured font — no need to know or
+    // store that value anywhere.
+    QTextCharFormat charFormat;
+    charFormat.setFontWeight(level > 0 ? QFont::Bold : QFont::Normal);
+    int adjustment = 0;
+    if (level == 1)
+        adjustment = 3;
+    else if (level == 2)
+        adjustment = 2;
+    charFormat.setProperty(QTextFormat::FontSizeAdjustment, adjustment);
+
+    const QTextBlock block = cursor.block();
+    QTextCursor formatCursor(cursor.document());
+    formatCursor.setPosition(block.position());
+    formatCursor.setPosition(block.position() + block.length() - 1, QTextCursor::KeepAnchor);
+    formatCursor.mergeCharFormat(charFormat);
+}
+
+void insertTabSpaces(QTextCursor cursor)
+{
+    cursor.insertText(QStringLiteral("    "));
 }
 
 void insertTable(QTextCursor cursor)
@@ -581,6 +640,49 @@ bool isHandRolledListBlock(const QTextBlock &block)
     return handRolledKind(block) != HandRolledKind::None;
 }
 
+QString handRolledBlockMarkdownText(const QTextBlock &block)
+{
+    if (handRolledKind(block) == HandRolledKind::Checkbox) {
+        const QString text = block.text();
+        const bool checked = isCheckedMarkerText(text);
+        return (checked ? QStringLiteral("- [x] ") : QStringLiteral("- [ ] "))
+            + text.mid(checkboxMarkerLength);
+    }
+    return block.text();
+}
+
+QRectF checkboxMarkerRect(QTextCursor cursor)
+{
+    const QTextBlock block = cursor.block();
+    if (handRolledKind(block) != HandRolledKind::Checkbox)
+        return QRectF();
+    const int offsetInBlock = cursor.position() - block.position();
+    if (offsetInBlock < 0 || offsetInBlock > checkboxMarkerLength)
+        return QRectF();
+
+    const QTextDocument *document = block.document();
+    if (!document || !document->documentLayout())
+        return QRectF();
+
+    // blockBoundingRect() is what actually forces Qt to lay the block's
+    // QTextLine(s) out in the first place — querying block.layout() first
+    // (before this ever runs) sees a stale, not-yet-laid-out lineCount() of
+    // 0 and returns early instead (confirmed empirically).
+    const QRectF blockRect = document->documentLayout()->blockBoundingRect(block);
+    QTextLayout *layout = block.layout();
+    if (!layout || layout->lineCount() == 0)
+        return QRectF();
+
+    // The marker is always on the block's own first visual line — a
+    // checkbox item's marker never wraps, however long its label text
+    // runs on afterward.
+    const QTextLine line = layout->lineAt(0);
+    const qreal startX = line.cursorToX(0);
+    const qreal endX = line.cursorToX(checkboxMarkerLength);
+    return QRectF(blockRect.left() + qMin(startX, endX), blockRect.top() + line.y(),
+                  qAbs(endX - startX), line.height());
+}
+
 void convertNativeListsToHandRolled(QTextDocument *document)
 {
     if (!document)
@@ -600,6 +702,19 @@ void convertNativeListsToHandRolled(QTextDocument *document)
             // list itself before detaching.
             const int number = list->format().start() + list->itemNumber(block);
             list->remove(block);
+            // list->remove() detaches list MEMBERSHIP but does not reset
+            // the block's own indent() LEVEL (a separate, additive property
+            // — Qt sets indent()==1 on every real list item it parses) —
+            // left alone, that stacked on top of the leftMargin/textIndent
+            // renumberRun sets below, producing extra unwanted left margin
+            // on every note that had been through a save/reload cycle
+            // (confirmed empirically; toggleBulletList's own bullet-removal
+            // path already clears this for the same reason).
+            {
+                QTextBlockFormat format = block.blockFormat();
+                format.setIndent(0);
+                QTextCursor(block).mergeBlockFormat(format);
+            }
 
             // Tag before inserting the marker text — see toggleHandRolled's
             // own comment for why that order matters (harmless here, since
@@ -621,11 +736,19 @@ void convertNativeListsToHandRolled(QTextDocument *document)
             // empirically: setting marker() alone, with no list, writes a
             // plain paragraph, the marker silently ignored) — since this
             // app's hand-rolled representation deliberately drops QTextList
-            // membership (see toggleNumberedList's own comment for why),
-            // the literal "- [ ] "/"- [x] " text still has to be restored
-            // by hand here, same as the numbered case restores "N. ".
+            // membership (see toggleNumberedList's own comment for why), a
+            // marker has to be restored by hand here, same as the numbered
+            // case restores "N. " — but a real "☐"/"☑" checkbox glyph
+            // (feature request) rather than literal "- [ ] "/"- [x] "
+            // syntax; handRolledBlockMarkdownText translates it back to
+            // that syntax on save.
             const bool checked = marker == QTextBlockFormat::MarkerType::Checked;
             list->remove(block);
+            {
+                QTextBlockFormat format = block.blockFormat();
+                format.setIndent(0);
+                QTextCursor(block).mergeBlockFormat(format);
+            }
             setHandRolledKind(QTextCursor(block), HandRolledKind::Checkbox);
             QTextCursor insertCursor(block);
             insertCursor.setPosition(block.position());

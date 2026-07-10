@@ -79,11 +79,12 @@ Window {
     // Exposed for tests only (structural verification of drag-gesture
     // config); not used by app code outside this file.
     readonly property alias mouseDragArea: mouseDragArea
-    readonly property alias editorContextMenu: editorContextMenu
     readonly property alias touchDragHandler: touchDragHandler
     readonly property alias editor: editor
     readonly property alias editorFlick: editorFlick
     readonly property alias noteHud: noteHud
+    readonly property alias copyToast: copyToast
+    readonly property alias checkboxHighlight: checkboxHighlight
     readonly property alias noteAppearance: noteAppearance
     readonly property alias docHandler: docHandler
     readonly property alias scrollIndicator: scrollIndicator
@@ -219,6 +220,25 @@ Window {
         noteStore.deleteNote(id)
         cfg.clearNoteOverride(id)
         model.closeNote(id)
+    }
+
+    // Feature request: Copy — both the toolbar button and Ctrl+C, see
+    // editor's own Keys.onPressed below — copies the whole note when
+    // nothing is selected, rather than silently doing nothing, and briefly
+    // shows copyToast either way (a copy with no visible change, the
+    // no-selection case especially, otherwise gives no feedback that
+    // anything happened at all).
+    function performCopy() {
+        if (editor.selectionStart === editor.selectionEnd) {
+            const savedPosition = editor.cursorPosition
+            editor.selectAll()
+            editor.copy()
+            editor.deselect()
+            editor.cursorPosition = savedPosition
+        } else {
+            editor.copy()
+        }
+        copyToast.show()
     }
 
     // Position, unlike size, can't be read client-side on Wayland at all —
@@ -359,6 +379,19 @@ Window {
             clip: true
             contentWidth: width
             contentHeight: editor.height
+            // Feature request/bugfix: a left-mouse-drag over the note used
+            // to compete with (and sometimes win over) TextInput's own
+            // drag-text-selection — Flickable's childMouseEventFilter can
+            // steal the grab mid-drag before TextInput calls
+            // setKeepMouseGrab(true), a well-known Flickable-vs-TextInput
+            // arbitration race — which meant dragging to select text could
+            // silently scroll the note instead. Disabling `interactive`
+            // removes Flickable from that race entirely; wheel scrolling
+            // (which Qt also gates behind this same flag — confirmed
+            // empirically, a synthetic wheel event produced no contentY
+            // change at all otherwise) is restored manually below via
+            // wheelHandler instead.
+            interactive: false
 
             // Keeps the caret on-screen when it moves off the visible edge —
             // whether from typing past the bottom or from arrow-key/Home/End
@@ -371,6 +404,43 @@ Window {
                     contentY = rect.y
                 else if (rect.y + rect.height > contentY + height)
                     contentY = rect.y + rect.height - height
+            }
+
+            // Restores mouse-wheel scrolling now that `interactive` above is
+            // false (see its own comment). acceptedButtons: Qt.NoButton
+            // means press/release/click all fall straight through to
+            // editor and the other MouseAreas beneath it untouched (same
+            // fallthrough convention mouseDragArea's own acceptedButtons
+            // uses) — this exists purely to catch wheel events, which
+            // aren't gated by acceptedButtons at all.
+            //
+            // A plain MouseArea, not WheelHandler (used here originally):
+            // switched after wheel scrolling was confirmed still dead live
+            // even with the pixelDelta/angleDelta fallback below in place,
+            // while every other real-hardware interaction in this file
+            // (mouseDragArea, resizeBorders) already goes through MouseArea
+            // successfully — hedges against a possible WheelHandler-
+            // specific platform quirk rather than continuing to chase
+            // WheelHandler's own event delivery blind.
+            //
+            // Bugfix: a plain mouse wheel reports its delta via
+            // angleDelta (eighths of a degree, typically ±120 per notch);
+            // a touchpad or a "smooth"/high-resolution wheel instead
+            // reports pixelDelta (real pixels) with angleDelta left at
+            // (0, 0) — confirmed live on Wayland that only reading
+            // angleDelta left scrolling completely dead for exactly that
+            // input class, since 0 was silently subtracted every time.
+            // pixelDelta, when present, is already a real pixel amount, so
+            // it's used directly (no scaling) in preference to angleDelta.
+            MouseArea {
+                anchors.fill: parent
+                acceptedButtons: Qt.NoButton
+                onWheel: (event) => {
+                    const scrollRange = Math.max(0, editorFlick.contentHeight - editorFlick.height)
+                    const delta = event.pixelDelta.y !== 0 ? event.pixelDelta.y : event.angleDelta.y
+                    editorFlick.contentY = Math.max(0, Math.min(scrollRange,
+                        editorFlick.contentY - delta))
+                }
             }
 
             // Sole purpose: gives EditorDragFilter below a place in the tree
@@ -459,6 +529,34 @@ Window {
                         }
                     }
 
+                    // On-hover highlight over the checkbox glyph itself
+                    // (feature request: "real checkboxes with on hover
+                    // animations") — reuses the same InteractableHighlight
+                    // every other bit of interactable chrome in this app
+                    // uses (toolbar buttons, NoteHud glyphs, the
+                    // scrollbar), so this reads as a real, clickable widget
+                    // rather than plain text. docHandler.checkboxRectAt
+                    // returns an empty rect off a checkbox glyph, which
+                    // naturally collapses the highlight to nothing.
+                    //
+                    // Driven from mouseDragArea's own onPositionChanged/
+                    // onExited below, NOT a HoverHandler declared here —
+                    // confirmed live (and reproduced in the offscreen test
+                    // harness) that mouseDragArea, sitting on top of editor
+                    // in z-order with its own hoverEnabled: true, claims
+                    // hover for this whole area first; a HoverHandler on an
+                    // item underneath it never sees a single hover event.
+                    InteractableHighlight {
+                        id: checkboxHighlight
+                        property rect glyphRect: Qt.rect(0, 0, 0, 0)
+                        x: glyphRect.x
+                        y: glyphRect.y
+                        width: glyphRect.width
+                        height: glyphRect.height
+                        radius: 3
+                        active: glyphRect.width > 0
+                    }
+
                     DocumentHandler {
                         id: docHandler
                         document: editor.textDocument
@@ -508,6 +606,12 @@ Window {
                         // already gone by the second pass, so the regex
                         // simply stops matching.
                         docHandler.tryAutoConvertListShorthand(cursorPosition)
+                        // Keeps a numbered list's items sequential after
+                        // ordinary editing that doesn't go through
+                        // tryContinueList/toggleNumberedList at all — e.g.
+                        // backspacing an item away or selecting one and
+                        // deleting it outright (feature request).
+                        docHandler.maintainListNumbering(cursorPosition)
                         noteStore.saveNoteContent(noteWindow.noteId, docHandler.toMarkdown())
                     }
 
@@ -537,6 +641,39 @@ Window {
                             event.accepted = true
                         else
                             event.accepted = false
+                    }
+
+                    // Tab inserts four spaces (feature request) instead of
+                    // TextArea's own default of a literal tab character —
+                    // consuming the event here is what stops that default
+                    // from ALSO firing afterward. Routed through
+                    // docHandler.insertTabSpaces(), NOT this TextArea's own
+                    // insert() method — confirmed empirically that insert()
+                    // silently drops a pure-whitespace string under
+                    // textFormat: TextEdit.MarkdownText (it live-
+                    // renormalizes the text on every edit and treats
+                    // insignificant whitespace as CommonMark noise to
+                    // strip); a direct QTextCursor mutation bypasses that
+                    // renormalization, same as every other formatting
+                    // operation in this app already does.
+                    Keys.onTabPressed: (event) => {
+                        docHandler.insertTabSpaces(selectionStart, selectionEnd)
+                        event.accepted = true
+                    }
+
+                    // Ctrl+C (feature request): routes through
+                    // noteWindow.performCopy() instead of TextArea's own
+                    // built-in Copy handling, so Ctrl+C gets the same
+                    // whole-note-when-nothing-selected fallback and toast as
+                    // the toolbar's Copy button — consuming the event here
+                    // is what stops the built-in handling from ALSO firing
+                    // afterward (same convention as Tab above).
+                    Keys.onPressed: (event) => {
+                        console.warn("DEBUG onPressed fired, key=" + event.key + " accepted=" + event.accepted)
+                        if (event.matches(StandardKey.Copy)) {
+                            noteWindow.performCopy()
+                            event.accepted = true
+                        }
                     }
 
                     // Up on the topmost (visual, word-wrap-aware) line has
@@ -644,16 +781,20 @@ Window {
             }
         }
 
-        // Subtle scroll indicator (feature request): shown only when the
-        // note's content overflows the visible area, tracking position via
-        // editorFlick's own visibleArea (Flickable already computes the
-        // normalized position/extent — no manual contentY/contentHeight
-        // math needed). Deliberately a plain non-interactive Rectangle, not
-        // QtQuick.Controls' ScrollBar — everything else in this file
+        // Subtle scroll indicator/scrollbar (feature request): shown only
+        // when the note's content overflows the visible area, tracking
+        // position via editorFlick's own visibleArea (Flickable already
+        // computes the normalized position/extent — no manual
+        // contentY/contentHeight math needed). A hand-rolled Rectangle,
+        // not QtQuick.Controls' ScrollBar — everything else in this file
         // (HUD, resize handles) is hand-rolled to control its exact look,
         // and a QQC2 control would pull in a platform style whose default
         // chrome wouldn't match or take the glass treatment below
-        // consistently.
+        // consistently. Draggable (see scrollDrag below) — distinct from
+        // dragging the note's own text content to scroll, which stays
+        // disabled (see editorFlick.interactive's own comment) since that
+        // conflicts with dragging to select text; the scrollbar handle
+        // itself has no such conflict.
         Item {
             id: scrollIndicator
             // Above mouseDragArea (z: 1, declared below), matching
@@ -732,6 +873,13 @@ Window {
                 // this binding for good, freezing the handle in place on
                 // every later wheel/keyboard scroll instead of just this
                 // one drag gesture.
+                //
+                // Feature request: dragging the scrollbar handle itself
+                // (distinct from dragging the note's own text content,
+                // which stays disabled via editorFlick.interactive —
+                // clarified live after an earlier, over-broad removal here
+                // took out both) should move the scroll position, same as
+                // any ordinary scrollbar.
                 Binding on y {
                     value: scrollIndicator._trackRange * scrollIndicator._scrollFraction
                     when: !scrollDrag.drag.active
@@ -863,19 +1011,17 @@ Window {
                        ? Qt.SizeVerCursor : Qt.SizeAllCursor)
                 : (mouseY >= editorFlick.y ? Qt.IBeamCursor : Qt.ArrowCursor)
 
-            // Right-click now has two outcomes — start a window move, or
-            // open the copy/paste context menu (feature request) — decided
-            // by whether the press actually moves before release, since
+            // Right-click drags the window via startSystemMove(), deferred
+            // until a small movement threshold is exceeded (rather than
+            // fired unconditionally on press) so a plain click that never
+            // crosses the threshold doesn't hijack the gesture —
             // startSystemMove() hands the whole gesture to the compositor
             // the instant it's called (see project notes on Wayland
             // interactive move: the client never reliably gets its own
-            // onReleased/onCanceled back afterward). Deferring the call
-            // until a small movement threshold is exceeded, instead of
-            // firing it unconditionally on press like before, is what makes
-            // "click" and "drag" distinguishable at all: a plain click that
-            // never crosses the threshold never calls startSystemMove(), so
-            // this MouseArea keeps its normal grab and onClicked fires
-            // exactly like any ordinary click.
+            // onReleased/onCanceled back afterward). A plain right-click
+            // (no drag) now does nothing — the copy/paste context menu this
+            // used to open was removed (feature request: cut/copy/paste
+            // live as toolbar buttons instead, see SelectionToolbar.qml).
             property real pressX: 0
             property real pressY: 0
             property bool rightDragStarted: false
@@ -945,6 +1091,15 @@ Window {
             }
             onPositionChanged: (mouse) => {
                 middleScrollCurrentY = mapToItem(editorFlick, mouse.x, mouse.y).y
+
+                // Checkbox hover highlight (see checkboxHighlight's own
+                // comment): this MouseArea is the one that actually
+                // receives hover for the whole editor area, so it's what
+                // has to drive the highlight rather than a handler on
+                // editor itself.
+                const posInEditor = mapToItem(editor, mouse.x, mouse.y)
+                checkboxHighlight.glyphRect = docHandler.checkboxRectAt(editor.positionAt(posInEditor.x, posInEditor.y))
+
                 if (middleButtonHeld && !middleScrollDraggedWhileHeld
                         && Math.abs(middleScrollCurrentY - middleScrollOriginY) > dragThreshold) {
                     middleScrollDraggedWhileHeld = true
@@ -956,11 +1111,7 @@ Window {
                     noteWindow.startSystemMove()
                 }
             }
-            onClicked: (mouse) => {
-                if (mouse.button === Qt.RightButton && !rightDragStarted)
-                    editorContextMenu.popup(mouse.x, mouse.y)
-            }
-
+            onExited: checkboxHighlight.glyphRect = Qt.rect(0, 0, 0, 0)
             // ~60fps: smooth enough for a scroll animation, cheap enough to
             // not matter. Armed only between an explicit middle-click and
             // an explicit disarm (another click or Escape) — never runs
@@ -995,49 +1146,6 @@ Window {
         Shortcut {
             sequence: "Escape"
             onActivated: if (mouseDragArea.middleScrollArmed) mouseDragArea.disarmMiddleScroll()
-        }
-
-        // Right-click copy/paste menu (feature request): opened by
-        // mouseDragArea's onClicked above instead of QtQuick Controls'
-        // built-in ContextMenu (disabled on editor above) specifically
-        // because that built-in menu would fight the drag area for the
-        // same right-button press — see the disabled ContextMenu.menu's own
-        // comment.
-        Menu {
-            id: editorContextMenu
-
-            // Exposed for tests only, same convention as mouseDragArea's
-            // own alias above.
-            readonly property alias cutItem: cutItem
-            readonly property alias copyItem: copyItem
-            readonly property alias pasteItem: pasteItem
-            readonly property alias selectAllItem: selectAllItem
-
-            MenuItem {
-                id: cutItem
-                text: "Cut"
-                enabled: editor.selectionStart !== editor.selectionEnd
-                onTriggered: { editor.cut(); editor.forceActiveFocus() }
-            }
-            MenuItem {
-                id: copyItem
-                text: "Copy"
-                enabled: editor.selectionStart !== editor.selectionEnd
-                onTriggered: { editor.copy(); editor.forceActiveFocus() }
-            }
-            MenuItem {
-                id: pasteItem
-                text: "Paste"
-                enabled: editor.canPaste
-                onTriggered: { editor.paste(); editor.forceActiveFocus() }
-            }
-            MenuSeparator {}
-            MenuItem {
-                id: selectAllItem
-                text: "Select All"
-                enabled: editor.length > 0
-                onTriggered: { editor.selectAll(); editor.forceActiveFocus() }
-            }
         }
 
         DragHandler {
@@ -1094,6 +1202,61 @@ Window {
             onPinToggleRequested: noteWindow.setPinned(!noteWindow.alwaysOnTop)
             onSettingsRequested: perNoteSettingsPopup.show()
             onCloseRequested: noteWindow.deleteNote()
+        }
+
+        // Small glass-styled "Copied" confirmation (feature request): shown
+        // briefly by performCopy() above, whether triggered from the
+        // toolbar's Copy button or Ctrl+C — needed most for the
+        // nothing-selected case (copies the whole note silently otherwise,
+        // with no other visible change at all to confirm anything
+        // happened), but shown for every copy for consistency. z above
+        // noteHud (3): must stay readable even while the HUD is showing.
+        Rectangle {
+            id: copyToast
+            z: 4
+            anchors.top: parent.top
+            anchors.horizontalCenter: parent.horizontalCenter
+            anchors.topMargin: 10
+            width: copyToastLabel.implicitWidth + 20
+            height: copyToastLabel.implicitHeight + 10
+            radius: 8
+            color: Qt.rgba(0, 0, 0, 0.6)
+            border.width: 1
+            border.color: Qt.rgba(1, 1, 1, 0.18)
+            opacity: 0
+            visible: opacity > 0
+            Behavior on opacity { NumberAnimation { duration: 150 } }
+
+            function show() {
+                copyToast.opacity = 1
+                copyToastHideTimer.restart()
+            }
+
+            // One-shot, restarted by each real copy (never a recurring
+            // background poll): fires once, 900ms after the most recent
+            // show(), to fade the toast back out.
+            Timer {
+                id: copyToastHideTimer
+                interval: 900
+                onTriggered: copyToast.opacity = 0
+            }
+
+            GlassOverlay {
+                anchors.fill: parent
+                cornerRadius: parent.radius
+                tintColor: noteAppearance.glassTintColor
+                sheenOpacity: noteAppearance.glassSheenOpacity
+                ringCount: noteAppearance.glassSheenStrength
+                sheenSize: noteAppearance.glassSheenSize
+            }
+
+            Text {
+                id: copyToastLabel
+                anchors.centerIn: parent
+                text: "Copied"
+                color: "#ffffff"
+                font.pixelSize: 12
+            }
         }
 
         // Resize borders (req. 8): every edge and corner is grabbable, not

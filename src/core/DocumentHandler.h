@@ -3,6 +3,7 @@
 #include <QObject>
 #include <QPointer>
 #include <QQuickTextDocument>
+#include <QRectF>
 
 // Thin QML-facing wrapper: extracts a QTextCursor over the TextArea's
 // underlying QTextDocument and delegates to the pure, independently-tested
@@ -30,6 +31,12 @@ public:
     Q_INVOKABLE void toggleNumberedList(int selectionStart, int selectionEnd);
     Q_INVOKABLE void toggleCheckboxList(int selectionStart, int selectionEnd);
     Q_INVOKABLE void setHeadingLevel(int selectionStart, int selectionEnd, int level);
+    // Tab (feature request): four literal spaces at `position`, replacing
+    // any selection. Routed through TextFormatting::insertTabSpaces (a
+    // direct QTextCursor mutation) rather than TextArea's own insert() QML
+    // method — see that function's own comment for why: MarkdownText mode
+    // silently drops a pure-whitespace insert() call.
+    Q_INVOKABLE void insertTabSpaces(int selectionStart, int selectionEnd);
     Q_INVOKABLE void insertTable(int position);
     Q_INVOKABLE void insertTableRow(int position);
     Q_INVOKABLE void deleteTableRow(int position);
@@ -60,6 +67,21 @@ public:
     // silent no-ops (per TextFormatting.h) whenever the cursor wasn't
     // actually inside a table.
     Q_INVOKABLE bool isInTable(int position) const;
+    // The table's own bounding rect containing `position`, in the SAME
+    // document-layout coordinate space QML's own cursorRectangle already
+    // uses (so callers combine it with editorFlick.contentY/mapToGlobal
+    // exactly the same way ensureCursorVisible does) — feature request:
+    // anchoring the toolbar to the table itself, not just the whole note,
+    // whenever the cursor is inside one. An empty (null) QRectF when the
+    // position isn't actually inside a table.
+    Q_INVOKABLE QRectF tableRect(int position) const;
+    // The checkbox glyph's own bounding rect (same document-layout
+    // coordinate space as tableRect above) for the block containing
+    // `position`, only if `position` itself falls within that glyph —
+    // feature request: lets QML draw a hover highlight over real checkbox
+    // items. An empty QRectF otherwise (not a checkbox item, or hovering
+    // past the glyph into its label text).
+    Q_INVOKABLE QRectF checkboxRectAt(int position) const;
 
     // Enter/Return inside a list item (bullet or numbered): continues the
     // list with a new item, or — if the current item is empty — exits the
@@ -77,6 +99,14 @@ public:
     // is universal enough (Notion, Word, GitHub's own editor) that users
     // expect it to just work. Returns true if a conversion happened.
     Q_INVOKABLE bool tryAutoConvertListShorthand(int cursorPosition);
+
+    // Also called after every keystroke: re-derives the cursor's own
+    // numbered-list run (sequential numbers + shared marker width) if it's
+    // sitting on one. Ordinary text editing — backspacing an item away,
+    // selecting one and deleting it — merges/removes blocks through Qt's
+    // own default handling, not through tryContinueList/toggleNumberedList,
+    // and would otherwise leave the surviving items out of sequence.
+    Q_INVOKABLE void maintainListNumbering(int cursorPosition);
 
     // Enter/Return on a heading line: inserts the new block (inheriting the
     // heading's format the way QTextCursor::insertBlock() always does), then
@@ -102,4 +132,18 @@ private:
     QTextCursor cursorFor(int selectionStart, int selectionEnd) const;
 
     QPointer<QQuickTextDocument> m_document;
+
+    // Reentrancy guard for the hand-rolled list machinery: inserting or
+    // removing a list marker's TEXT synchronously re-enters QML's
+    // TextArea.onTextChanged before the outer call even returns (confirmed
+    // empirically), which calls right back into tryAutoConvertListShorthand
+    // and maintainListNumbering — either of which can ALSO mutate marker
+    // text, cascading into further reentries and, in one confirmed case, a
+    // genuine unbounded recursion. Every entry point that can touch
+    // hand-rolled list markers checks and sets this on entry and clears it
+    // on return (see the ListMutationGuard helper in the .cpp): the first,
+    // outermost call does the real work; any reentrant call arriving while
+    // it's still in progress is guaranteed redundant (the outer call will
+    // finish leaving everything consistent) and just no-ops instead.
+    bool m_handlingListMutation = false;
 };

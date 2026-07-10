@@ -37,6 +37,23 @@ bool kwinScriptingAvailable()
     return !QStandardPaths::findExecutable(QStringLiteral("qdbus6")).isEmpty();
 }
 
+// Every non-note pseudo-window that shares the "suopNotes-<id>" title
+// convention but must never be treated as a real note here — each is a
+// fixed KWinRuleApplier rule-group key (see SelectionToolbar.qml's own
+// `title` and its columnOptionsPopup child's), not a backing note. A
+// single source of truth for both exclusion points below (mergeLivePosition
+// and the KWin watcher script's own JS) is deliberate: letting them drift
+// out of sync is exactly how this bug recurred once already — see
+// mergeLivePosition's own comment for the original selectionToolbar case;
+// columnOptionsPopup reproduced the identical bug the moment it gained the
+// same right-click-drag capability without a matching exclusion here.
+const QStringList &pseudoNoteIds()
+{
+    static const QStringList ids = { QStringLiteral("selectionToolbar"), QStringLiteral("columnOptionsPopup"),
+                                      QStringLiteral("toolbarTooltip") };
+    return ids;
+}
+
 }
 
 PositionEventService::PositionEventService(Settings &settings, QObject *parent)
@@ -141,10 +158,10 @@ Settings::NoteSessionState PositionEventService::mergeLivePosition(const QList<S
     const QString noteId = windowTitle.mid(prefix.size());
 
     // Defense in depth: the KWin watcher script (loadWatcherScript) already
-    // excludes SelectionToolbar's own window by title, but this rejects the
-    // one pseudo-id that would otherwise alias it either way, in case that
-    // exclusion is ever missed by a future caller of this method.
-    if (noteId == QStringLiteral("selectionToolbar"))
+    // excludes these same pseudo-ids by title, but this rejects them here
+    // too, in case that exclusion is ever missed by a future caller of
+    // this method.
+    if (pseudoNoteIds().contains(noteId))
         return Settings::NoteSessionState{};
 
     // Preserve width/height (tracked separately, live, via QML's own
@@ -180,34 +197,41 @@ void PositionEventService::loadWatcherScript()
     // every note so title is what actually identifies one from another,
     // same convention KWinRuleWriter's rules use.
     //
-    // Bug found live: the "suopNotes-" prefix match also caught
-    // SelectionToolbar.qml's own singleton window (title
-    // "suopNotes-selectionToolbar" — a fixed pseudo-note-id it uses purely
-    // as a KWinRuleApplier rule-group key, never a real note). Finishing a
-    // right-click-drag on the toolbar fired this exact same callback,
-    // which strips the "suopNotes-" prefix to derive a "noteId" — handing
-    // mergeLivePosition() the literal string "selectionToolbar" as if it
-    // were a genuine note, which then got upserted into the persisted
-    // OpenNotes list. On the next launch that phantom entry spawned a real
-    // NoteWindow whose own title (again "suopNotes-" + noteId) exactly
-    // matched the toolbar's — after which KWinRuleApplier::moveWindow's
-    // title-matching script (see its own file) moved BOTH windows
-    // together any time either "moved", since it can't tell them apart.
-    // Excluding that one fixed title here stops the bogus session entry
-    // from ever being written again; any stale entry from before this fix
-    // is a normal "open note with no backing file", which
-    // Main.qml's reconcileNotesWithDisk() already closes automatically.
+    // Bug found live (twice — see pseudoNoteIds' own comment): the
+    // "suopNotes-" prefix match also caught SelectionToolbar.qml's own
+    // singleton window (title "suopNotes-selectionToolbar" — a fixed
+    // pseudo-note-id it uses purely as a KWinRuleApplier rule-group key,
+    // never a real note), and later its columnOptionsPopup child the same
+    // way. Finishing a right-click-drag on either fired this exact same
+    // callback, which strips the "suopNotes-" prefix to derive a
+    // "noteId" — handing mergeLivePosition() that pseudo-id as if it were
+    // a genuine note, which then got upserted into the persisted
+    // OpenNotes list. On the next launch that phantom entry spawned a
+    // real NoteWindow whose own title (again "suopNotes-" + noteId)
+    // exactly matched the toolbar/popup's — after which
+    // KWinRuleApplier::moveWindow's title-matching script (see its own
+    // file) moved BOTH windows together any time either "moved", since it
+    // can't tell them apart. Excluding these fixed titles here stops the
+    // bogus session entry from ever being written again; any stale entry
+    // from before this fix is a normal "open note with no backing file",
+    // which Main.qml's reconcileNotesWithDisk() already closes
+    // automatically.
+    QStringList excludedTitles;
+    for (const QString &id : pseudoNoteIds())
+        excludedTitles << QStringLiteral("\"suopNotes-%1\"").arg(id);
+    const QString excludedTitlesJsArray = QStringLiteral("[%1]").arg(excludedTitles.join(QStringLiteral(", ")));
+
     const QString script = QStringLiteral(
         "function hook(w) {\n"
         "    if (String(w.caption).indexOf(\"suopNotes-\") !== 0) return;\n"
-        "    if (String(w.caption) === \"suopNotes-selectionToolbar\") return;\n"
+        "    if (%2.includes(String(w.caption))) return;\n"
         "    w.interactiveMoveResizeFinished.connect(function() {\n"
         "        callDBus(\"%1\", \"/PositionService\", \"%1\", \"notePositionChanged\",\n"
         "                 w.caption, w.frameGeometry.x, w.frameGeometry.y, w.output.name);\n"
         "    });\n"
         "}\n"
         "for (const w of workspace.windowList()) hook(w);\n"
-        "workspace.windowAdded.connect(hook);\n").arg(serviceName());
+        "workspace.windowAdded.connect(hook);\n").arg(serviceName(), excludedTitlesJsArray);
 
     scriptFile.write(script.toUtf8());
     scriptFile.close();

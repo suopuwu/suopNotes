@@ -91,15 +91,89 @@ Item {
         }
 
         // Tooltip on hover (feature request): every toolbar button gets a
-        // ToolTip identifying it, shown after a short hover delay rather
+        // tooltip identifying it, shown after a short hover delay rather
         // than instantly (matching the platform-standard feel of a tooltip,
-        // not a label that pops the instant the pointer passes over).
+        // not a label that pops the instant the pointer passes over). Each
+        // button's own ToolbarButtonTip instance just holds its text and
+        // hover-delay bookkeeping — the actual rendering happens in the
+        // single shared bar.tooltipWindow (see both their own comments).
         function test_toolbar_buttons_have_hover_tooltips() {
-            compare(bar.boldButton.ToolTip.text, "Bold")
-            compare(bar.italicButton.ToolTip.text, "Italic")
-            compare(bar.strikethroughButton.ToolTip.text, "Strikethrough")
-            verify(bar.boldButton.ToolTip.delay > 0,
-                   "the tooltip should appear after a short hover delay, not instantly")
+            compare(bar.boldButtonTip.text, "Bold")
+            compare(bar.italicButtonTip.text, "Italic")
+            compare(bar.strikethroughButtonTip.text, "Strikethrough")
+        }
+
+        // The tooltip must never overlap its own button — that was the
+        // actual root cause of an infinite show/hide loop this design used
+        // to have (a tooltip sitting on top of the button intercepts the
+        // next hit-test, hover flips off, tooltip hides, hover flips back
+        // on, forever). Now structurally impossible to reintroduce: the
+        // tooltip is a wholly separate top-level window from the button's
+        // own, always positioned below it.
+        function test_toolbar_button_tooltip_is_offset_below_the_button_not_overlapping_it() {
+            bar.noteWindow = noteA
+            wait(20)
+
+            mouseMove(bar.boldButton, bar.boldButton.width / 2, bar.boldButton.height / 2)
+            tryCompare(bar.tooltipWindow, "activeButton", bar.boldButton, 2000)
+            tryCompare(bar.tooltipWindow, "contentVisible", true)
+
+            const buttonBottom = bar.boldButton.mapToGlobal(0, bar.boldButton.height).y
+            verify(bar.tooltipWindow.y >= buttonBottom,
+                   "the tooltip should sit below the button, not overlap it")
+
+            mouseMove(bar.boldButton, -50, -50)
+            tryCompare(bar.tooltipWindow, "contentVisible", false)
+        }
+
+        // Bugfix: an earlier version rendered the tooltip inside bar's own
+        // window, which meant bar's window had to reserve extra invisible
+        // height below the visible bar just so the tooltip wouldn't be
+        // clipped by that window's own bounds — but KWindowEffects blurs
+        // whatever region a window's own width/height cover with no way to
+        // carve out a smaller sub-rect, so that reserve stayed blurred
+        // (and, since it was real window surface, kept intercepting right-
+        // click-drags and swallowing clicks meant for whatever was
+        // underneath) permanently, whether or not a tooltip was even
+        // showing. A separate window sized to just its own text has
+        // nothing left over to leak that way — its size should reflect the
+        // tooltip's own short text, not the whole toolbar.
+        function test_toolbar_button_tooltip_is_a_separate_window_sized_to_its_own_text() {
+            bar.noteWindow = noteA
+            wait(20)
+
+            mouseMove(bar.strikethroughButton, bar.strikethroughButton.width / 2, bar.strikethroughButton.height / 2)
+            tryCompare(bar.tooltipWindow, "contentVisible", true, 2000)
+
+            compare(bar.tooltipWindow.text, "Strikethrough")
+            verify(bar.tooltipWindow.width < bar.barLength,
+                   "a single word's tooltip must not be sized to the whole toolbar")
+
+            mouseMove(bar.strikethroughButton, -50, -50)
+            tryCompare(bar.tooltipWindow, "contentVisible", false)
+        }
+
+        // Real hover, real delay, real (non-)oscillation — the actual
+        // end-to-end behavior the fix above exists for, not just the
+        // structural checks above it.
+        function test_toolbar_button_tooltip_shows_after_hovering_and_stays_shown() {
+            bar.noteWindow = noteA
+            wait(20)
+
+            mouseMove(bar.boldButton, bar.boldButton.width / 2, bar.boldButton.height / 2)
+            tryCompare(bar.tooltipWindow, "contentVisible", true, 2000)
+            compare(bar.tooltipWindow.text, "Bold")
+
+            // If the tooltip overlapped the button, it would flip
+            // invisible again shortly after showing (see this test file's
+            // own comment above) — holding it visible across another
+            // wait proves that isn't happening.
+            wait(300)
+            compare(bar.tooltipWindow.contentVisible, true,
+                    "the tooltip must stay visible while genuinely still hovering, not oscillate")
+
+            mouseMove(bar.boldButton, -50, -50)
+            tryCompare(bar.tooltipWindow, "contentVisible", false)
         }
 
         // Column options popup (feature request): the row/column-editing
@@ -107,51 +181,73 @@ Item {
         // only appear, in their own popup anchored to the grid icon, once
         // the cursor is actually inside a table AND the pointer is hovering
         // that icon (or the popup itself).
-        function test_column_options_popup_hidden_outside_a_table_even_when_hovering_the_grid_icon() {
+        function test_column_options_popup_hidden_outside_a_table() {
             bar.noteWindow = noteA
             noteA.currentInTable = false
-            wait(20)
-
-            mouseMove(bar.insertTableButton, bar.insertTableButton.width / 2, bar.insertTableButton.height / 2)
             wait(20)
 
             compare(bar.columnOptionsPopup.wantsVisible, false)
             compare(bar.columnOptionsPopup.background.visible, false)
         }
 
-        function test_column_options_popup_shown_when_hovering_the_grid_icon_while_in_a_table() {
+        // Feature request: shown automatically the instant the cursor is
+        // inside a table — no hovering the grid icon required, since the
+        // main bar itself no longer relocates to the table (see
+        // SelectionToolbar.qml's reposition()), so this popup is what
+        // actually shows a table-local toolbar now.
+        function test_column_options_popup_shown_automatically_when_entering_a_table() {
             bar.noteWindow = noteA
-            noteA.currentInTable = true
+            noteA.currentInTable = false
             wait(20)
 
-            compare(bar.columnOptionsPopup.wantsVisible, false,
-                    "must not show just from being in a table — only on actually hovering the icon")
+            compare(bar.columnOptionsPopup.wantsVisible, false, "precondition: not shown outside a table")
 
-            mouseMove(bar.insertTableButton, bar.insertTableButton.width / 2, bar.insertTableButton.height / 2)
+            noteA.currentInTable = true
             wait(20)
 
             compare(bar.columnOptionsPopup.wantsVisible, true)
             compare(bar.columnOptionsPopup.background.visible, true)
             compare(bar.columnOptionsPopup.content.enabled, true)
 
-            mouseMove(bar.insertTableButton, -50, -50)
+            noteA.currentInTable = false
             wait(20)
             compare(bar.columnOptionsPopup.wantsVisible, false,
-                    "moving the pointer away from both the icon and the popup should hide it again")
+                    "leaving the table again should hide it")
         }
 
-        function test_column_options_popup_is_anchored_below_the_grid_icon() {
+        // Feature request: the popup anchors to the table's own position
+        // (not the main bar's grid icon, which can be anywhere — the bar
+        // itself doesn't relocate to the table anymore).
+        function test_column_options_popup_is_anchored_below_the_table() {
             bar.noteWindow = noteA
+            noteA.docHandler.setMarkdown("")
+            wait(50)
+            noteA.docHandler.insertTable(0)
+            wait(50)
+            // Position 1 lands inside "Header 1"'s own text, solidly
+            // inside the table's first cell — position 0 sits right at
+            // the table frame's own boundary, which currentTable() does
+            // not resolve as "inside" the table (same convention
+            // tst_NoteWindow.qml's own table-editing tests use).
+            noteA.editor.cursorPosition = 1
             noteA.currentInTable = true
             wait(20)
 
-            mouseMove(bar.insertTableButton, bar.insertTableButton.width / 2, bar.insertTableButton.height / 2)
-            wait(20)
+            const rect = noteA.docHandler.tableRect(noteA.editor.selectionEnd)
+            verify(rect.width > 0 && rect.height > 0, "precondition: the table has a real, non-empty rect")
+            const topLeft = noteA.editor.mapToGlobal(rect.x, rect.y)
 
-            const buttonTopLeft = bar.insertTableButton.mapToGlobal(0, 0)
-            compare(bar.columnOptionsPopup.x, buttonTopLeft.x)
-            verify(bar.columnOptionsPopup.y > buttonTopLeft.y,
-                   "the popup should sit below the grid icon by default")
+            // Within a pixel, not exactly equal: the popup's own window
+            // position snaps to whole pixels, while the table's real
+            // layout-derived rect can be fractional.
+            verify(Math.abs(bar.columnOptionsPopup.x - topLeft.x) < 1,
+                   "expected popup.x (" + bar.columnOptionsPopup.x + ") to be within 1px of the table's own x (" + topLeft.x + ")")
+            verify(bar.columnOptionsPopup.y >= topLeft.y + rect.height,
+                   "the popup should sit below the table by default")
+
+            noteA.currentInTable = false
+            noteA.docHandler.setMarkdown("")
+            wait(50)
         }
 
         function test_content_visible_and_enabled_once_a_note_is_tracked() {
@@ -204,7 +300,7 @@ Item {
             wait(20)
 
             verify(bar.y < noteA.noteY, "the bar should default to sitting above the note, not below it")
-            compare(bar.y, noteA.noteY - bar.height - 8)
+            compare(bar.y, noteA.noteY - bar.barThickness - 8)
             compare(bar.x, noteA.noteX + noteA.noteWidth / 2 - bar.width / 2,
                     "the bar should default to horizontally centered over the note")
         }
@@ -444,6 +540,92 @@ Item {
             compare(bar.dragArea.acceptedButtons, Qt.RightButton)
         }
 
+        // Feature request: the table-options popup should match the main
+        // bar's own styling and behavior — blur, a right-click drag area,
+        // and a grip handle — not just its glass sheen (already covered
+        // by test_column_options_popup_is_anchored_below_the_table's own
+        // GlassOverlay). Blur only applies once the popup actually wants
+        // to be visible (i.e. the cursor is inside a table) — see this
+        // popup's own updateBlur() comment for the bug that guards
+        // against: this window stays permanently mapped even outside a
+        // table, so blurring it unconditionally left a real, blurred
+        // window idling near the main bar whether or not any table was
+        // ever involved.
+        function test_blur_is_applied_to_the_column_options_popup_only_while_it_wants_to_be_visible() {
+            settings.blurEnabled = true
+            bar.noteWindow = noteA
+            wait(20)
+            blurSpy.clear()
+
+            noteA.currentInTable = true
+            wait(20)
+
+            let foundOn = false
+            for (let i = 0; i < blurSpy.count; ++i) {
+                if (blurSpy.signalArguments[i][0] === bar.columnOptionsPopup && blurSpy.signalArguments[i][1] === true)
+                    foundOn = true
+            }
+            verify(foundOn, "entering a table with blur enabled should apply blur to the table-options popup")
+
+            blurSpy.clear()
+            noteA.currentInTable = false
+            wait(20)
+
+            let foundOff = false
+            for (let i = 0; i < blurSpy.count; ++i) {
+                if (blurSpy.signalArguments[i][0] === bar.columnOptionsPopup && blurSpy.signalArguments[i][1] === false)
+                    foundOff = true
+            }
+            verify(foundOff, "leaving the table again should turn the table-options popup's blur back off")
+        }
+
+        // Regression test for the same bug: outside a table, this
+        // permanently-mapped popup must never be blurred at all, even the
+        // instant a note is first tracked (before any table is involved).
+        function test_blur_is_not_applied_to_the_column_options_popup_outside_a_table() {
+            settings.blurEnabled = true
+            blurSpy.clear()
+
+            bar.noteWindow = noteA
+            wait(20)
+
+            let foundOn = false
+            for (let i = 0; i < blurSpy.count; ++i) {
+                if (blurSpy.signalArguments[i][0] === bar.columnOptionsPopup && blurSpy.signalArguments[i][1] === true)
+                    foundOn = true
+            }
+            verify(!foundOn, "tracking a note without being in a table must not blur the table-options popup")
+        }
+
+        // Regression test mirroring the blur fix above: the drag area must
+        // also be disabled outside a table, so a stray right-click near
+        // wherever this permanently-mapped popup last sat doesn't drag it.
+        function test_column_options_popup_drag_area_disabled_outside_a_table() {
+            bar.noteWindow = noteA
+            noteA.currentInTable = false
+            wait(20)
+
+            compare(bar.columnOptionsPopup.dragArea.enabled, false)
+
+            noteA.currentInTable = true
+            wait(20)
+            compare(bar.columnOptionsPopup.dragArea.enabled, true)
+
+            noteA.currentInTable = false
+            wait(20)
+            compare(bar.columnOptionsPopup.dragArea.enabled, false)
+        }
+
+        function test_column_options_popup_drag_area_is_scoped_to_the_right_button_only() {
+            compare(bar.columnOptionsPopup.dragArea.acceptedButtons, Qt.RightButton)
+        }
+
+        function test_column_options_popup_has_its_own_grip_handle() {
+            verify(bar.columnOptionsPopup.gripHandle !== null)
+            compare(bar.columnOptionsPopup.gripHandle.implicitWidth, 9)
+            compare(bar.columnOptionsPopup.gripHandle.implicitHeight, 21)
+        }
+
         // Feature request: the toolbar should show, not just apply,
         // formatting — a button reflects whether its formatting is already
         // active at the tracked note's current selection, not just
@@ -507,6 +689,69 @@ Item {
             compare(bar.italicButton.checked, true, "italic is active, so the Italic button should be checked")
             compare(bar.strikethroughButton.checked, false,
                     "strikethrough was never applied, so its button should not be checked")
+        }
+
+        // Feature request: cut/copy/paste toolbar buttons replace the
+        // removed right-click context menu (see NoteWindow.qml's
+        // mouseDragArea, which used to open one on a plain right-click).
+        function test_cut_button_disabled_without_a_selection_enabled_with_one() {
+            noteA.docHandler.setMarkdown("hello world\n")
+            wait(50)
+            noteA.editor.cursorPosition = 0
+            noteA.editor.deselect()
+
+            bar.noteWindow = noteA
+            wait(20)
+
+            compare(bar.cutButton.enabled, false, "Cut should be disabled with no selection")
+
+            noteA.editor.select(0, 5)
+            wait(20)
+
+            compare(bar.cutButton.enabled, true, "Cut should be enabled once text is selected")
+        }
+
+        function test_clicking_cut_removes_the_selected_text_and_copies_it_to_the_clipboard() {
+            noteA.docHandler.setMarkdown("hello world\n")
+            wait(50)
+            noteA.editor.select(0, 5)
+
+            bar.noteWindow = noteA
+            wait(20)
+
+            mouseClick(bar.cutButton, bar.cutButton.width / 2, bar.cutButton.height / 2)
+
+            verify(noteA.editor.text.startsWith(" world"),
+                   "expected \"hello\" to be cut, leaving \" world\": " + noteA.editor.text)
+
+            noteA.editor.cursorPosition = noteA.editor.length
+            mouseClick(bar.pasteButton, bar.pasteButton.width / 2, bar.pasteButton.height / 2)
+
+            verify(noteA.editor.text.indexOf("hello") !== -1,
+                   "cut should have copied the removed text to the clipboard, pasteable afterward")
+        }
+
+        function test_clicking_copy_then_paste_round_trips_the_selection() {
+            noteA.docHandler.setMarkdown("copy me\n")
+            wait(50)
+            noteA.editor.select(0, "copy me".length)
+
+            bar.noteWindow = noteA
+            wait(20)
+
+            mouseClick(bar.copyButton, bar.copyButton.width / 2, bar.copyButton.height / 2)
+
+            noteA.editor.cursorPosition = noteA.editor.length
+            mouseClick(bar.pasteButton, bar.pasteButton.width / 2, bar.pasteButton.height / 2)
+
+            // Not asserting on exact surrounding text: this app's editor
+            // round-trips its content through markdown serialization (see
+            // MarkdownSerialization.cpp), which can normalize whitespace
+            // unrelated to copy/paste itself — counting occurrences of the
+            // copied text is what actually proves paste worked.
+            const occurrences = noteA.editor.text.split("copy me").length - 1
+            compare(occurrences, 2,
+                    "pasting after copy should reinsert the exact text that was selected, alongside the original")
         }
     }
 }

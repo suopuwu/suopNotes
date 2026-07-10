@@ -2,10 +2,36 @@
 #include "MarkdownSerialization.h"
 #include "TextFormatting.h"
 
+#include <QAbstractTextDocumentLayout>
 #include <QRegularExpression>
 #include <QTextBlock>
 #include <QTextDocument>
 #include <QTextList>
+#include <QTextTable>
+
+namespace
+{
+// RAII helper for DocumentHandler::m_handlingListMutation — see that
+// member's own comment for why this guard exists at all.
+class ListMutationGuard
+{
+public:
+    explicit ListMutationGuard(bool &flag)
+        : m_flag(flag)
+        , m_reentrant(flag)
+    {
+        m_flag = true;
+    }
+    ~ListMutationGuard() { m_flag = m_reentrant; }
+    // True if a list-mutating call was ALREADY in progress when this guard
+    // was constructed — callers bail out immediately in that case.
+    bool reentrant() const { return m_reentrant; }
+
+private:
+    bool &m_flag;
+    bool m_reentrant;
+};
+}
 
 DocumentHandler::DocumentHandler(QObject *parent)
     : QObject(parent)
@@ -70,18 +96,27 @@ void DocumentHandler::toggleStrikethrough(int selectionStart, int selectionEnd)
 
 void DocumentHandler::toggleBulletList(int selectionStart, int selectionEnd)
 {
+    ListMutationGuard guard(m_handlingListMutation);
+    if (guard.reentrant())
+        return;
     TextFormatting::toggleBulletList(cursorFor(selectionStart, selectionEnd));
     emit formattingChanged();
 }
 
 void DocumentHandler::toggleNumberedList(int selectionStart, int selectionEnd)
 {
+    ListMutationGuard guard(m_handlingListMutation);
+    if (guard.reentrant())
+        return;
     TextFormatting::toggleNumberedList(cursorFor(selectionStart, selectionEnd));
     emit formattingChanged();
 }
 
 void DocumentHandler::toggleCheckboxList(int selectionStart, int selectionEnd)
 {
+    ListMutationGuard guard(m_handlingListMutation);
+    if (guard.reentrant())
+        return;
     TextFormatting::toggleCheckboxList(cursorFor(selectionStart, selectionEnd));
     emit formattingChanged();
 }
@@ -99,6 +134,12 @@ void DocumentHandler::setHeadingLevel(int selectionStart, int selectionEnd, int 
     const int currentLevel = TextFormatting::headingLevel(cursor);
     TextFormatting::setHeadingLevel(cursor, currentLevel == level ? 0 : level);
     emit formattingChanged();
+}
+
+void DocumentHandler::insertTabSpaces(int selectionStart, int selectionEnd)
+{
+    QTextCursor cursor = cursorFor(selectionStart, selectionEnd);
+    TextFormatting::insertTabSpaces(cursor);
 }
 
 void DocumentHandler::insertTable(int position)
@@ -163,6 +204,10 @@ void DocumentHandler::deleteTable(int position)
 
 bool DocumentHandler::tryContinueList(int cursorPosition)
 {
+    ListMutationGuard guard(m_handlingListMutation);
+    if (guard.reentrant())
+        return false;
+
     if (!m_document || !m_document->textDocument())
         return false;
 
@@ -201,6 +246,10 @@ bool DocumentHandler::tryContinueList(int cursorPosition)
 
 bool DocumentHandler::tryAutoConvertListShorthand(int cursorPosition)
 {
+    ListMutationGuard guard(m_handlingListMutation);
+    if (guard.reentrant())
+        return false;
+
     if (!m_document || !m_document->textDocument())
         return false;
 
@@ -241,6 +290,20 @@ bool DocumentHandler::tryAutoConvertListShorthand(int cursorPosition)
     else
         TextFormatting::toggleBulletList(stripCursor);
     return true;
+}
+
+void DocumentHandler::maintainListNumbering(int cursorPosition)
+{
+    ListMutationGuard guard(m_handlingListMutation);
+    if (guard.reentrant())
+        return;
+
+    if (!m_document || !m_document->textDocument())
+        return;
+
+    QTextCursor cursor(m_document->textDocument());
+    cursor.setPosition(cursorPosition);
+    TextFormatting::maintainHandRolledListNumbering(cursor);
 }
 
 bool DocumentHandler::tryResetHeadingOnReturn(int cursorPosition)
@@ -301,6 +364,10 @@ bool DocumentHandler::isCheckboxChecked(int selectionStart, int selectionEnd) co
 
 bool DocumentHandler::tryToggleCheckboxAt(int position)
 {
+    ListMutationGuard guard(m_handlingListMutation);
+    if (guard.reentrant())
+        return false;
+
     if (!m_document || !m_document->textDocument())
         return false;
 
@@ -320,4 +387,29 @@ bool DocumentHandler::isInTable(int position) const
     QTextCursor cursor(m_document->textDocument());
     cursor.setPosition(position);
     return TextFormatting::isInTable(cursor);
+}
+
+QRectF DocumentHandler::tableRect(int position) const
+{
+    if (!m_document || !m_document->textDocument())
+        return QRectF();
+
+    QTextDocument *document = m_document->textDocument();
+    QTextCursor cursor(document);
+    cursor.setPosition(position);
+    QTextTable *table = cursor.currentTable();
+    if (!table)
+        return QRectF();
+
+    return document->documentLayout()->frameBoundingRect(table);
+}
+
+QRectF DocumentHandler::checkboxRectAt(int position) const
+{
+    if (!m_document || !m_document->textDocument())
+        return QRectF();
+
+    QTextCursor cursor(m_document->textDocument());
+    cursor.setPosition(position);
+    return TextFormatting::checkboxMarkerRect(cursor);
 }

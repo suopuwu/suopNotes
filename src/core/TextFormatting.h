@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QRectF>
 #include <QTextBlock>
 #include <QTextCursor>
 
@@ -36,14 +37,18 @@ void toggleBulletList(QTextCursor cursor);
 // renumbers from 1.
 void toggleNumberedList(QTextCursor cursor, int startNumber = 1);
 // Same hand-rolled convention as toggleNumberedList, with a literal
-// "[ ] "/"[x] " marker instead of a number — GFM task-list items.
+// "☐ "/"☑ " (☐/☑) marker instead of a number — GFM task-list
+// items, displayed as a real checkbox glyph (feature request) rather than
+// literal "- [ ] "/"- [x] " syntax, which read as raw markdown rather than
+// an actual checkbox. See handRolledBlockMarkdownText's own comment for
+// how that syntax still gets written on save.
 void toggleCheckboxList(QTextCursor cursor);
 // Flips an existing checkbox item's checked state in place. Returns false
 // (does nothing) if the cursor isn't on a checkbox item at all.
 bool toggleCheckboxChecked(QTextCursor cursor);
 // Click-to-toggle (feature request): like toggleCheckboxChecked, but only
 // acts when cursor's own position sits within its block's checkbox glyph
-// itself (the leading "[ ]"/"[x]", not the rest of the item's text) — a
+// itself (the leading "☐"/"☑", not the rest of the item's text) — a
 // click anywhere else in a checkbox item should just place the cursor
 // normally, not toggle it.
 bool tryToggleCheckboxAtPosition(QTextCursor cursor);
@@ -62,8 +67,27 @@ void exitHandRolledList(QTextCursor cursor);
 // True if the cursor's block is a hand-rolled list item (numbered or
 // checkbox) whose text is empty apart from its own marker.
 bool isHandRolledListItemEmpty(QTextCursor cursor);
+// Re-derives the current item's whole numbered-list run (its sequential
+// numbers and shared marker width) if the cursor is on one — a no-op
+// otherwise. Meant to be called after every edit (not just the dedicated
+// toggle/continue/exit operations above), since ordinary text editing —
+// backspacing an item away, selecting and deleting one outright — merges
+// or removes blocks through Qt's own default editing, not through any of
+// this file's own list-aware functions, and would otherwise leave the
+// surviving items out of sequence.
+void maintainHandRolledListNumbering(QTextCursor cursor);
 // level 0 clears heading formatting back to a normal paragraph; 1-6 are h1-h6.
 void setHeadingLevel(QTextCursor cursor, int level);
+// Tab (feature request): inserts four literal spaces at the cursor,
+// replacing any selection — mirrors toggleBold/etc's own "mutate the
+// QTextCursor directly" convention rather than TextEdit's own insert()
+// QML method, which silently drops a pure-whitespace insertion (confirmed
+// empirically: textFormat: TextEdit.MarkdownText live-renormalizes the
+// text on every edit, and treats leading/otherwise-insignificant
+// whitespace as CommonMark noise to strip, not real content) — a raw
+// QTextCursor::insertText() bypasses that renormalization entirely, same
+// as every other mutation in this file already does.
+void insertTabSpaces(QTextCursor cursor);
 // Inserts a starter 2x2 table (with a header row) at the cursor's position.
 void insertTable(QTextCursor cursor);
 
@@ -135,4 +159,24 @@ void convertNativeListsToHandRolled(QTextDocument *document);
 // blocks sidesteps that unconditionally, without risking unescaping a
 // genuinely-plain paragraph that just happens to look similar.
 bool isHandRolledListBlock(const QTextBlock &block);
+
+// The text MarkdownSerialization should actually write for a hand-rolled
+// list block, in place of block.text() directly. Identical to block.text()
+// for numbered markers (already valid CommonMark syntax verbatim, same as
+// before), but NOT for checkbox markers: those now display as "☐ "/"☑ "
+// (feature request — a real checkbox glyph, not literal "- [ ] "/"- [x] "
+// GFM task-list syntax), so this rewrites just that marker prefix back to
+// what the file format needs, leaving the rest of the line untouched. The
+// save-side inverse of convertNativeListsToHandRolled's own checkbox
+// branch, which converts the other way on load.
+QString handRolledBlockMarkdownText(const QTextBlock &block);
+
+// The screen-space rect (the same document-layout coordinate space
+// DocumentHandler::tableRect() already uses) of the checkbox glyph itself
+// for the block containing `cursor`'s position — feature request: lets
+// QML draw a hover highlight exactly over the glyph, matching
+// tryToggleCheckboxAtPosition's own precision (only within the glyph
+// itself, not the item's whole text). An empty QRectF if the cursor isn't
+// positioned within a checkbox block's own marker.
+QRectF checkboxMarkerRect(QTextCursor cursor);
 }

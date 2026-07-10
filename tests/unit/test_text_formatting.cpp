@@ -1,3 +1,4 @@
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 #include <QFontMetricsF>
@@ -129,6 +130,69 @@ SCENARIO("Setting a heading level on the current block", "[text_formatting]")
             {
                 const QString md = doc.toMarkdown().trimmed();
                 CHECK(md == "Section Title");
+            }
+        }
+    }
+}
+
+SCENARIO("Setting a heading level actually changes how it looks, not just how it saves", "[text_formatting]")
+{
+    // Feature request / bug: headingLevel alone has NO visual effect when
+    // applied via the API directly — Qt's markdown PARSER bakes heading
+    // appearance (bold + a scaled font size) into the actual CHAR format
+    // only when building a heading fresh from "# " syntax; toggling
+    // headingLevel through the toolbar bypassed that, so it saved
+    // correctly but looked identical to plain text on screen.
+    GIVEN("a document with a single paragraph at a known base font size")
+    {
+        QTextDocument doc;
+        doc.setDefaultFont(QFont(QStringLiteral("Sans"), 14));
+        doc.setPlainText("Section Title");
+        const qreal baseSize = QTextCursor(&doc).charFormat().font().pointSizeF();
+
+        WHEN("heading level 1 is applied")
+        {
+            QTextCursor cursor(&doc);
+            TextFormatting::setHeadingLevel(cursor, 1);
+
+            THEN("the line is bold and twice the base size, matching Qt's own h1 scaling")
+            {
+                QTextCursor checkCursor(&doc);
+                checkCursor.select(QTextCursor::LineUnderCursor);
+                const QFont font = checkCursor.charFormat().font();
+                CHECK(font.bold());
+                CHECK(font.pointSizeF() == Catch::Approx(baseSize * 2.0));
+            }
+        }
+
+        WHEN("heading level 2 is applied")
+        {
+            QTextCursor cursor(&doc);
+            TextFormatting::setHeadingLevel(cursor, 2);
+
+            THEN("the line is bold and 1.5x the base size, matching Qt's own h2 scaling")
+            {
+                QTextCursor checkCursor(&doc);
+                checkCursor.select(QTextCursor::LineUnderCursor);
+                const QFont font = checkCursor.charFormat().font();
+                CHECK(font.bold());
+                CHECK(font.pointSizeF() == Catch::Approx(baseSize * 1.5));
+            }
+        }
+
+        WHEN("heading level 1 is applied, then cleared back to level 0")
+        {
+            QTextCursor cursor(&doc);
+            TextFormatting::setHeadingLevel(cursor, 1);
+            TextFormatting::setHeadingLevel(cursor, 0);
+
+            THEN("the size and weight are restored exactly, not left scaled up")
+            {
+                QTextCursor checkCursor(&doc);
+                checkCursor.select(QTextCursor::LineUnderCursor);
+                const QFont font = checkCursor.charFormat().font();
+                CHECK_FALSE(font.bold());
+                CHECK(font.pointSizeF() == Catch::Approx(baseSize));
             }
         }
     }
@@ -326,6 +390,107 @@ SCENARIO("Creating a bullet list tightens the document's indent width so the mar
             {
                 CHECK(doc.indentWidth() < 40.0);
                 CHECK(doc.indentWidth() > 0.0);
+            }
+        }
+    }
+}
+
+SCENARIO("Pressing Enter at or before a numbered item's own marker doesn't duplicate it", "[text_formatting]")
+{
+    // Bug: continueHandRolledList splits the block at the cursor's literal
+    // position — with no clamp, a cursor sitting AT or BEFORE the marker
+    // (not just after it, in the item's real text) carries that whole
+    // marker into the new block whole, which then got ANOTHER fresh one
+    // inserted in front of it ("1. some text" -> "0. 1. some text").
+    GIVEN("a numbered item, cursor placed at the very start of its marker")
+    {
+        QTextDocument doc;
+        QTextCursor cursor(&doc);
+        TextFormatting::toggleNumberedList(cursor, 1);
+        cursor.insertText("some text");
+
+        WHEN("Enter is pressed at position 0 (before the \"1. \" marker entirely)")
+        {
+            QTextCursor enterCursor(&doc);
+            enterCursor.setPosition(0);
+            const bool handled = TextFormatting::continueHandRolledList(enterCursor);
+
+            THEN("a blank new item is inserted — the original text is untouched, not duplicated")
+            {
+                REQUIRE(handled);
+                QStringList blockTexts;
+                for (QTextBlock b = doc.begin(); b.isValid(); b = b.next())
+                    blockTexts << b.text();
+                CHECK(blockTexts == QStringList{"1. ", "2. some text"});
+            }
+        }
+    }
+
+    GIVEN("a numbered item, cursor placed inside the marker itself (between digit and period)")
+    {
+        QTextDocument doc;
+        QTextCursor cursor(&doc);
+        TextFormatting::toggleNumberedList(cursor, 1);
+        cursor.insertText("some text");
+
+        WHEN("Enter is pressed at position 1 (between \"1\" and \". \")")
+        {
+            QTextCursor enterCursor(&doc);
+            enterCursor.setPosition(1);
+            TextFormatting::continueHandRolledList(enterCursor);
+
+            THEN("the marker still isn't duplicated")
+            {
+                QStringList blockTexts;
+                for (QTextBlock b = doc.begin(); b.isValid(); b = b.next())
+                    blockTexts << b.text();
+                CHECK(blockTexts == QStringList{"1. ", "2. some text"});
+            }
+        }
+    }
+}
+
+SCENARIO("Deleting an item from the middle of a numbered list renumbers what's left", "[text_formatting]")
+{
+    // Bug: ordinary text editing (backspacing an item away, selecting one
+    // and deleting it) merges/removes blocks through Qt's own default
+    // handling, never through toggleNumberedList/continueHandRolledList —
+    // maintainHandRolledListNumbering exists specifically to be called
+    // after such edits and re-sync the surviving items' numbers.
+    GIVEN("a 3-item numbered list, with the middle item selected and removed")
+    {
+        QTextDocument doc;
+        QTextCursor cursor(&doc);
+        TextFormatting::toggleNumberedList(cursor, 1);
+        cursor.insertText("first");
+        TextFormatting::continueHandRolledList(cursor);
+        cursor.insertText("second");
+        TextFormatting::continueHandRolledList(cursor);
+        cursor.insertText("third");
+
+        // Select the whole "2. second" block, including its own trailing
+        // block separator, and remove it — mirrors selecting a line in the
+        // editor and pressing Delete/Backspace, bypassing every list-aware
+        // function this file exposes, the same way real ad hoc editing
+        // would.
+        QTextBlock middle = doc.findBlockByNumber(1);
+        QTextCursor deleteCursor(&doc);
+        deleteCursor.setPosition(middle.position());
+        deleteCursor.setPosition(middle.next().position(), QTextCursor::KeepAnchor);
+        deleteCursor.removeSelectedText();
+
+        WHEN("maintainHandRolledListNumbering is called with the cursor on the surviving list")
+        {
+            QTextCursor maintainCursor(&doc);
+            maintainCursor.setPosition(doc.begin().position());
+            TextFormatting::maintainHandRolledListNumbering(maintainCursor);
+
+            THEN("the remaining two items renumber to 1 and 2, not 1 and 3")
+            {
+                QStringList blockTexts;
+                for (QTextBlock b = doc.begin(); b.isValid(); b = b.next())
+                    blockTexts << b.text();
+                CHECK(blockTexts == QStringList{"1. first", "2. third"});
             }
         }
     }
@@ -564,9 +729,9 @@ SCENARIO("Toggling a checkbox list on the current block", "[text_formatting]")
             QTextCursor cursor(&doc);
             TextFormatting::toggleCheckboxList(cursor);
 
-            THEN("the block's own text carries a literal, valid-GFM \"- [ ] \" marker")
+            THEN("the block's own text carries a literal, real-checkbox-glyph \"☐ \" marker")
             {
-                CHECK(doc.begin().text() == "- [ ] Buy milk");
+                CHECK(doc.begin().text() == QStringLiteral("☐ Buy milk"));
                 CHECK(TextFormatting::isCheckboxList(cursor));
                 CHECK_FALSE(TextFormatting::isCheckboxChecked(cursor));
             }
@@ -617,7 +782,7 @@ SCENARIO("Toggling a checkbox item's checked state", "[text_formatting]")
             THEN("it flips to checked, marker text and all")
             {
                 CHECK(toggled);
-                CHECK(doc.begin().text() == "- [x] Buy milk");
+                CHECK(doc.begin().text() == QStringLiteral("☑ Buy milk"));
                 CHECK(TextFormatting::isCheckboxChecked(cursor));
             }
 
@@ -627,7 +792,7 @@ SCENARIO("Toggling a checkbox item's checked state", "[text_formatting]")
 
                 THEN("it flips back to unchecked")
                 {
-                    CHECK(doc.begin().text() == "- [ ] Buy milk");
+                    CHECK(doc.begin().text() == QStringLiteral("☐ Buy milk"));
                     CHECK_FALSE(TextFormatting::isCheckboxChecked(cursor));
                 }
             }
@@ -655,34 +820,90 @@ SCENARIO("Toggling a checkbox item's checked state", "[text_formatting]")
 
 SCENARIO("Click-to-toggle hit-tests against the checkbox glyph itself", "[text_formatting]")
 {
-    GIVEN("a checkbox item, \"- [ ] Buy milk\"")
+    GIVEN("a checkbox item, \"☐ Buy milk\"")
     {
         QTextDocument doc;
         QTextCursor cursor(&doc);
         TextFormatting::toggleCheckboxList(cursor);
         cursor.insertText("Buy milk");
 
-        WHEN("the position is within the glyph itself (anywhere in \"- [ ] \")")
+        WHEN("the position is within the glyph itself (anywhere in \"☐ \")")
         {
             QTextCursor hitCursor(&doc);
-            hitCursor.setPosition(3); // inside "[ ]"
+            hitCursor.setPosition(1); // inside "☐ ", between the glyph and the space
 
             THEN("it toggles the checkbox")
             {
                 CHECK(TextFormatting::tryToggleCheckboxAtPosition(hitCursor));
-                CHECK(doc.begin().text() == "- [x] Buy milk");
+                CHECK(doc.begin().text() == QStringLiteral("☑ Buy milk"));
             }
         }
 
         WHEN("the position is past the glyph, in the item's real text")
         {
             QTextCursor missCursor(&doc);
-            missCursor.setPosition(doc.begin().position() + 8); // inside "Buy milk"
+            missCursor.setPosition(doc.begin().position() + 4); // inside "Buy milk"
 
             THEN("it does not toggle — a click there should just place the cursor")
             {
                 CHECK_FALSE(TextFormatting::tryToggleCheckboxAtPosition(missCursor));
-                CHECK(doc.begin().text() == "- [ ] Buy milk");
+                CHECK(doc.begin().text() == QStringLiteral("☐ Buy milk"));
+            }
+        }
+    }
+}
+
+SCENARIO("checkboxMarkerRect locates the checkbox glyph for a hover highlight", "[text_formatting]")
+{
+    GIVEN("a checkbox item, \"☐ Buy milk\"")
+    {
+        QTextDocument doc;
+        QTextCursor cursor(&doc);
+        TextFormatting::toggleCheckboxList(cursor);
+        cursor.insertText("Buy milk");
+        // Forces Qt to actually lay out the block's QTextLine(s) — a bare
+        // QTextDocument with no view/width set never runs its line-breaking
+        // pass otherwise, leaving block.layout()->lineCount() at 0.
+        doc.setTextWidth(300);
+
+        WHEN("queried at a position within the glyph itself")
+        {
+            QTextCursor hitCursor(&doc);
+            hitCursor.setPosition(1);
+
+            THEN("it returns a real, non-empty rect")
+            {
+                const QRectF rect = TextFormatting::checkboxMarkerRect(hitCursor);
+                CHECK(rect.width() > 0);
+                CHECK(rect.height() > 0);
+            }
+        }
+
+        WHEN("queried past the glyph, in the item's real text")
+        {
+            QTextCursor missCursor(&doc);
+            missCursor.setPosition(doc.begin().position() + 4);
+
+            THEN("it returns an empty rect — nothing to highlight there")
+            {
+                CHECK(TextFormatting::checkboxMarkerRect(missCursor).isEmpty());
+            }
+        }
+    }
+
+    GIVEN("a plain paragraph, not a checkbox item at all")
+    {
+        QTextDocument doc;
+        doc.setPlainText("just some text");
+
+        WHEN("queried anywhere in it")
+        {
+            QTextCursor cursor(&doc);
+            cursor.setPosition(2);
+
+            THEN("it returns an empty rect")
+            {
+                CHECK(TextFormatting::checkboxMarkerRect(cursor).isEmpty());
             }
         }
     }

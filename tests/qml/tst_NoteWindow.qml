@@ -190,26 +190,11 @@ Item {
             mouseRelease(editor, cx, cy, Qt.RightButton)
         }
 
-        // Right-click copy/paste menu (feature request): a plain right-click
-        // (no drag in between press and release) opens the menu instead of
-        // starting a window move.
-        function test_right_click_without_dragging_opens_the_context_menu() {
-            const win = instantiator.objectAt(0)
-            const editor = win.editor
-            const cx = editor.width / 2
-            const cy = editor.height / 2
-
-            mouseClick(editor, cx, cy, Qt.RightButton)
-            verify(win.editorContextMenu.visible,
-                   "a plain right-click (no drag) should open the context menu")
-
-            win.editorContextMenu.close()
-        }
-
-        // The other half of the same fix: dragging past the threshold
-        // should still move the window like before, and must NOT also open
-        // the menu once the drag has started.
-        function test_right_click_drag_past_threshold_starts_a_move_not_the_menu() {
+        // Right-click drag past the threshold should move the window, same
+        // as before the context menu (removed — feature request: cut/copy/
+        // paste live as toolbar buttons instead, see SelectionToolbar.qml)
+        // used to compete with it for a plain (non-drag) right-click.
+        function test_right_click_drag_past_threshold_starts_a_move() {
             const win = instantiator.objectAt(0)
             const area = win.mouseDragArea
             const editor = win.editor
@@ -220,67 +205,6 @@ Item {
 
             verify(area.rightDragStarted,
                    "moving past the threshold while right-button is held should start a drag")
-            verify(!win.editorContextMenu.visible, "a drag must not also open the context menu")
-        }
-
-        // Cut/Copy only make sense with an actual selection; Select All
-        // should always work as long as there's any text.
-        function test_context_menu_cut_and_copy_are_disabled_without_a_selection() {
-            const win = instantiator.objectAt(0)
-            const editor = win.editor
-
-            win.docHandler.setMarkdown("hello world")
-            wait(50)
-            editor.cursorPosition = 0
-            editor.deselect()
-
-            verify(!win.editorContextMenu.cutItem.enabled, "Cut should be disabled with no selection")
-            verify(!win.editorContextMenu.copyItem.enabled, "Copy should be disabled with no selection")
-
-            editor.select(0, 5)
-            verify(win.editorContextMenu.cutItem.enabled, "Cut should be enabled once text is selected")
-            verify(win.editorContextMenu.copyItem.enabled, "Copy should be enabled once text is selected")
-
-            win.docHandler.setMarkdown("")
-            wait(50)
-        }
-
-        function test_context_menu_select_all_selects_the_whole_note() {
-            const win = instantiator.objectAt(0)
-            const editor = win.editor
-
-            win.docHandler.setMarkdown("hello world")
-            wait(50)
-            editor.cursorPosition = 0
-            editor.deselect()
-
-            win.editorContextMenu.selectAllItem.triggered()
-
-            compare(editor.selectionStart, 0)
-            compare(editor.selectionEnd, editor.length)
-
-            win.docHandler.setMarkdown("")
-            wait(50)
-        }
-
-        function test_context_menu_cut_removes_the_selected_text() {
-            const win = instantiator.objectAt(0)
-            const editor = win.editor
-
-            win.docHandler.setMarkdown("hello world")
-            wait(50)
-            editor.select(0, 5)
-
-            win.editorContextMenu.cutItem.triggered()
-
-            // editor.text always carries TextArea's own trailing "\n\n" for
-            // a single-paragraph document, independent of anything cut()
-            // does — asserting the visible content survives via
-            // startsWith(), not an exact match against it.
-            verify(editor.text.startsWith(" world"), "expected \"hello\" to be cut, leaving \" world\": " + editor.text)
-
-            win.docHandler.setMarkdown("")
-            wait(50)
         }
 
         // Middle-mouse autoscroll (feature request, Chrome-style): a
@@ -789,7 +713,12 @@ Item {
         // Feature request: dragging the handle should scroll the note's
         // content, not just reflect scroll position passively. Simulates a
         // real drag gesture (press, move, release) on the handle and checks
-        // editorFlick.contentY actually moved.
+        // editorFlick.contentY actually moved. Distinct from dragging the
+        // note's own TEXT content to scroll, which stays disabled — see
+        // test_left_mouse_drag_over_the_editor_does_not_scroll below and
+        // editorFlick.interactive's own comment — clarified live that only
+        // THAT conflicts with text selection; the scrollbar handle itself
+        // does not.
         function test_dragging_scroll_handle_scrolls_the_editor() {
             // Uses instantiator.objectAt(0), not soloWindow — matching the
             // convention every other synthetic-mouse-gesture test in this
@@ -841,6 +770,71 @@ Item {
             wait(50)
 
             verify(flick.contentY > contentYBeforeDrag, "dragging the scroll handle downward should scroll the note's content")
+
+            win.docHandler.setMarkdown("hi")
+            wait(50)
+        }
+
+        // The other half of the same bugfix: a left-mouse-drag over the
+        // editor's own text must not scroll the note either — before this
+        // fix, editorFlick's default `interactive: true` competed with (and
+        // could win over) TextInput's own drag-text-selection, a known
+        // Flickable-vs-TextInput arbitration race, so dragging to select
+        // text could silently scroll instead. See editorFlick's own
+        // `interactive: false` comment.
+        function test_left_mouse_drag_over_the_editor_does_not_scroll() {
+            const win = instantiator.objectAt(0)
+            const flick = win.editorFlick
+            const editor = win.editor
+
+            let many = ""
+            for (let i = 0; i < 60; ++i)
+                many += "line " + i + "\n\n"
+            win.docHandler.setMarkdown(many)
+            wait(50)
+            editor.cursorPosition = 0
+            wait(50)
+
+            verify(flick.contentHeight > flick.height, "precondition: content must overflow to scroll at all")
+            compare(flick.contentY, 0, "precondition: the viewport must actually be scrolled to the top")
+
+            // Bounded to flick's own (clipped, actually visible) height, not
+            // editor.height — editor's real height spans its full virtual
+            // content (far taller than the note's window), so a coordinate
+            // near its bottom would land off-window and never reach a real
+            // mouse event.
+            mouseDrag(editor, editor.width / 2, 5, 0, flick.height - 10, Qt.LeftButton, Qt.NoModifier, 50)
+
+            compare(flick.contentY, 0, "a plain left-drag over the text must not scroll the note")
+
+            win.docHandler.setMarkdown("hi")
+            wait(50)
+        }
+
+        // Feature request/bugfix: mouse-wheel scrolling must keep working
+        // even though editorFlick.interactive is now false (see its own
+        // comment) — Qt gates its own built-in wheel handling behind that
+        // same flag, so wheelHandler drives contentY manually instead.
+        function test_mouse_wheel_scrolls_the_editor() {
+            const win = instantiator.objectAt(0)
+            const flick = win.editorFlick
+            const editor = win.editor
+
+            let many = ""
+            for (let i = 0; i < 60; ++i)
+                many += "line " + i + "\n\n"
+            win.docHandler.setMarkdown(many)
+            wait(50)
+            editor.cursorPosition = 0
+            wait(50)
+
+            verify(flick.contentHeight > flick.height, "precondition: content must overflow to scroll at all")
+            compare(flick.contentY, 0, "precondition: the viewport must actually be scrolled to the top")
+
+            mouseWheel(flick, flick.width / 2, flick.height / 2, 0, -240, Qt.NoButton, Qt.NoModifier, 0)
+            wait(50)
+
+            verify(flick.contentY > 0, "scrolling the wheel downward should move the viewport down")
 
             win.docHandler.setMarkdown("hi")
             wait(50)
@@ -1323,13 +1317,48 @@ Item {
             win.docHandler.setMarkdown("- [ ] milk\n")
             wait(50)
 
-            // "- [ ] " is 6 characters — click near its start, well inside
-            // the glyph itself, not the "milk" text after it.
-            const rect = editor.positionToRectangle(2)
+            // The displayed marker is "☐ " (2 characters — a real checkbox
+            // glyph, feature request, not the raw "- [ ] " markdown loaded
+            // above) — click at its very start, inside the glyph itself,
+            // not the "milk" text after it.
+            const rect = editor.positionToRectangle(0)
             mouseClick(editor, rect.x, rect.y + rect.height / 2, Qt.LeftButton)
 
             verify(win.docHandler.toMarkdown().indexOf("- [x] milk") !== -1,
                    "clicking the checkbox glyph should check it: " + win.docHandler.toMarkdown())
+        }
+
+        // On-hover highlight (feature request: "real checkboxes with on
+        // hover animations") — a small highlight (the same
+        // InteractableHighlight every other bit of interactable chrome in
+        // this app uses) appears exactly over the checkbox glyph while
+        // hovering it, and disappears once the pointer moves away, so the
+        // glyph reads as a real, clickable widget rather than plain text.
+        function test_hovering_the_checkbox_glyph_shows_a_highlight() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+
+            win.docHandler.setMarkdown("- [ ] milk\n")
+            wait(50)
+            win.requestActivate()
+            tryCompare(win, "active", true)
+
+            compare(win.checkboxHighlight.active, false, "precondition: no highlight before hovering")
+
+            const rect = editor.positionToRectangle(0)
+            mouseMove(editor, rect.x, rect.y + rect.height / 2)
+            wait(20)
+
+            compare(win.checkboxHighlight.active, true,
+                    "hovering the checkbox glyph should show the highlight")
+
+            mouseMove(editor, -50, -50)
+            wait(20)
+
+            compare(win.checkboxHighlight.active, false, "moving away should hide the highlight again")
+
+            win.docHandler.setMarkdown("")
+            wait(50)
         }
 
         // Selectable numbers (feature request): unlike Qt's own QTextList
@@ -1352,6 +1381,35 @@ Item {
         // same as clicking the toolbar's "B" button — proves the Shortcut
         // item in NoteWindow.qml is actually wired to Settings and to
         // docHandler, not just present.
+        // Feature request: Tab inserts four spaces instead of TextArea's
+        // own default of a literal tab character.
+        function test_pressing_tab_inserts_four_spaces() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+
+            win.docHandler.setMarkdown("hello")
+            wait(50)
+
+            win.requestActivate()
+            tryCompare(win, "active", true)
+            editor.forceActiveFocus()
+            tryCompare(editor, "activeFocus", true)
+
+            editor.cursorPosition = 0
+            keyClick(Qt.Key_Tab)
+
+            // Checked via toMarkdown(), not editor.text: MarkdownText mode
+            // regenerates editor.text through Qt's own markdown writer,
+            // which (unrelated to this feature) can reformat pure leading
+            // whitespace — toMarkdown() reads the underlying QTextDocument
+            // directly, the same thing that actually gets saved.
+            verify(win.docHandler.toMarkdown().startsWith("    "),
+                   "Tab should insert four spaces, got: " + JSON.stringify(win.docHandler.toMarkdown()))
+
+            win.docHandler.setMarkdown("")
+            wait(50)
+        }
+
         function test_ctrl_b_shortcut_toggles_bold_on_the_current_selection() {
             const win = instantiator.objectAt(0)
             const editor = win.editor
@@ -1369,6 +1427,95 @@ Item {
 
             verify(win.docHandler.toMarkdown().indexOf("**bold me**") !== -1,
                    "Ctrl+B should toggle bold the same as the toolbar button")
+        }
+
+        // Feature request: Ctrl+C routes through performCopy() (see
+        // NoteWindow.qml) instead of TextArea's own built-in Copy handling,
+        // so it gets the same small glass "Copied" confirmation the
+        // toolbar's Copy button shows.
+        function test_ctrl_c_copies_the_selection_and_shows_the_copy_toast() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+
+            win.docHandler.setMarkdown("copy me\n")
+            wait(50)
+
+            win.requestActivate()
+            tryCompare(win, "active", true)
+            editor.forceActiveFocus()
+            tryCompare(editor, "activeFocus", true)
+
+            editor.select(0, "copy me".length)
+            // tryCompare, not compare: a previous test's toast may still be
+            // mid fade-out (opacity animates over 150ms — see copyToast's
+            // own Behavior).
+            tryCompare(win.copyToast, "opacity", 0, 1000, "precondition: the copy toast starts hidden")
+
+            keyClick(Qt.Key_C, Qt.ControlModifier)
+
+            tryCompare(win.copyToast, "opacity", 1, 1000, "Ctrl+C should show the copy toast")
+
+            editor.cursorPosition = editor.length
+            editor.paste()
+            verify(editor.text.indexOf("copy me") !== -1,
+                   "Ctrl+C should have copied the selected text to the clipboard")
+
+            win.docHandler.setMarkdown("")
+            wait(50)
+        }
+
+        // Feature request: Copy — both Ctrl+C and the toolbar button, see
+        // SelectionToolbar.qml — copies the whole note when nothing is
+        // selected, rather than doing nothing, since a copy with no visible
+        // change otherwise gives no indication anything happened.
+        function test_ctrl_c_with_nothing_selected_copies_the_whole_note() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+
+            win.docHandler.setMarkdown("copy the whole note\n")
+            wait(50)
+
+            win.requestActivate()
+            tryCompare(win, "active", true)
+            editor.forceActiveFocus()
+            tryCompare(editor, "activeFocus", true)
+
+            editor.cursorPosition = 3
+            editor.deselect()
+
+            keyClick(Qt.Key_C, Qt.ControlModifier)
+
+            compare(editor.selectionStart, editor.selectionEnd,
+                    "no selection should be left visible after copying the whole note")
+            compare(editor.cursorPosition, 3, "the cursor should land back where it was, not at the document's end")
+
+            editor.cursorPosition = editor.length
+            editor.paste()
+            verify(editor.text.indexOf("copy the whole note") !== -1,
+                   "copying with nothing selected should have copied the entire note's text")
+
+            win.docHandler.setMarkdown("")
+            wait(50)
+        }
+
+        // The toast is a brief confirmation, not a persistent indicator —
+        // it should fade itself back out shortly after showing.
+        function test_copy_toast_hides_itself_after_a_delay() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+
+            win.docHandler.setMarkdown("copy me\n")
+            wait(50)
+            editor.select(0, "copy me".length)
+
+            win.performCopy()
+            tryCompare(win.copyToast, "opacity", 1, 1000, "precondition: the toast is showing right after a copy")
+
+            wait(1200)
+            compare(win.copyToast.opacity, 0, "the toast should have hidden itself again after its own delay")
+
+            win.docHandler.setMarkdown("")
+            wait(50)
         }
 
         // Starter table insertion (feature request): docHandler.insertTable()

@@ -63,9 +63,13 @@ QString markdownForRun(QTextDocument *document, const Run &run)
 
     // A run is homogeneous by construction (see the run-splitting loop
     // above) — checking the first block is enough to know every block in
-    // it is a hand-rolled list item. Their marker text is already exactly
-    // correct GFM syntax, but Qt's own markdown WRITER treats any plain
-    // paragraph merely starting with what looks like list syntax as
+    // it is a hand-rolled list item. Numbered marker text is already
+    // exactly correct GFM syntax; checkbox marker text is NOT (it displays
+    // as a real "☐"/"☑" checkbox glyph — feature request — rather than
+    // literal "- [ ] "/"- [x] " syntax), so handRolledBlockMarkdownText
+    // rewrites just that prefix back to what the file format needs — see
+    // its own comment. Either way, Qt's own markdown WRITER treats any
+    // plain paragraph merely starting with what looks like list syntax as
     // ambiguous and defensively escapes it ("1. " -> "1\. ", "- " -> "\- ",
     // confirmed empirically) since it has no way to know the block was
     // deliberately meant to render as a list marker rather than being
@@ -76,7 +80,7 @@ QString markdownForRun(QTextDocument *document, const Run &run)
     if (TextFormatting::isHandRolledListBlock(startBlock)) {
         QStringList lines;
         for (QTextBlock block = startBlock; block.isValid(); block = block.next()) {
-            lines << block.text();
+            lines << TextFormatting::handRolledBlockMarkdownText(block);
             if (block == endBlock)
                 break;
         }

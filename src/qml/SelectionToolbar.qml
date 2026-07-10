@@ -67,6 +67,80 @@ Window {
         verticalAlignment: Text.AlignVCenter
     }
 
+    // Hover tooltip (feature request), one instance per button below.
+    //
+    // A plain Popup, not QtQuick Controls' own ToolTip: ToolTip has a
+    // built-in positioner that unconditionally recomputes and overwrites
+    // its own y the instant it opens (confirmed empirically — even
+    // assigning y from inside onOpened, AFTER that positioner has already
+    // run once, reads back unchanged a statement later; something in
+    // ToolTip's own C++ implementation re-asserts it synchronously on any
+    // relevant change). That default position overlapped the button, which
+    // caused a genuine infinite show/hide loop: a tooltip sitting on top
+    // of its own button intercepts the next hit-test, HoverHandler sees
+    // the pointer leave the button, the tooltip hides, hover returns, it
+    // shows again, forever.
+    //
+    // Doesn't render itself at all, though — it just drives the shared
+    // tooltipWindow singleton below. Two earlier approaches were tried and
+    // both found to leak a permanent bug once every button got one of
+    // these: rendering as a Popup embedded in bar's own window either (a)
+    // stayed Popup.Item (the default), which clips to the OWNING window's
+    // own small surface, so bar's own window had to reserve extra
+    // invisible height below the visible bar just so a tooltip positioned
+    // under a button wouldn't be clipped — but KWindowEffects blurs
+    // whatever region a window's OWN width/height cover with no way to
+    // carve out a smaller sub-rect, so that reserve was blurred right
+    // alongside the visible bar even when no tooltip was showing, and
+    // being real window surface it also intercepted right-click-drags and
+    // swallowed clicks meant for whatever sat beneath it (confirmed live:
+    // a dead, blurred, draggable strip permanently under the toolbar); or
+    // (b) popupType: Popup.Window, which fixed the clipping but mapped a
+    // brand new native window every time a tooltip opened — the same
+    // "mapping/unmapping a surface disrupts hover live" class of bug this
+    // file's own bar/columnOptionsPopup already learned to avoid (see
+    // their own Component.onCompleted comments, "shown once, never
+    // hidden/shown again"), causing a genuine flicker loop. A single
+    // shared tooltip window, mapped once at startup like bar/
+    // columnOptionsPopup and only ever repositioned/toggled via content
+    // visibility afterward, sidesteps both: it's sized to just its own
+    // text (nothing left to blur/intercept clicks under the rest of the
+    // toolbar), and it's never mapped/unmapped again after startup (no
+    // flicker).
+    component ToolbarButtonTip: Item {
+        id: tip
+        property string text: ""
+        // Lets the "▦" grid icon (whose tooltip meaning changes once the
+        // popup toolbar reference below it is relevant) suppress this
+        // entirely rather than showing a tooltip for the wrong action.
+        property bool suppressed: false
+        property bool delayElapsed: false
+        readonly property bool shouldShow: parent.hovered && delayElapsed && !suppressed
+
+        onShouldShowChanged: {
+            if (shouldShow)
+                tooltipWindow.showTip(tip.parent, tip.text)
+            else if (tooltipWindow.activeButton === tip.parent)
+                tooltipWindow.hideTip()
+        }
+
+        Timer {
+            interval: 500
+            running: tip.parent.hovered && !tip.delayElapsed && !tip.suppressed
+            onTriggered: tip.delayElapsed = true
+        }
+
+        // Resets once hover leaves the button, so the delay starts fresh
+        // again next time rather than showing instantly on the next hover.
+        Connections {
+            target: tip.parent
+            function onHoveredChanged() {
+                if (!tip.parent.hovered)
+                    tip.delayElapsed = false
+            }
+        }
+    }
+
     // Scope the toolbar acts on — the currently-focused NoteWindow, or null
     // when no note has focus. Sourced from Main.qml, the one place that
     // observes every NoteWindow's own activeChanged.
@@ -85,9 +159,15 @@ Window {
     readonly property alias boldButton: boldButton
     readonly property alias italicButton: italicButton
     readonly property alias strikethroughButton: strikethroughButton
+    readonly property alias boldButtonTip: boldButtonTip
+    readonly property alias italicButtonTip: italicButtonTip
+    readonly property alias strikethroughButtonTip: strikethroughButtonTip
     readonly property alias insertTableButton: insertTableButton
-    readonly property alias insertTableButtonHover: insertTableButtonHover
+    readonly property alias cutButton: cutButton
+    readonly property alias copyButton: copyButton
+    readonly property alias pasteButton: pasteButton
     readonly property alias columnOptionsPopup: columnOptionsPopup
+    readonly property alias tooltipWindow: tooltipWindow
     readonly property alias background: background
     readonly property alias content: content
     readonly property alias gripDotsGrid: gripDotsGrid
@@ -106,12 +186,24 @@ Window {
     // hover/press highlight clip against the window's edge.
     readonly property int barThickness: 36
     readonly property int buttonSize: 32
-    // gripHandle (9) + divider (1) + 14 buttons * buttonSize (448) + 15
-    // gaps * spacing (30), plus a little breathing room so nothing sits
-    // flush against background's rounded corners.
-    readonly property int barLength: 500
+    // gripHandle (9) + 2 dividers (1 each, one before the formatting/table
+    // buttons, one before cut/copy/paste) + 12 buttons * buttonSize (384)
+    // + 14 gaps * spacing (28), plus a little breathing room so nothing
+    // sits flush against background's rounded corners. Bugfix: previously
+    // computed with only ONE divider (466, before cut/copy/paste got
+    // their own divider — see nonButtonChildCount's own fix below) — a
+    // window a few px narrower than its actual content, silently clipping
+    // the rightmost buttons' hit-test region outside the real window
+    // surface (confirmed as the explanation for reported missing tooltips
+    // and unreliable clicks on the last button(s) in the row). Kept even
+    // (436, not the bare-minimum 435): reposition()'s own centering math
+    // divides this by 2, and window positioning rounds to whole pixels —
+    // an odd barLength surfaced a half-pixel mismatch against that
+    // rounding (confirmed empirically), which an even value sidesteps
+    // entirely rather than chasing down exactly where the rounding happens.
+    readonly property int barLength: 436
 
-    // The grip + divider always stay in the toolbar's first line/column
+    // The grip + dividers always stay in the toolbar's first line/column
     // regardless of button count — only the buttons themselves wrap once
     // there are more than maxButtonsBeforeWrap (feature request: "wrap
     // past N icons"). Kept a little above the current 14-button count —
@@ -126,7 +218,9 @@ Window {
     // clipped. Grow barThickness/barLength to a real multi-line size
     // alongside this if button count ever needs to cross it for real.
     readonly property int maxButtonsBeforeWrap: 15
-    readonly property int nonButtonChildCount: 2
+    // gripHandle + the two dividers (bugfix: was 2, undercounting the
+    // second divider added alongside cut/copy/paste).
+    readonly property int nonButtonChildCount: 3
 
     // True once a note has been placed to its left or right (column
     // layout); false for above/below (row layout, the default) — set by
@@ -240,7 +334,10 @@ Window {
     // simply goes inert with a null target).
     Connections {
         target: bar.noteWindow ? bar.noteWindow.noteAppearance : null
-        function onBlurEnabledChanged() { bar.updateBlur() }
+        function onBlurEnabledChanged() {
+            bar.updateBlur()
+            columnOptionsPopup.updateBlur()
+        }
     }
 
     // Recomputes the default position only when the tracked note *changes*
@@ -257,6 +354,7 @@ Window {
         if (tracking)
             reposition()
         updateBlur()
+        columnOptionsPopup.updateBlur()
     }
 
     // Tries each edge of the note in priority order — top, left, right,
@@ -322,10 +420,17 @@ Window {
         const screen = note.screen
         const gap = 8
 
-        const noteX = note.noteX
-        const noteY = note.noteY
-        const noteW = note.noteWidth
-        const noteH = note.noteHeight
+        // Feature request: the main bar always anchors to the whole note,
+        // even while the cursor is inside a table — it used to re-anchor
+        // to the table's own (usually much smaller) bounds instead, but
+        // that meant the bar jumping around the note as the cursor moved
+        // in and out of tables. columnOptionsPopup below anchors to the
+        // table itself instead, so there's still a table-local toolbar
+        // available without the main bar itself relocating.
+        let noteX = note.noteX
+        let noteY = note.noteY
+        let noteW = note.noteWidth
+        let noteH = note.noteHeight
 
         let vertical = false
         let targetX = noteX + noteW / 2 - bar.barLength / 2
@@ -482,6 +587,13 @@ Window {
             implicitWidth: bar.isVertical ? 21 : 9
             implicitHeight: bar.isVertical ? 9 : 21
             Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
+            // Bugfix: the grip used to sit flush against the toolbar's own
+            // outer edge (its rounded corner, in row mode's left edge) —
+            // a little breathing room on that outer side only (not the
+            // side facing the divider/buttons, which already has its own
+            // spacing).
+            Layout.leftMargin: bar.isVertical ? 0 : 4
+            Layout.topMargin: bar.isVertical ? 4 : 0
 
             Item {
                 id: gripDotsGrid
@@ -544,13 +656,12 @@ Window {
             implicitHeight: bar.buttonSize
             Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
             background: ToolbarButtonHighlight {}
+            hoverEnabled: true
             contentItem: ToolbarButtonLabel {}
             checkable: true
             checked: bar.noteWindow ? bar.noteWindow.currentBold : false
             onClicked: bar.runAction(() => bar.noteWindow.docHandler.toggleBold(bar.noteWindow.editor.selectionStart, bar.noteWindow.editor.selectionEnd))
-            ToolTip.text: "Bold"
-            ToolTip.visible: hovered
-            ToolTip.delay: 500
+            ToolbarButtonTip { id: boldButtonTip; text: "Bold" }
         }
         ToolButton {
             id: italicButton
@@ -560,13 +671,12 @@ Window {
             implicitHeight: bar.buttonSize
             Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
             background: ToolbarButtonHighlight {}
+            hoverEnabled: true
             contentItem: ToolbarButtonLabel {}
             checkable: true
             checked: bar.noteWindow ? bar.noteWindow.currentItalic : false
             onClicked: bar.runAction(() => bar.noteWindow.docHandler.toggleItalic(bar.noteWindow.editor.selectionStart, bar.noteWindow.editor.selectionEnd))
-            ToolTip.text: "Italic"
-            ToolTip.visible: hovered
-            ToolTip.delay: 500
+            ToolbarButtonTip { id: italicButtonTip; text: "Italic" }
         }
         ToolButton {
             id: strikethroughButton
@@ -576,13 +686,12 @@ Window {
             implicitHeight: bar.buttonSize
             Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
             background: ToolbarButtonHighlight {}
+            hoverEnabled: true
             contentItem: ToolbarButtonLabel {}
             checkable: true
             checked: bar.noteWindow ? bar.noteWindow.currentStrikethrough : false
             onClicked: bar.runAction(() => bar.noteWindow.docHandler.toggleStrikethrough(bar.noteWindow.editor.selectionStart, bar.noteWindow.editor.selectionEnd))
-            ToolTip.text: "Strikethrough"
-            ToolTip.visible: hovered
-            ToolTip.delay: 500
+            ToolbarButtonTip { id: strikethroughButtonTip; text: "Strikethrough" }
         }
         ToolButton {
             text: "H1"
@@ -590,13 +699,12 @@ Window {
             implicitHeight: bar.buttonSize
             Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
             background: ToolbarButtonHighlight {}
+            hoverEnabled: true
             contentItem: ToolbarButtonLabel {}
             checkable: true
             checked: bar.noteWindow ? bar.noteWindow.currentHeadingLevel === 1 : false
             onClicked: bar.runAction(() => bar.noteWindow.docHandler.setHeadingLevel(bar.noteWindow.editor.selectionStart, bar.noteWindow.editor.selectionEnd, 1))
-            ToolTip.text: "Heading 1"
-            ToolTip.visible: hovered
-            ToolTip.delay: 500
+            ToolbarButtonTip { text: "Heading 1" }
         }
         ToolButton {
             text: "H2"
@@ -604,27 +712,12 @@ Window {
             implicitHeight: bar.buttonSize
             Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
             background: ToolbarButtonHighlight {}
+            hoverEnabled: true
             contentItem: ToolbarButtonLabel {}
             checkable: true
             checked: bar.noteWindow ? bar.noteWindow.currentHeadingLevel === 2 : false
             onClicked: bar.runAction(() => bar.noteWindow.docHandler.setHeadingLevel(bar.noteWindow.editor.selectionStart, bar.noteWindow.editor.selectionEnd, 2))
-            ToolTip.text: "Heading 2"
-            ToolTip.visible: hovered
-            ToolTip.delay: 500
-        }
-        ToolButton {
-            text: "¶"
-            implicitWidth: bar.buttonSize
-            implicitHeight: bar.buttonSize
-            Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
-            background: ToolbarButtonHighlight {}
-            contentItem: ToolbarButtonLabel {}
-            checkable: true
-            checked: bar.noteWindow ? bar.noteWindow.currentHeadingLevel === 0 : false
-            onClicked: bar.runAction(() => bar.noteWindow.docHandler.setHeadingLevel(bar.noteWindow.editor.selectionStart, bar.noteWindow.editor.selectionEnd, 0))
-            ToolTip.text: "Paragraph (clear heading)"
-            ToolTip.visible: hovered
-            ToolTip.delay: 500
+            ToolbarButtonTip { text: "Heading 2" }
         }
         ToolButton {
             text: "•"
@@ -632,13 +725,12 @@ Window {
             implicitHeight: bar.buttonSize
             Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
             background: ToolbarButtonHighlight {}
+            hoverEnabled: true
             contentItem: ToolbarButtonLabel {}
             checkable: true
             checked: bar.noteWindow ? bar.noteWindow.currentBulletList : false
             onClicked: bar.runAction(() => bar.noteWindow.docHandler.toggleBulletList(bar.noteWindow.editor.selectionStart, bar.noteWindow.editor.selectionEnd))
-            ToolTip.text: "Bullet List"
-            ToolTip.visible: hovered
-            ToolTip.delay: 500
+            ToolbarButtonTip { text: "Bullet List" }
         }
         ToolButton {
             text: "1."
@@ -646,13 +738,12 @@ Window {
             implicitHeight: bar.buttonSize
             Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
             background: ToolbarButtonHighlight {}
+            hoverEnabled: true
             contentItem: ToolbarButtonLabel {}
             checkable: true
             checked: bar.noteWindow ? bar.noteWindow.currentNumberedList : false
             onClicked: bar.runAction(() => bar.noteWindow.docHandler.toggleNumberedList(bar.noteWindow.editor.selectionStart, bar.noteWindow.editor.selectionEnd))
-            ToolTip.text: "Numbered List"
-            ToolTip.visible: hovered
-            ToolTip.delay: 500
+            ToolbarButtonTip { text: "Numbered List" }
         }
         ToolButton {
             text: "☑"
@@ -660,13 +751,12 @@ Window {
             implicitHeight: bar.buttonSize
             Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
             background: ToolbarButtonHighlight {}
+            hoverEnabled: true
             contentItem: ToolbarButtonLabel {}
             checkable: true
             checked: bar.noteWindow ? bar.noteWindow.currentCheckboxList : false
             onClicked: bar.runAction(() => bar.noteWindow.docHandler.toggleCheckboxList(bar.noteWindow.editor.selectionStart, bar.noteWindow.editor.selectionEnd))
-            ToolTip.text: "Checkbox List"
-            ToolTip.visible: hovered
-            ToolTip.delay: 500
+            ToolbarButtonTip { text: "Checkbox List" }
         }
         // The "grid icon" (feature request): inserts a starter table when
         // clicked with the cursor outside any table (unchanged behavior),
@@ -682,13 +772,67 @@ Window {
             implicitHeight: bar.buttonSize
             Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
             background: ToolbarButtonHighlight {}
+            hoverEnabled: true
             contentItem: ToolbarButtonLabel {}
             onClicked: bar.runAction(() => bar.noteWindow.docHandler.insertTable(bar.noteWindow.editor.selectionEnd))
-            ToolTip.text: "Insert Table"
-            ToolTip.visible: hovered && !(bar.noteWindow ? bar.noteWindow.currentInTable : false)
-            ToolTip.delay: 500
+            ToolbarButtonTip {
+                text: "Insert Table"
+                suppressed: bar.noteWindow ? bar.noteWindow.currentInTable : false
+            }
+        }
 
-            HoverHandler { id: insertTableButtonHover }
+        // Cut/copy/paste (feature request): replace the removed right-click
+        // context menu (see NoteWindow.qml's mouseDragArea, which used to
+        // open one on a plain right-click) — that menu's MouseArea-vs-
+        // TextInput event arbitration kept proving unreliable live, so
+        // exposing the same three actions as ordinary toolbar buttons is
+        // simpler and just works like every other button here.
+        Rectangle {
+            implicitWidth: bar.isVertical ? 18 : 1
+            implicitHeight: bar.isVertical ? 1 : 18
+            color: Qt.rgba(1, 1, 1, 0.15)
+            Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
+            Layout.leftMargin: bar.isVertical ? 0 : 4
+            Layout.topMargin: bar.isVertical ? 4 : 0
+        }
+
+        ToolButton {
+            id: cutButton
+            text: "✂"
+            implicitWidth: bar.buttonSize
+            implicitHeight: bar.buttonSize
+            Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
+            background: ToolbarButtonHighlight {}
+            hoverEnabled: true
+            contentItem: ToolbarButtonLabel {}
+            enabled: bar.noteWindow ? bar.noteWindow.editor.selectionStart !== bar.noteWindow.editor.selectionEnd : false
+            onClicked: bar.runAction(() => bar.noteWindow.editor.cut())
+            ToolbarButtonTip { text: "Cut" }
+        }
+        ToolButton {
+            id: copyButton
+            text: "⧉"
+            implicitWidth: bar.buttonSize
+            implicitHeight: bar.buttonSize
+            Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
+            background: ToolbarButtonHighlight {}
+            hoverEnabled: true
+            contentItem: ToolbarButtonLabel {}
+            onClicked: bar.runAction(() => bar.noteWindow.performCopy())
+            ToolbarButtonTip { text: "Copy" }
+        }
+        ToolButton {
+            id: pasteButton
+            text: "📋"
+            implicitWidth: bar.buttonSize
+            implicitHeight: bar.buttonSize
+            Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
+            background: ToolbarButtonHighlight {}
+            hoverEnabled: true
+            contentItem: ToolbarButtonLabel {}
+            enabled: bar.noteWindow ? bar.noteWindow.editor.canPaste : false
+            onClicked: bar.runAction(() => bar.noteWindow.editor.paste())
+            ToolbarButtonTip { text: "Paste" }
         }
     }
 
@@ -714,9 +858,13 @@ Window {
         width: columnOptionsBackground.width
         height: columnOptionsBackground.height
 
-        readonly property bool wantsVisible: bar.noteWindow
-            && bar.noteWindow.currentInTable
-            && (insertTableButtonHover.hovered || columnOptionsHover.hovered)
+        // Feature request: shown automatically whenever the cursor is
+        // inside a table, not just while hovering the grid icon/the popup
+        // itself — the main bar no longer relocates to sit near the table
+        // (see reposition()'s own comment), so this popup, positioned at
+        // the table directly below, is what stands in for a table-local
+        // toolbar now.
+        readonly property bool wantsVisible: bar.noteWindow && bar.noteWindow.currentInTable
 
         // Exposed for tests only, same convention as bar's own aliases
         // above.
@@ -727,6 +875,8 @@ Window {
         readonly property alias insertColumnButton: insertColumnButton
         readonly property alias deleteColumnButton: deleteColumnButton
         readonly property alias deleteTableButton: deleteTableButton
+        readonly property alias dragArea: columnOptionsDragArea
+        readonly property alias gripHandle: columnOptionsGripHandle
 
         // Same "shown once at startup, content-visibility toggled from then
         // on" discipline as `bar` itself — see its own Component.onCompleted
@@ -742,36 +892,97 @@ Window {
             show()
             hide()
             show()
+            updateBlur()
         }
+
+        // Same real compositor blur-behind as the main bar (feature
+        // request: this popup should match its styling) — see bar's own
+        // updateBlur() for the reasoning. Gated on wantsVisible, not just
+        // bar.noteWindow: this window stays permanently mapped (see
+        // Component.onCompleted's own comment) even while the cursor
+        // isn't in any table, so without this gate it stayed blurred, and
+        // its dragArea below stayed draggable, at whatever position it
+        // was last shown — a real, blurred, draggable window silently
+        // sitting near the main bar the rest of the time, blocking clicks
+        // meant for whatever was underneath (bug found live: introduced
+        // the moment this popup gained its own blur/drag to begin with,
+        // since neither was ever conditioned on wantsVisible).
+        function updateBlur() {
+            blurEffect.applyTo(columnOptionsPopup,
+                wantsVisible && bar.noteWindow ? bar.noteWindow.noteAppearance.blurEnabled : false,
+                columnOptionsBackground.radius)
+        }
+        onWidthChanged: updateBlur()
+        onHeightChanged: updateBlur()
 
         onWantsVisibleChanged: {
             columnOptionsBackground.visible = wantsVisible
             columnOptionsContent.visible = wantsVisible
             columnOptionsContent.enabled = wantsVisible
+            columnOptionsDragArea.enabled = wantsVisible
             if (wantsVisible)
                 repositionColumnOptionsPopup()
+            updateBlur()
         }
 
-        // Prefers directly below the grid icon (closest to where the
-        // pointer already is, having just hovered that button); falls back
-        // above it only when there isn't room below on the tracked note's
-        // own screen — the popup is allowed to overlap the note itself
-        // (feature request), just not run off the screen entirely.
-        function repositionColumnOptionsPopup() {
-            const buttonTopLeft = insertTableButton.mapToGlobal(0, 0)
-            let targetX = buttonTopLeft.x
-            let targetY = buttonTopLeft.y + insertTableButton.height + 4
+        // Feature request: keeps tracking the table itself as the cursor
+        // moves from one table straight into another (wantsVisible alone
+        // wouldn't flip in that case — it stays true throughout — so
+        // onWantsVisibleChanged's own reposition call wouldn't re-run);
+        // tableRect's own result can change without currentInTable itself
+        // toggling.
+        Connections {
+            target: bar.noteWindow
+            function onCurrentInTableChanged() {
+                if (columnOptionsPopup.wantsVisible)
+                    columnOptionsPopup.repositionColumnOptionsPopup()
+            }
+        }
 
-            const screen = bar.noteWindow ? bar.noteWindow.screen : null
+        // Anchors directly below the table itself (feature request: this
+        // popup stands in for a table-local toolbar now that the main bar
+        // no longer relocates to the table — see reposition()'s own
+        // comment) — falls back to just below the grid icon on the main
+        // bar if the table's own rect isn't available for some reason.
+        // Either way, falls back to ABOVE the anchor instead only when
+        // there isn't room below on the tracked note's own screen — the
+        // popup is allowed to overlap the note itself (feature request),
+        // just not run off the screen entirely.
+        function repositionColumnOptionsPopup() {
+            const note = bar.noteWindow
+            let anchorX
+            let anchorTop
+            let anchorBottom
+
+            const rect = note ? note.docHandler.tableRect(note.editor.selectionEnd) : Qt.rect(0, 0, 0, 0)
+            if (note && rect.width > 0 && rect.height > 0) {
+                // editor lives inside editorFlick's content item, so its
+                // Flickable-driven scroll transform is already baked into
+                // mapToGlobal — no separate contentY subtraction needed
+                // (same reasoning bar's own former table-anchoring code
+                // relied on).
+                const topLeft = note.editor.mapToGlobal(rect.x, rect.y)
+                anchorX = topLeft.x
+                anchorTop = topLeft.y
+                anchorBottom = topLeft.y + rect.height
+            } else {
+                const buttonTopLeft = insertTableButton.mapToGlobal(0, 0)
+                anchorX = buttonTopLeft.x
+                anchorTop = buttonTopLeft.y
+                anchorBottom = buttonTopLeft.y + insertTableButton.height
+            }
+
+            let targetX = anchorX
+            let targetY = anchorBottom + 4
+
+            const screen = note ? note.screen : null
             if (screen && targetY + columnOptionsPopup.height > screen.virtualY + screen.height)
-                targetY = buttonTopLeft.y - columnOptionsPopup.height - 4
+                targetY = anchorTop - columnOptionsPopup.height - 4
 
             columnOptionsPopup.x = targetX
             columnOptionsPopup.y = targetY
             positionManager.moveWindow(columnOptionsPopup.title, targetX, targetY)
         }
-
-        HoverHandler { id: columnOptionsHover }
 
         Rectangle {
             id: columnOptionsBackground
@@ -784,6 +995,21 @@ Window {
             border.color: background.border.color
         }
 
+        // Same glass treatment as the main bar's own background (feature
+        // request: every popup should look like it belongs to the
+        // toolbar, not a plain flat rectangle).
+        GlassOverlay {
+            anchors.fill: columnOptionsBackground
+            cornerRadius: columnOptionsBackground.radius
+            visible: columnOptionsBackground.visible && (settings.chromeGlassFollowsNote
+                ? (bar.noteWindow ? bar.noteWindow.noteAppearance.glassEnabled : false)
+                : settings.chromeGlassEnabled)
+            tintColor: bar.noteWindow ? bar.noteWindow.noteAppearance.glassTintColor : "#ffffff"
+            sheenOpacity: bar.noteWindow ? bar.noteWindow.noteAppearance.glassSheenOpacity : 0.12
+            ringCount: bar.noteWindow ? bar.noteWindow.noteAppearance.glassSheenStrength : 10
+            sheenSize: bar.noteWindow ? bar.noteWindow.noteAppearance.glassSheenSize : 0.18
+        }
+
         RowLayout {
             id: columnOptionsContent
             visible: false
@@ -791,17 +1017,63 @@ Window {
             anchors.centerIn: columnOptionsBackground
             spacing: 2
 
+            // Same drag handle as the main bar's own gripHandle (feature
+            // request: this popup should match the main bar's own styling
+            // and behavior) — always the row-mode 2x4 dot pattern, since
+            // this popup is never vertical.
+            Item {
+                id: columnOptionsGripHandle
+                implicitWidth: 9
+                implicitHeight: 21
+                Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
+                Layout.leftMargin: 4
+
+                Item {
+                    anchors.centerIn: parent
+                    width: 9
+                    height: 21
+                    readonly property int columns: 2
+
+                    Repeater {
+                        model: 8
+                        Rectangle {
+                            required property int index
+                            width: 3
+                            height: 3
+                            radius: 1.5
+                            color: "#888888"
+                            x: (index % 2) * 6
+                            y: Math.floor(index / 2) * 6
+                        }
+                    }
+                }
+
+                MouseArea {
+                    anchors.fill: parent
+                    acceptedButtons: Qt.LeftButton
+                    cursorShape: Qt.OpenHandCursor
+                    onPressed: columnOptionsPopup.startSystemMove()
+                }
+            }
+
+            Rectangle {
+                implicitWidth: 1
+                implicitHeight: 18
+                color: Qt.rgba(1, 1, 1, 0.15)
+                Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
+                Layout.leftMargin: 4
+            }
+
             ToolButton {
                 id: insertRowButton
                 text: "+R"
                 implicitWidth: bar.buttonSize
                 implicitHeight: bar.buttonSize
                 background: ToolbarButtonHighlight {}
+                hoverEnabled: true
                 contentItem: ToolbarButtonLabel {}
                 onClicked: bar.runAction(() => bar.noteWindow.docHandler.insertTableRow(bar.noteWindow.editor.selectionEnd))
-                ToolTip.text: "Insert Row"
-                ToolTip.visible: hovered
-                ToolTip.delay: 500
+                ToolbarButtonTip { text: "Insert Row" }
             }
             ToolButton {
                 id: deleteRowButton
@@ -809,11 +1081,10 @@ Window {
                 implicitWidth: bar.buttonSize
                 implicitHeight: bar.buttonSize
                 background: ToolbarButtonHighlight {}
+                hoverEnabled: true
                 contentItem: ToolbarButtonLabel {}
                 onClicked: bar.runAction(() => bar.noteWindow.docHandler.deleteTableRow(bar.noteWindow.editor.selectionEnd))
-                ToolTip.text: "Delete Row"
-                ToolTip.visible: hovered
-                ToolTip.delay: 500
+                ToolbarButtonTip { text: "Delete Row" }
             }
             ToolButton {
                 id: insertColumnButton
@@ -821,11 +1092,10 @@ Window {
                 implicitWidth: bar.buttonSize
                 implicitHeight: bar.buttonSize
                 background: ToolbarButtonHighlight {}
+                hoverEnabled: true
                 contentItem: ToolbarButtonLabel {}
                 onClicked: bar.runAction(() => bar.noteWindow.docHandler.insertTableColumn(bar.noteWindow.editor.selectionEnd))
-                ToolTip.text: "Insert Column"
-                ToolTip.visible: hovered
-                ToolTip.delay: 500
+                ToolbarButtonTip { text: "Insert Column" }
             }
             ToolButton {
                 id: deleteColumnButton
@@ -833,11 +1103,10 @@ Window {
                 implicitWidth: bar.buttonSize
                 implicitHeight: bar.buttonSize
                 background: ToolbarButtonHighlight {}
+                hoverEnabled: true
                 contentItem: ToolbarButtonLabel {}
                 onClicked: bar.runAction(() => bar.noteWindow.docHandler.deleteTableColumn(bar.noteWindow.editor.selectionEnd))
-                ToolTip.text: "Delete Column"
-                ToolTip.visible: hovered
-                ToolTip.delay: 500
+                ToolbarButtonTip { text: "Delete Column" }
             }
             ToolButton {
                 id: deleteTableButton
@@ -845,12 +1114,135 @@ Window {
                 implicitWidth: bar.buttonSize
                 implicitHeight: bar.buttonSize
                 background: ToolbarButtonHighlight {}
+                hoverEnabled: true
                 contentItem: ToolbarButtonLabel {}
                 onClicked: bar.runAction(() => bar.noteWindow.docHandler.deleteTable(bar.noteWindow.editor.selectionEnd))
-                ToolTip.text: "Delete Table"
-                ToolTip.visible: hovered
-                ToolTip.delay: 500
+                ToolbarButtonTip { text: "Delete Table" }
             }
+        }
+
+        // Right-click-drag moves the popup, same convention as the main
+        // bar's own dragArea (feature request: this popup should match
+        // its behavior) — acceptedButtons excludes Left, so a left-button
+        // press keeps falling through to the buttons in
+        // columnOptionsContent normally.
+        MouseArea {
+            id: columnOptionsDragArea
+            anchors.fill: parent
+            acceptedButtons: Qt.RightButton
+            // Starts false and is set imperatively from
+            // onWantsVisibleChanged above from then on — same reasoning
+            // as bar's own dragArea: dragging this popup at whatever
+            // stale position it last had, while it's not supposed to be
+            // showing at all, makes no sense (see updateBlur()'s own
+            // comment for the bug this — and the same gate on blur —
+            // fixes).
+            enabled: false
+            onPressed: columnOptionsPopup.startSystemMove()
+        }
+    }
+
+    // Single shared tooltip window for every ToolbarButtonTip above and
+    // every column-options button below — see ToolbarButtonTip's own
+    // comment for why this exists as a separate window rather than
+    // rendering inside bar's own. A genuine top-level Window, shown
+    // exactly once here and never hidden/shown again (same "mapping/
+    // unmapping a surface disrupts hover live" reasoning as bar/
+    // columnOptionsPopup's own Component.onCompleted) — "hidden" the rest
+    // of the time is achieved by making its *content* invisible, not by
+    // touching this window's own visible/show()/hide() ever again.
+    // Sized to just its own text (background's own implicit size), so it
+    // never reserves space it isn't currently using.
+    Window {
+        id: tooltipWindow
+        title: "suopNotes-toolbarTooltip"
+        flags: Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint
+        color: "transparent"
+        width: tooltipBackground.width
+        height: tooltipBackground.height
+
+        property string text: ""
+        property bool contentVisible: false
+        // Which button's tooltip is currently showing, if any — lets a
+        // button whose own hover already ended avoid hiding a tooltip
+        // that a DIFFERENT button has since taken over showing (a hover
+        // handoff between two adjacent buttons can fire in either order).
+        property var activeButton: null
+
+        readonly property alias background: tooltipBackground
+
+        visible: false
+        Component.onCompleted: {
+            // Same throwaway-seed-position reasoning as bar/
+            // columnOptionsPopup's own Component.onCompleted — showTip()
+            // below takes over real positioning the instant any tooltip
+            // is first shown.
+            positionManager.applyPosition("toolbarTooltip", tooltipWindow.title, 100, 100, true)
+            show()
+            hide()
+            show()
+        }
+
+        function showTip(button, tipText) {
+            tooltipWindow.activeButton = button
+            tooltipWindow.text = tipText
+            tooltipWindow.contentVisible = true
+            const pos = button.mapToGlobal(0, button.height + 6)
+            tooltipWindow.x = pos.x
+            tooltipWindow.y = pos.y
+            positionManager.moveWindow(tooltipWindow.title, pos.x, pos.y)
+        }
+
+        function hideTip() {
+            tooltipWindow.contentVisible = false
+            tooltipWindow.activeButton = null
+        }
+
+        // color/border mirror the main bar's own background exactly (same
+        // note-backgroundColor + windowOpacity, or the same dark fallback
+        // when no note is tracked) — same convention columnOptionsBackground
+        // below already follows, referencing bar's `background` id directly
+        // rather than re-deriving the same expression a third time.
+        Rectangle {
+            id: tooltipBackground
+            visible: tooltipWindow.contentVisible
+            width: tooltipLabel.implicitWidth + 12
+            height: tooltipLabel.implicitHeight + 12
+            radius: 6
+            color: background.color
+            border.width: background.border.width
+            border.color: background.border.color
+        }
+
+        // Same glass treatment as the main bar/columnOptionsPopup's own
+        // backgrounds (feature request: tooltips should match the rest of
+        // the toolbar's chrome) — a sibling of tooltipBackground, not a
+        // child of it, so it paints on top of the flat background color
+        // but still below tooltipLabel (same layering columnOptionsPopup's
+        // own GlassOverlay/columnOptionsContent already use).
+        GlassOverlay {
+            anchors.fill: tooltipBackground
+            cornerRadius: tooltipBackground.radius
+            visible: tooltipBackground.visible && (settings.chromeGlassFollowsNote
+                ? (bar.noteWindow ? bar.noteWindow.noteAppearance.glassEnabled : false)
+                : settings.chromeGlassEnabled)
+            tintColor: bar.noteWindow ? bar.noteWindow.noteAppearance.glassTintColor : "#ffffff"
+            sheenOpacity: bar.noteWindow ? bar.noteWindow.noteAppearance.glassSheenOpacity : 0.12
+            ringCount: bar.noteWindow ? bar.noteWindow.noteAppearance.glassSheenStrength : 10
+            sheenSize: bar.noteWindow ? bar.noteWindow.noteAppearance.glassSheenSize : 0.18
+        }
+
+        Text {
+            id: tooltipLabel
+            anchors.centerIn: tooltipBackground
+            visible: tooltipWindow.contentVisible
+            text: tooltipWindow.text
+            // Same source as every button's own ToolbarButtonLabel, not a
+            // fixed white — tooltipBackground now inherits the tracked
+            // note's own (possibly light) backgroundColor above, so a
+            // fixed white label would stop contrasting against it.
+            color: bar.noteWindow ? bar.noteWindow.noteAppearance.fontColor : "#ffffff"
+            font.pixelSize: 11
         }
     }
 

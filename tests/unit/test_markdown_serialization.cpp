@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include <QTextBlockFormat>
 #include <QTextCursor>
 #include <QTextDocument>
 #include <QTextList>
@@ -588,6 +589,21 @@ SCENARIO("A paragraph directly before a numbered list survives a save/reload cyc
                 setMarkdownPreservingBlankLines(&doc2, toMarkdownPreservingBlankLines(&doc));
                 CHECK(toMarkdownPreservingBlankLines(&doc2) == markdown);
             }
+
+            THEN("no extra left margin is left over from the QTextList indent() level Qt's "
+                 "parser sets — only convertNativeListsToHandRolled's own leftMargin/textIndent")
+            {
+                // Bug: list->remove() (called when detaching a freshly-
+                // parsed block from Qt's own QTextList) detaches list
+                // MEMBERSHIP but does not reset indent() — a separate,
+                // additive block-format property Qt's parser also sets to
+                // 1 on every real list item — which, left alone, stacked
+                // on top of the leftMargin/textIndent this app sets
+                // deliberately, producing extra unwanted left margin on
+                // every note that had been through a save/reload cycle.
+                const QTextBlockFormat format = doc.findBlockByNumber(1).blockFormat();
+                CHECK(format.indent() == 0);
+            }
         }
     }
 }
@@ -630,13 +646,15 @@ SCENARIO("A paragraph directly before a checkbox list survives a save/reload cyc
             QTextDocument doc;
             setMarkdownPreservingBlankLines(&doc, markdown);
 
-            THEN("checkbox markers round-trip as literal, checked-state-preserving text — "
-                 "no phantom item, matching the equivalent numbered-list case")
+            THEN("checkbox markers load as literal, checked-state-preserving text — "
+                 "no phantom item, matching the equivalent numbered-list case — displayed "
+                 "as a real checkbox glyph (☐/☑), not the raw \"- [ ] \"/\"- [x] \" "
+                 "markdown syntax")
             {
                 QStringList blockTexts;
                 for (QTextBlock block = doc.begin(); block.isValid(); block = block.next())
                     blockTexts << block.text();
-                CHECK(blockTexts == QStringList{"intro", "- [ ] item1", "- [x] item2", "outro"});
+                CHECK(blockTexts == QStringList{"intro", "☐ item1", "☑ item2", "outro"});
             }
 
             THEN("re-saving reproduces the exact same text — no growth on repeated save/reload")
