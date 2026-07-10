@@ -512,3 +512,141 @@ SCENARIO("A table inserted with the cursor still mid-paragraph (no Enter pressed
         }
     }
 }
+
+SCENARIO("A paragraph directly before a bullet list survives a save/reload cycle with no phantom item", "[markdown_serialization]")
+{
+    GIVEN("markdown with a paragraph, then a bullet list, matching a single Enter between them")
+    {
+        const QString markdown = QStringLiteral("intro\n\n- item1\n- item2\n\noutro\n");
+
+        WHEN("it's loaded with setMarkdownPreservingBlankLines")
+        {
+            QTextDocument doc;
+            setMarkdownPreservingBlankLines(&doc, markdown);
+
+            THEN("there is no extra empty list item above item1 — exactly intro, item1, item2, outro")
+            {
+                QStringList blockTexts;
+                for (QTextBlock block = doc.begin(); block.isValid(); block = block.next())
+                    blockTexts << block.text();
+                CHECK(blockTexts == QStringList{"intro", "item1", "item2", "outro"});
+            }
+
+            THEN("re-saving reproduces the exact same text — no growth on repeated save/reload")
+            {
+                const QString reserialized = toMarkdownPreservingBlankLines(&doc);
+                CHECK(reserialized == markdown);
+
+                QTextDocument doc2;
+                setMarkdownPreservingBlankLines(&doc2, reserialized);
+                CHECK(toMarkdownPreservingBlankLines(&doc2) == markdown);
+            }
+        }
+    }
+}
+
+SCENARIO("A paragraph directly before a numbered list survives a save/reload cycle with no phantom item", "[markdown_serialization]")
+{
+    GIVEN("markdown with a paragraph, then a numbered list, matching a single Enter between them")
+    {
+        const QString markdown = QStringLiteral("intro\n\n1. item1\n2. item2\n\noutro\n");
+
+        WHEN("it's loaded with setMarkdownPreservingBlankLines")
+        {
+            QTextDocument doc;
+            setMarkdownPreservingBlankLines(&doc, markdown);
+
+            THEN("there is no extra empty list item above item1 — exactly intro, item1, item2, outro")
+            {
+                // Numbered markers are hand-rolled, literal, selectable
+                // text now (see TextFormatting.h) — convertNativeListsToHandRolled
+                // re-inserts "1. "/"2. " into each block's own .text() on
+                // load (Qt's parser otherwise strips it away into a
+                // QTextList), so the marker is part of the block text here,
+                // unlike the old QTextList-based behavior this test
+                // originally documented.
+                QStringList blockTexts;
+                for (QTextBlock block = doc.begin(); block.isValid(); block = block.next())
+                    blockTexts << block.text();
+                CHECK(blockTexts == QStringList{"intro", "1. item1", "2. item2", "outro"});
+            }
+
+            THEN("re-saving reproduces the exact same text — no Qt-writer involvement, no "
+                 "growth on repeated save/reload")
+            {
+                // Unlike Qt's own writer (which would otherwise widen a
+                // numbered marker's single space to two — a confirmed,
+                // unrelated Qt quirk), hand-rolled list runs bypass Qt's
+                // markdown writer entirely (see MarkdownSerialization's own
+                // markdownForRun) specifically because it defensively
+                // escapes any plain paragraph merely starting with "1. "
+                // ("1\. ", also confirmed empirically) — so the saved
+                // text is simply whatever's already in the block, verbatim.
+                CHECK(toMarkdownPreservingBlankLines(&doc) == markdown);
+
+                QTextDocument doc2;
+                setMarkdownPreservingBlankLines(&doc2, toMarkdownPreservingBlankLines(&doc));
+                CHECK(toMarkdownPreservingBlankLines(&doc2) == markdown);
+            }
+        }
+    }
+}
+
+SCENARIO("A bullet list at the very start of a note (no preceding content) loads with no phantom item", "[markdown_serialization]")
+{
+    GIVEN("markdown that begins directly with a list — no leading paragraph or spacer")
+    {
+        const QString markdown = QStringLiteral("- item1\n- item2\n\noutro\n");
+
+        WHEN("it's loaded with setMarkdownPreservingBlankLines")
+        {
+            QTextDocument doc;
+            setMarkdownPreservingBlankLines(&doc, markdown);
+
+            THEN("the document starts directly with item1 — no empty block before it")
+            {
+                QStringList blockTexts;
+                for (QTextBlock block = doc.begin(); block.isValid(); block = block.next())
+                    blockTexts << block.text();
+                CHECK(blockTexts == QStringList{"item1", "item2", "outro"});
+            }
+
+            THEN("re-saving reproduces the exact same text")
+            {
+                CHECK(toMarkdownPreservingBlankLines(&doc) == markdown);
+            }
+        }
+    }
+}
+
+SCENARIO("A paragraph directly before a checkbox list survives a save/reload cycle", "[markdown_serialization]")
+{
+    GIVEN("markdown with a paragraph, then a checkbox list, matching a single Enter between them")
+    {
+        const QString markdown = QStringLiteral("intro\n\n- [ ] item1\n- [x] item2\n\noutro\n");
+
+        WHEN("it's loaded with setMarkdownPreservingBlankLines")
+        {
+            QTextDocument doc;
+            setMarkdownPreservingBlankLines(&doc, markdown);
+
+            THEN("checkbox markers round-trip as literal, checked-state-preserving text — "
+                 "no phantom item, matching the equivalent numbered-list case")
+            {
+                QStringList blockTexts;
+                for (QTextBlock block = doc.begin(); block.isValid(); block = block.next())
+                    blockTexts << block.text();
+                CHECK(blockTexts == QStringList{"intro", "- [ ] item1", "- [x] item2", "outro"});
+            }
+
+            THEN("re-saving reproduces the exact same text — no growth on repeated save/reload")
+            {
+                CHECK(toMarkdownPreservingBlankLines(&doc) == markdown);
+
+                QTextDocument doc2;
+                setMarkdownPreservingBlankLines(&doc2, toMarkdownPreservingBlankLines(&doc));
+                CHECK(toMarkdownPreservingBlankLines(&doc2) == markdown);
+            }
+        }
+    }
+}

@@ -28,6 +28,7 @@ public:
     Q_INVOKABLE void toggleStrikethrough(int selectionStart, int selectionEnd);
     Q_INVOKABLE void toggleBulletList(int selectionStart, int selectionEnd);
     Q_INVOKABLE void toggleNumberedList(int selectionStart, int selectionEnd);
+    Q_INVOKABLE void toggleCheckboxList(int selectionStart, int selectionEnd);
     Q_INVOKABLE void setHeadingLevel(int selectionStart, int selectionEnd, int level);
     Q_INVOKABLE void insertTable(int position);
     Q_INVOKABLE void insertTableRow(int position);
@@ -47,6 +48,18 @@ public:
     Q_INVOKABLE int headingLevel(int selectionStart, int selectionEnd) const;
     Q_INVOKABLE bool isBulletList(int selectionStart, int selectionEnd) const;
     Q_INVOKABLE bool isNumberedList(int selectionStart, int selectionEnd) const;
+    Q_INVOKABLE bool isCheckboxList(int selectionStart, int selectionEnd) const;
+    Q_INVOKABLE bool isCheckboxChecked(int selectionStart, int selectionEnd) const;
+    // Click-to-toggle (feature request): flips the checkbox at `position` —
+    // succeeds only if position falls within that item's own checkbox
+    // glyph (not elsewhere in its text, where a click should just place
+    // the cursor normally). Returns true if a toggle actually happened.
+    Q_INVOKABLE bool tryToggleCheckboxAt(int position);
+    // Drives whether the toolbar's row/column-editing buttons show at all
+    // (feature request) — they used to render permanently, acting as
+    // silent no-ops (per TextFormatting.h) whenever the cursor wasn't
+    // actually inside a table.
+    Q_INVOKABLE bool isInTable(int position) const;
 
     // Enter/Return inside a list item (bullet or numbered): continues the
     // list with a new item, or — if the current item is empty — exits the
@@ -64,6 +77,16 @@ public:
     // is universal enough (Notion, Word, GitHub's own editor) that users
     // expect it to just work. Returns true if a conversion happened.
     Q_INVOKABLE bool tryAutoConvertListShorthand(int cursorPosition);
+
+    // Enter/Return on a heading line: inserts the new block (inheriting the
+    // heading's format the way QTextCursor::insertBlock() always does), then
+    // immediately clears its heading level back to a plain paragraph — a
+    // heading is a one-line label, not a style that should propagate to
+    // whatever the user types next. Returns false (does nothing) when the
+    // cursor isn't on a heading line, so QML's key handler falls through to
+    // TextArea's own default Return handling, same convention as
+    // tryContinueList above.
+    Q_INVOKABLE bool tryResetHeadingOnReturn(int cursorPosition);
 
 signals:
     void documentChanged();

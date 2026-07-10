@@ -1,5 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include <QFontMetricsF>
+#include <QTextBlockFormat>
 #include <QTextCursor>
 #include <QTextDocument>
 #include <QTextList>
@@ -169,10 +171,17 @@ SCENARIO("Toggling a bullet list on the current block", "[text_formatting]")
             TextFormatting::toggleBulletList(cursor);
             TextFormatting::toggleNumberedList(cursor);
 
-            THEN("the same list converts in place to numbered, not a dash bullet")
+            THEN("the same block converts in place to a numbered marker, not a dash bullet")
             {
-                const QString md = doc.toMarkdown().trimmed();
-                CHECK(md == "1.  Buy milk");
+                // Not doc.toMarkdown() — numbered markers are hand-rolled
+                // plain text now (see TextFormatting.h), and Qt's own
+                // writer defensively escapes a paragraph merely starting
+                // with "1. " ("1\. ", confirmed empirically); this checks
+                // the actual in-document text instead of Qt-writer noise
+                // that's irrelevant to what this scenario is testing.
+                CHECK(doc.begin().text() == "1. Buy milk");
+                CHECK(TextFormatting::isNumberedList(cursor));
+                CHECK_FALSE(TextFormatting::isBulletList(cursor));
             }
         }
     }
@@ -180,6 +189,14 @@ SCENARIO("Toggling a bullet list on the current block", "[text_formatting]")
 
 SCENARIO("Toggling a numbered list on the current block", "[text_formatting]")
 {
+    // Numbered-list markers are hand-rolled, literal, selectable text
+    // ("1. ", "2. ", ...) tagged with a custom block property rather than
+    // a QTextList (see TextFormatting.h's own comment on toggleNumberedList
+    // for why) — these scenarios check the actual in-document block text
+    // and isNumberedList directly, not doc.toMarkdown() (Qt's own writer
+    // defensively escapes a plain paragraph merely starting with "1. ",
+    // confirmed empirically, which is irrelevant Qt-writer noise here, not
+    // anything toggleNumberedList itself does).
     GIVEN("a document with a single paragraph")
     {
         QTextDocument doc;
@@ -190,9 +207,10 @@ SCENARIO("Toggling a numbered list on the current block", "[text_formatting]")
             QTextCursor cursor(&doc);
             TextFormatting::toggleNumberedList(cursor);
 
-            THEN("the markdown serialization is a decimal-prefixed list item")
+            THEN("the block's own text carries a literal, selectable \"1. \" marker")
             {
-                CHECK(doc.toMarkdown().contains("1.  Buy milk"));
+                CHECK(doc.begin().text() == "1. Buy milk");
+                CHECK(TextFormatting::isNumberedList(cursor));
             }
         }
 
@@ -202,10 +220,10 @@ SCENARIO("Toggling a numbered list on the current block", "[text_formatting]")
             TextFormatting::toggleNumberedList(cursor);
             TextFormatting::toggleNumberedList(cursor);
 
-            THEN("it is a plain paragraph again")
+            THEN("it is a plain paragraph again, marker text and all")
             {
-                const QString md = doc.toMarkdown().trimmed();
-                CHECK(md == "Buy milk");
+                CHECK(doc.begin().text() == "Buy milk");
+                CHECK_FALSE(TextFormatting::isNumberedList(cursor));
             }
         }
 
@@ -215,10 +233,11 @@ SCENARIO("Toggling a numbered list on the current block", "[text_formatting]")
             TextFormatting::toggleNumberedList(cursor);
             TextFormatting::toggleBulletList(cursor);
 
-            THEN("the same list converts in place to a dash bullet, not numbered")
+            THEN("the same block converts in place to a dash bullet, not numbered")
             {
-                const QString md = doc.toMarkdown().trimmed();
-                CHECK(md == "- Buy milk");
+                CHECK(doc.begin().text() == "Buy milk"); // QTextList bullet marker isn't part of .text()
+                CHECK(TextFormatting::isBulletList(cursor));
+                CHECK_FALSE(TextFormatting::isNumberedList(cursor));
             }
         }
     }
@@ -239,14 +258,8 @@ SCENARIO("Toggling a numbered list on the current block", "[text_formatting]")
 
             THEN("the list starts counting from that number, not from 1")
             {
-                QTextList *list = blockCursor.currentList();
-                REQUIRE(list != nullptr);
-                CHECK(list->format().start() == 5);
-            }
-
-            THEN("the markdown reflects the custom start number")
-            {
-                CHECK(doc.toMarkdown().contains("5.  Fifth item"));
+                CHECK(doc.findBlockByNumber(1).text() == "5. Fifth item");
+                CHECK(TextFormatting::isNumberedList(blockCursor));
             }
         }
 
@@ -258,30 +271,45 @@ SCENARIO("Toggling a numbered list on the current block", "[text_formatting]")
 
             THEN("it defaults to starting at 1, same as before this parameter existed")
             {
-                QTextList *list = blockCursor.currentList();
-                REQUIRE(list != nullptr);
-                CHECK(list->format().start() == 1);
+                CHECK(doc.findBlockByNumber(1).text() == "1. Fifth item");
             }
         }
 
-        WHEN("converting an already-existing list's style in place")
+        WHEN("converting an already-existing bullet list's style in place")
         {
             QTextCursor blockCursor(&doc);
             blockCursor.setPosition(doc.findBlockByNumber(1).position());
             TextFormatting::toggleBulletList(blockCursor);
             TextFormatting::toggleNumberedList(blockCursor, 7);
 
-            THEN("the startNumber argument is ignored — style-only conversions don't reset the count")
+            THEN("the startNumber argument still applies — there's no existing numbered run to join")
             {
-                QTextList *list = blockCursor.currentList();
-                REQUIRE(list != nullptr);
-                CHECK(list->format().start() == 1);
+                CHECK(doc.findBlockByNumber(1).text() == "7. Fifth item");
+            }
+        }
+    }
+
+    GIVEN("two adjacent numbered items, with the cursor on the second")
+    {
+        QTextDocument doc;
+        QTextCursor cursor(&doc);
+        TextFormatting::toggleNumberedList(cursor, 1);
+        cursor.insertBlock();
+        cursor.insertText("second item");
+        TextFormatting::toggleNumberedList(cursor);
+
+        WHEN("the toolbar toggle is used (not Enter-continuation) to add this second item")
+        {
+            THEN("it joins the existing run as item 2, not a fresh item 1")
+            {
+                CHECK(doc.findBlockByNumber(0).text() == "1. ");
+                CHECK(doc.findBlockByNumber(1).text() == "2. second item");
             }
         }
     }
 }
 
-SCENARIO("Creating a list tightens the document's indent width so the marker sits near the text's own left edge", "[text_formatting]")
+SCENARIO("Creating a bullet list tightens the document's indent width so the marker sits near the text's own left edge", "[text_formatting]")
 {
     GIVEN("a document using Qt's oversized default indentWidth")
     {
@@ -289,10 +317,10 @@ SCENARIO("Creating a list tightens the document's indent width so the marker sit
         doc.setPlainText("Buy milk");
         CHECK(doc.indentWidth() == 40.0); // Qt's default, confirms the fixture predates the fix
 
-        WHEN("a numbered list is created")
+        WHEN("a bullet list is created")
         {
             QTextCursor cursor(&doc);
-            TextFormatting::toggleNumberedList(cursor);
+            TextFormatting::toggleBulletList(cursor);
 
             THEN("indentWidth shrinks to fit the marker instead of Qt's oversized 40px default")
             {
@@ -301,22 +329,69 @@ SCENARIO("Creating a list tightens the document's indent width so the marker sit
             }
         }
     }
+}
 
-    GIVEN("a document using Qt's oversized default indentWidth")
+SCENARIO("A numbered list's hanging-indent buffer is sized per-list, to its own widest marker", "[text_formatting]")
+{
+    // Feature request: the buffer used to be a single value shared by the
+    // WHOLE document (Qt's own indentWidth, sized to fit a two-digit
+    // marker no matter what), so a document with any double-digit list
+    // anywhere gave every single-digit list the same wide buffer too, and
+    // it didn't persist across save/reload at all. Numbered markers are
+    // literal text now (see TextFormatting.h), so the buffer is just a
+    // per-block hanging indent (leftMargin/textIndent) sized from that
+    // list's own actual widest marker — nothing document-wide involved.
+    GIVEN("a document with only single-digit numbered items")
     {
         QTextDocument doc;
-        doc.setPlainText("Buy milk");
+        QTextCursor cursor(&doc);
+        TextFormatting::toggleNumberedList(cursor, 1);
+        cursor.insertBlock();
+        TextFormatting::toggleNumberedList(cursor);
 
-        WHEN("a bullet list is created")
+        THEN("the reserved buffer is sized for a single-digit marker, not two")
         {
-            QTextCursor cursor(&doc);
-            TextFormatting::toggleBulletList(cursor);
+            const QTextBlockFormat format = doc.begin().blockFormat();
+            const QFontMetricsF metrics(doc.begin().charFormat().font());
+            const qreal oneDigitWidth = metrics.horizontalAdvance(QStringLiteral("2. "));
+            const qreal twoDigitWidth = metrics.horizontalAdvance(QStringLiteral("12. "));
+            CHECK(format.leftMargin() < twoDigitWidth);
+            CHECK(format.leftMargin() >= oneDigitWidth - 1.0); // small float slack
+        }
+    }
 
-            THEN("indentWidth shrinks the same way as for a numbered list")
-            {
-                CHECK(doc.indentWidth() < 40.0);
-                CHECK(doc.indentWidth() > 0.0);
-            }
+    GIVEN("a document with a double-digit numbered item")
+    {
+        QTextDocument doc;
+        QTextCursor cursor(&doc);
+        TextFormatting::toggleNumberedList(cursor, 11);
+
+        THEN("the reserved buffer grows to fit the two-digit marker")
+        {
+            const QTextBlockFormat format = doc.begin().blockFormat();
+            const QFontMetricsF metrics(doc.begin().charFormat().font());
+            const qreal oneDigitWidth = metrics.horizontalAdvance(QStringLiteral("2. "));
+            CHECK(format.leftMargin() > oneDigitWidth);
+        }
+    }
+
+    GIVEN("two SEPARATE single-digit lists, elsewhere in the same document a double-digit list also exists")
+    {
+        QTextDocument doc;
+        QTextCursor cursor(&doc);
+        cursor.insertText("first list:");
+        cursor.insertBlock();
+        TextFormatting::toggleNumberedList(cursor, 1);
+        cursor.insertBlock();
+        cursor.insertText("between the two lists");
+        cursor.insertBlock();
+        TextFormatting::toggleNumberedList(cursor, 11); // starts double-digit immediately
+
+        THEN("the single-digit list's own buffer is unaffected by the unrelated double-digit list")
+        {
+            const QTextBlockFormat firstListFormat = doc.findBlockByNumber(1).blockFormat();
+            const QTextBlockFormat secondListFormat = doc.findBlockByNumber(3).blockFormat();
+            CHECK(firstListFormat.leftMargin() < secondListFormat.leftMargin());
         }
     }
 }
@@ -472,6 +547,142 @@ SCENARIO("Querying whether a bullet/numbered list is active at the cursor", "[te
             {
                 CHECK(TextFormatting::isNumberedList(cursor));
                 CHECK_FALSE(TextFormatting::isBulletList(cursor));
+            }
+        }
+    }
+}
+
+SCENARIO("Toggling a checkbox list on the current block", "[text_formatting]")
+{
+    GIVEN("a document with a single paragraph")
+    {
+        QTextDocument doc;
+        doc.setPlainText("Buy milk");
+
+        WHEN("checkbox list is toggled on")
+        {
+            QTextCursor cursor(&doc);
+            TextFormatting::toggleCheckboxList(cursor);
+
+            THEN("the block's own text carries a literal, valid-GFM \"- [ ] \" marker")
+            {
+                CHECK(doc.begin().text() == "- [ ] Buy milk");
+                CHECK(TextFormatting::isCheckboxList(cursor));
+                CHECK_FALSE(TextFormatting::isCheckboxChecked(cursor));
+            }
+        }
+
+        WHEN("checkbox list is toggled on, then off again")
+        {
+            QTextCursor cursor(&doc);
+            TextFormatting::toggleCheckboxList(cursor);
+            TextFormatting::toggleCheckboxList(cursor);
+
+            THEN("it is a plain paragraph again, marker text and all")
+            {
+                CHECK(doc.begin().text() == "Buy milk");
+                CHECK_FALSE(TextFormatting::isCheckboxList(cursor));
+            }
+        }
+
+        WHEN("numbered list is toggled on while a checkbox list is already active")
+        {
+            QTextCursor cursor(&doc);
+            TextFormatting::toggleCheckboxList(cursor);
+            TextFormatting::toggleNumberedList(cursor);
+
+            THEN("the same block converts in place to numbered, not a checkbox")
+            {
+                CHECK(doc.begin().text() == "1. Buy milk");
+                CHECK(TextFormatting::isNumberedList(cursor));
+                CHECK_FALSE(TextFormatting::isCheckboxList(cursor));
+            }
+        }
+    }
+}
+
+SCENARIO("Toggling a checkbox item's checked state", "[text_formatting]")
+{
+    GIVEN("an unchecked checkbox item")
+    {
+        QTextDocument doc;
+        QTextCursor cursor(&doc);
+        TextFormatting::toggleCheckboxList(cursor);
+        cursor.insertText("Buy milk");
+
+        WHEN("its checked state is toggled")
+        {
+            const bool toggled = TextFormatting::toggleCheckboxChecked(cursor);
+
+            THEN("it flips to checked, marker text and all")
+            {
+                CHECK(toggled);
+                CHECK(doc.begin().text() == "- [x] Buy milk");
+                CHECK(TextFormatting::isCheckboxChecked(cursor));
+            }
+
+            WHEN("it's toggled again")
+            {
+                TextFormatting::toggleCheckboxChecked(cursor);
+
+                THEN("it flips back to unchecked")
+                {
+                    CHECK(doc.begin().text() == "- [ ] Buy milk");
+                    CHECK_FALSE(TextFormatting::isCheckboxChecked(cursor));
+                }
+            }
+        }
+    }
+
+    GIVEN("a plain paragraph, not a checkbox item at all")
+    {
+        QTextDocument doc;
+        doc.setPlainText("just some text");
+
+        WHEN("a checked-state toggle is attempted")
+        {
+            QTextCursor cursor(&doc);
+            const bool toggled = TextFormatting::toggleCheckboxChecked(cursor);
+
+            THEN("nothing happens — there's no checkbox to toggle")
+            {
+                CHECK_FALSE(toggled);
+                CHECK(doc.begin().text() == "just some text");
+            }
+        }
+    }
+}
+
+SCENARIO("Click-to-toggle hit-tests against the checkbox glyph itself", "[text_formatting]")
+{
+    GIVEN("a checkbox item, \"- [ ] Buy milk\"")
+    {
+        QTextDocument doc;
+        QTextCursor cursor(&doc);
+        TextFormatting::toggleCheckboxList(cursor);
+        cursor.insertText("Buy milk");
+
+        WHEN("the position is within the glyph itself (anywhere in \"- [ ] \")")
+        {
+            QTextCursor hitCursor(&doc);
+            hitCursor.setPosition(3); // inside "[ ]"
+
+            THEN("it toggles the checkbox")
+            {
+                CHECK(TextFormatting::tryToggleCheckboxAtPosition(hitCursor));
+                CHECK(doc.begin().text() == "- [x] Buy milk");
+            }
+        }
+
+        WHEN("the position is past the glyph, in the item's real text")
+        {
+            QTextCursor missCursor(&doc);
+            missCursor.setPosition(doc.begin().position() + 8); // inside "Buy milk"
+
+            THEN("it does not toggle — a click there should just place the cursor")
+            {
+                CHECK_FALSE(TextFormatting::tryToggleCheckboxAtPosition(missCursor));
+                CHECK(doc.begin().text() == "- [ ] Buy milk");
             }
         }
     }
@@ -678,6 +889,72 @@ SCENARIO("Deleting a whole table", "[text_formatting]")
             THEN("nothing changes — there's no table to delete")
             {
                 CHECK(doc.toPlainText() == "just some text");
+            }
+        }
+    }
+}
+
+SCENARIO("Querying whether the cursor is inside a table", "[text_formatting]")
+{
+    GIVEN("a paragraph, a 2x2 table, and another paragraph")
+    {
+        QTextDocument doc;
+        QTextCursor cursor(&doc);
+        cursor.insertText("intro");
+        cursor.insertBlock();
+        QTextTableFormat format;
+        QTextTable *table = cursor.insertTable(2, 2, format);
+        REQUIRE(table != nullptr);
+        cursor.movePosition(QTextCursor::End);
+        cursor.insertBlock();
+        cursor.insertText("outro");
+
+        WHEN("the cursor sits inside the table")
+        {
+            QTextCursor tableCursor(&doc);
+            tableCursor.setPosition(table->firstPosition());
+
+            THEN("isInTable reports true")
+            {
+                CHECK(TextFormatting::isInTable(tableCursor) == true);
+            }
+        }
+
+        WHEN("the cursor sits in the paragraph before the table")
+        {
+            QTextCursor beforeCursor(&doc);
+            beforeCursor.setPosition(0);
+
+            THEN("isInTable reports false")
+            {
+                CHECK(TextFormatting::isInTable(beforeCursor) == false);
+            }
+        }
+
+        WHEN("the cursor sits in the paragraph after the table")
+        {
+            QTextCursor afterCursor(&doc);
+            afterCursor.setPosition(doc.characterCount() - 1);
+
+            THEN("isInTable reports false")
+            {
+                CHECK(TextFormatting::isInTable(afterCursor) == false);
+            }
+        }
+    }
+
+    GIVEN("a document with no table at all")
+    {
+        QTextDocument doc;
+        doc.setPlainText("just some text");
+
+        WHEN("isInTable is queried anywhere in it")
+        {
+            QTextCursor cursor(&doc);
+
+            THEN("it reports false")
+            {
+                CHECK(TextFormatting::isInTable(cursor) == false);
             }
         }
     }

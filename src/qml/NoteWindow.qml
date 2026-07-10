@@ -26,6 +26,14 @@ Window {
     // must not fire on those two specific assignments.
     property bool restoringGeometry: false
 
+    // Whether the pointer is currently anywhere over this note — a plain
+    // mouse-presence signal, independent of OS-level window activation.
+    // Main.qml's toolbar-tracking logic uses this as a second, more direct
+    // "the user is still right here" signal alongside `active`, so a brief
+    // compositor-level activation blip doesn't hide the toolbar out from
+    // under someone who's still visibly working in/around the note.
+    readonly property alias hovered: noteHoverHandler.hovered
+
     // Live "is this format active at the current cursor/selection" state
     // (feature request: the toolbar should show, not just apply, formatting
     // — e.g. the Bold button should look pressed when the selection is
@@ -42,6 +50,11 @@ Window {
     property int currentHeadingLevel: 0
     property bool currentBulletList: false
     property bool currentNumberedList: false
+    property bool currentCheckboxList: false
+    // Drives whether the toolbar's row/column-editing popup can show at all
+    // (feature request) — those buttons are only ever meaningful with the
+    // cursor actually inside a table.
+    property bool currentInTable: false
 
     // Re-polls every currentXxx property above from the editor's real
     // selection and the document's own format at that selection. Called
@@ -59,11 +72,14 @@ Window {
         currentHeadingLevel = docHandler.headingLevel(start, end)
         currentBulletList = docHandler.isBulletList(start, end)
         currentNumberedList = docHandler.isNumberedList(start, end)
+        currentCheckboxList = docHandler.isCheckboxList(start, end)
+        currentInTable = docHandler.isInTable(end)
     }
 
     // Exposed for tests only (structural verification of drag-gesture
     // config); not used by app code outside this file.
     readonly property alias mouseDragArea: mouseDragArea
+    readonly property alias editorContextMenu: editorContextMenu
     readonly property alias touchDragHandler: touchDragHandler
     readonly property alias editor: editor
     readonly property alias editorFlick: editorFlick
@@ -427,6 +443,22 @@ Window {
                     // still correct to disable since this control never needs it.
                     ContextMenu.menu: null
 
+                    // Click-to-toggle checkboxes (feature request): a
+                    // non-exclusive tap handler sitting alongside editor's
+                    // own click-to-place-cursor handling (TapHandler's
+                    // default passive grab doesn't compete with it, so both
+                    // fire independently — the cursor still lands wherever
+                    // was clicked either way). tryToggleCheckboxAt itself
+                    // only actually toggles when the position hit-tests
+                    // against the item's own checkbox glyph, not its text.
+                    TapHandler {
+                        acceptedButtons: Qt.LeftButton
+                        onTapped: (eventPoint) => {
+                            const position = editor.positionAt(eventPoint.position.x, eventPoint.position.y)
+                            docHandler.tryToggleCheckboxAt(position)
+                        }
+                    }
+
                     DocumentHandler {
                         id: docHandler
                         document: editor.textDocument
@@ -440,6 +472,17 @@ Window {
 
                     Component.onCompleted: {
                         docHandler.setMarkdown(noteStore.loadNoteContent(noteWindow.noteId))
+                        // setMarkdown() rebuilds the whole document through a
+                        // cursor that starts at position 0; since Qt cursors
+                        // aren't anchored against insertions at their own
+                        // position by default, this editor's own cursor rides
+                        // along to the very end of the newly-inserted text.
+                        // That drags the view down with it via
+                        // onCursorRectangleChanged below — so every note would
+                        // open scrolled to the bottom instead of the top.
+                        // Snapping back to 0 here (before the view has had a
+                        // chance to react) is what makes notes open at the top.
+                        cursorPosition = 0
                         ready = true
                         noteWindow.refreshFormatState()
                     }
@@ -470,20 +513,27 @@ Window {
 
                     onCursorRectangleChanged: editorFlick.ensureCursorVisible(cursorRectangle)
 
-                    // Enter/Return inside a list item continues the list (or,
-                    // on an empty item, exits back to a plain paragraph) —
-                    // see DocumentHandler::tryContinueList. Falls through to
+                    // Enter/Return on a heading line breaks out of the heading
+                    // (see DocumentHandler::tryResetHeadingOnReturn) so the
+                    // next line starts as a plain paragraph, not a
+                    // continuation of the heading style. Otherwise, Enter
+                    // inside a list item continues the list (or, on an empty
+                    // item, exits back to a plain paragraph) — see
+                    // DocumentHandler::tryContinueList. Falls through to
                     // TextArea's own default Return handling (a plain
-                    // paragraph break) whenever the cursor isn't in a list at
-                    // all.
+                    // paragraph break) whenever neither applies.
                     Keys.onReturnPressed: (event) => {
-                        if (docHandler.tryContinueList(cursorPosition))
+                        if (docHandler.tryResetHeadingOnReturn(cursorPosition))
+                            event.accepted = true
+                        else if (docHandler.tryContinueList(cursorPosition))
                             event.accepted = true
                         else
                             event.accepted = false
                     }
                     Keys.onEnterPressed: (event) => {
-                        if (docHandler.tryContinueList(cursorPosition))
+                        if (docHandler.tryResetHeadingOnReturn(cursorPosition))
+                            event.accepted = true
+                        else if (docHandler.tryContinueList(cursorPosition))
                             event.accepted = true
                         else
                             event.accepted = false
@@ -751,7 +801,8 @@ Window {
         // the compositor. This is the only mechanism that works on Wayland —
         // clients can't set their own position directly (see project notes).
         // Left click is reserved for editing, so the mouse gesture is scoped
-        // to the right button only.
+        // to the right button (plus middle, for the autoscroll feature
+        // below — see acceptedButtons' own comment).
         //
         // Mouse case uses a MouseArea, not a DragHandler, and sits on top of
         // the editor (z above it) rather than as an ancestor: TextArea's
@@ -760,14 +811,15 @@ Window {
         // passive grab in that case — a passive grab can't be promoted over
         // a descendant's exclusive one, so it never activates. A MouseArea
         // sidesteps this because it participates in Qt Quick's legacy
-        // top-most-hit-test: since acceptedButtons excludes Left, a
-        // left-button press isn't a hit here at all and keeps searching
-        // underneath (reaching the editor normally), while a
-        // right-button press *is* a hit here — intercepted before it ever
-        // reaches TextInput underneath, so no competing exclusive grab
-        // exists to fight over. (A bare Item with only a PointerHandler
-        // doesn't get this fallthrough: unmatched events don't drop to
-        // siblings behind it, only bubble to its own ancestors.)
+        // top-most-hit-test: since acceptedButtons excludes Left (outside
+        // the brief armed-autoscroll window — see below), a left-button
+        // press isn't a hit here at all and keeps searching underneath
+        // (reaching the editor normally), while a right/middle-button press
+        // *is* a hit here — intercepted before it ever reaches TextInput
+        // underneath, so no competing exclusive grab exists to fight over.
+        // (A bare Item with only a PointerHandler doesn't get this
+        // fallthrough: unmatched events don't drop to siblings behind it,
+        // only bubble to its own ancestors.)
         // Sitting on top (z above the editor) also makes mouseDragArea the
         // one QQuickItem the platform cursor is resolved against here — Qt
         // Quick's cursor lookup walks up from the topmost hit item's own
@@ -781,10 +833,211 @@ Window {
             id: mouseDragArea
             anchors.fill: parent
             z: 1
-            acceptedButtons: Qt.RightButton
+            // Left is included ONLY while middle-click autoscroll is armed
+            // (feature request) — Chrome's own convention is that clicking
+            // ANY button cancels an armed autoscroll rather than also
+            // performing that button's normal action, so this area briefly
+            // steals left-button hit-testing too for exactly that one
+            // click, then immediately falls back to excluding it again so
+            // normal left-click editing is completely unaffected the rest
+            // of the time.
+            acceptedButtons: middleScrollArmed
+                ? (Qt.RightButton | Qt.MiddleButton | Qt.LeftButton)
+                : (Qt.RightButton | Qt.MiddleButton)
             hoverEnabled: true
-            cursorShape: mouseY >= editorFlick.y ? Qt.IBeamCursor : Qt.ArrowCursor
-            onPressed: noteWindow.startSystemMove()
+            // Chrome-style scroll-mode cursor (feature request) while
+            // autoscroll is armed, taking priority over the ordinary
+            // I-beam/arrow split below. Qt's built-in cursor shapes have no
+            // distinct single-direction up/down pair (only SizeVerCursor, a
+            // bidirectional vertical arrow, and SizeAllCursor, a four-way
+            // one) — that's the closest available "makes sense given the
+            // direction" without shipping custom cursor bitmap assets:
+            // SizeAllCursor right at the origin (nothing to scroll yet, any
+            // direction is still on the table), SizeVerCursor once the
+            // pointer has actually moved far enough to be scrolling —
+            // matching the same deadzone the Timer below uses to decide
+            // whether it's scrolling at all, so the cursor changes at
+            // exactly the moment real scrolling starts.
+            cursorShape: middleScrollArmed
+                ? (Math.abs(middleScrollCurrentY - middleScrollOriginY) > middleScrollDeadzone
+                       ? Qt.SizeVerCursor : Qt.SizeAllCursor)
+                : (mouseY >= editorFlick.y ? Qt.IBeamCursor : Qt.ArrowCursor)
+
+            // Right-click now has two outcomes — start a window move, or
+            // open the copy/paste context menu (feature request) — decided
+            // by whether the press actually moves before release, since
+            // startSystemMove() hands the whole gesture to the compositor
+            // the instant it's called (see project notes on Wayland
+            // interactive move: the client never reliably gets its own
+            // onReleased/onCanceled back afterward). Deferring the call
+            // until a small movement threshold is exceeded, instead of
+            // firing it unconditionally on press like before, is what makes
+            // "click" and "drag" distinguishable at all: a plain click that
+            // never crosses the threshold never calls startSystemMove(), so
+            // this MouseArea keeps its normal grab and onClicked fires
+            // exactly like any ordinary click.
+            property real pressX: 0
+            property real pressY: 0
+            property bool rightDragStarted: false
+            readonly property int dragThreshold: 4
+
+            // Middle-click autoscroll (feature request, Chrome-style):
+            // middle-click arms it and records the origin Y; the pointer
+            // then free-scrolls the note continuously in whichever
+            // direction it's moved from that origin, at a speed scaled by
+            // the distance. Two ways to end up scrolling, both supported:
+            // a quick click arms it, then the pointer free-scrolls with no
+            // button held (see hoverEnabled above: onPositionChanged fires
+            // on plain hover too) until a further click (any button; see
+            // acceptedButtons above) or Escape disarms it again — OR the
+            // button can just be held down and dragged, scrolling exactly
+            // the same way while held, and releasing it (once it's
+            // actually been dragged) disarms immediately, without needing
+            // a second click. middleScrollDraggedWhileHeld is what tells
+            // those two gestures apart at release time: a plain click that
+            // never moved leaves it false, so release does nothing and the
+            // click-to-arm/free-scroll convention is untouched.
+            property bool middleScrollArmed: false
+            property real middleScrollOriginY: 0
+            property real middleScrollCurrentY: 0
+            property bool middleButtonHeld: false
+            property bool middleScrollDraggedWhileHeld: false
+            readonly property int middleScrollDeadzone: 8
+
+            function armMiddleScroll(mouseX, mouseY) {
+                middleScrollArmed = true
+                middleScrollOriginY = mapToItem(editorFlick, mouseX, mouseY).y
+                middleScrollCurrentY = middleScrollOriginY
+                middleScrollDraggedWhileHeld = false
+                middleScrollTimer.start()
+            }
+            function disarmMiddleScroll() {
+                middleScrollArmed = false
+                middleButtonHeld = false
+                middleScrollDraggedWhileHeld = false
+                middleScrollTimer.stop()
+            }
+
+            onPressed: (mouse) => {
+                if (middleScrollArmed) {
+                    disarmMiddleScroll()
+                    mouse.accepted = true
+                    return
+                }
+                if (mouse.button === Qt.MiddleButton) {
+                    armMiddleScroll(mouse.x, mouse.y)
+                    middleButtonHeld = true
+                    mouse.accepted = true
+                    return
+                }
+                if (mouse.button === Qt.RightButton) {
+                    pressX = mouse.x
+                    pressY = mouse.y
+                    rightDragStarted = false
+                }
+            }
+            onReleased: (mouse) => {
+                if (mouse.button === Qt.MiddleButton) {
+                    middleButtonHeld = false
+                    if (middleScrollDraggedWhileHeld)
+                        disarmMiddleScroll()
+                }
+            }
+            onPositionChanged: (mouse) => {
+                middleScrollCurrentY = mapToItem(editorFlick, mouse.x, mouse.y).y
+                if (middleButtonHeld && !middleScrollDraggedWhileHeld
+                        && Math.abs(middleScrollCurrentY - middleScrollOriginY) > dragThreshold) {
+                    middleScrollDraggedWhileHeld = true
+                }
+                if (middleScrollArmed || rightDragStarted || !(mouse.buttons & Qt.RightButton))
+                    return
+                if (Math.abs(mouse.x - pressX) > dragThreshold || Math.abs(mouse.y - pressY) > dragThreshold) {
+                    rightDragStarted = true
+                    noteWindow.startSystemMove()
+                }
+            }
+            onClicked: (mouse) => {
+                if (mouse.button === Qt.RightButton && !rightDragStarted)
+                    editorContextMenu.popup(mouse.x, mouse.y)
+            }
+
+            // ~60fps: smooth enough for a scroll animation, cheap enough to
+            // not matter. Armed only between an explicit middle-click and
+            // an explicit disarm (another click or Escape) — never runs
+            // otherwise, so this is a continuous foreground tick bound to
+            // an active, user-initiated interaction (the same category as
+            // editorFlick's own built-in flick/deceleration animation),
+            // not a background poll of idle/external state.
+            Timer {
+                id: middleScrollTimer
+                interval: 16
+                repeat: true
+                onTriggered: {
+                    const dy = mouseDragArea.middleScrollCurrentY - mouseDragArea.middleScrollOriginY
+                    if (Math.abs(dy) <= mouseDragArea.middleScrollDeadzone)
+                        return
+                    const beyondDeadzone = dy - Math.sign(dy) * mouseDragArea.middleScrollDeadzone
+                    // No speed ceiling (feature request) — quadratic in the
+                    // distance past the deadzone, uncapped, so dragging far
+                    // enough from the origin keeps getting faster instead of
+                    // plateauing; editorFlick.contentY's own clamp below is
+                    // still what stops it from overshooting past either end.
+                    const speed = Math.sign(beyondDeadzone) * (beyondDeadzone * beyondDeadzone * 0.002)
+                    const maxContentY = Math.max(0, editorFlick.contentHeight - editorFlick.height)
+                    editorFlick.contentY = Math.max(0, Math.min(maxContentY, editorFlick.contentY + speed))
+                }
+            }
+        }
+
+        // Escape cancels an armed middle-click autoscroll without needing
+        // another click — standard convention for backing out of an armed,
+        // modal-ish pointer mode.
+        Shortcut {
+            sequence: "Escape"
+            onActivated: if (mouseDragArea.middleScrollArmed) mouseDragArea.disarmMiddleScroll()
+        }
+
+        // Right-click copy/paste menu (feature request): opened by
+        // mouseDragArea's onClicked above instead of QtQuick Controls'
+        // built-in ContextMenu (disabled on editor above) specifically
+        // because that built-in menu would fight the drag area for the
+        // same right-button press — see the disabled ContextMenu.menu's own
+        // comment.
+        Menu {
+            id: editorContextMenu
+
+            // Exposed for tests only, same convention as mouseDragArea's
+            // own alias above.
+            readonly property alias cutItem: cutItem
+            readonly property alias copyItem: copyItem
+            readonly property alias pasteItem: pasteItem
+            readonly property alias selectAllItem: selectAllItem
+
+            MenuItem {
+                id: cutItem
+                text: "Cut"
+                enabled: editor.selectionStart !== editor.selectionEnd
+                onTriggered: { editor.cut(); editor.forceActiveFocus() }
+            }
+            MenuItem {
+                id: copyItem
+                text: "Copy"
+                enabled: editor.selectionStart !== editor.selectionEnd
+                onTriggered: { editor.copy(); editor.forceActiveFocus() }
+            }
+            MenuItem {
+                id: pasteItem
+                text: "Paste"
+                enabled: editor.canPaste
+                onTriggered: { editor.paste(); editor.forceActiveFocus() }
+            }
+            MenuSeparator {}
+            MenuItem {
+                id: selectAllItem
+                text: "Select All"
+                enabled: editor.length > 0
+                onTriggered: { editor.selectAll(); editor.forceActiveFocus() }
+            }
         }
 
         DragHandler {

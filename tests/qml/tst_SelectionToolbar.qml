@@ -1,5 +1,6 @@
 import QtQml
 import QtQuick
+import QtQuick.Controls
 import QtTest
 import SuopNotesUi
 
@@ -59,6 +60,19 @@ Item {
         // at.
         function cleanup() {
             bar.noteWindow = null
+            noteA.currentInTable = false
+            noteB.currentInTable = false
+            // Resets hover state left over from any mouseMove() a test made
+            // (e.g. onto insertTableButton) — otherwise the pointer's last
+            // synthetic position leaks into the next test, which could
+            // start already-hovering something it never touched itself.
+            // `bar` (and columnOptionsPopup) are their own top-level
+            // Windows, separate from this file's implicit TestCase window —
+            // a reset aimed at `root` wouldn't touch either of them, so each
+            // gets its own explicit reset instead.
+            mouseMove(bar.contentItem, -50, -50)
+            mouseMove(bar.columnOptionsPopup.contentItem, -50, -50)
+            wait(20)
         }
 
         // The bar is shown exactly once (at startup) and never hidden
@@ -74,6 +88,70 @@ Item {
             compare(bar.content.visible, false)
             compare(bar.boldButton.enabled, false)
             compare(bar.dragArea.enabled, false)
+        }
+
+        // Tooltip on hover (feature request): every toolbar button gets a
+        // ToolTip identifying it, shown after a short hover delay rather
+        // than instantly (matching the platform-standard feel of a tooltip,
+        // not a label that pops the instant the pointer passes over).
+        function test_toolbar_buttons_have_hover_tooltips() {
+            compare(bar.boldButton.ToolTip.text, "Bold")
+            compare(bar.italicButton.ToolTip.text, "Italic")
+            compare(bar.strikethroughButton.ToolTip.text, "Strikethrough")
+            verify(bar.boldButton.ToolTip.delay > 0,
+                   "the tooltip should appear after a short hover delay, not instantly")
+        }
+
+        // Column options popup (feature request): the row/column-editing
+        // buttons no longer sit permanently in the main toolbar row — they
+        // only appear, in their own popup anchored to the grid icon, once
+        // the cursor is actually inside a table AND the pointer is hovering
+        // that icon (or the popup itself).
+        function test_column_options_popup_hidden_outside_a_table_even_when_hovering_the_grid_icon() {
+            bar.noteWindow = noteA
+            noteA.currentInTable = false
+            wait(20)
+
+            mouseMove(bar.insertTableButton, bar.insertTableButton.width / 2, bar.insertTableButton.height / 2)
+            wait(20)
+
+            compare(bar.columnOptionsPopup.wantsVisible, false)
+            compare(bar.columnOptionsPopup.background.visible, false)
+        }
+
+        function test_column_options_popup_shown_when_hovering_the_grid_icon_while_in_a_table() {
+            bar.noteWindow = noteA
+            noteA.currentInTable = true
+            wait(20)
+
+            compare(bar.columnOptionsPopup.wantsVisible, false,
+                    "must not show just from being in a table — only on actually hovering the icon")
+
+            mouseMove(bar.insertTableButton, bar.insertTableButton.width / 2, bar.insertTableButton.height / 2)
+            wait(20)
+
+            compare(bar.columnOptionsPopup.wantsVisible, true)
+            compare(bar.columnOptionsPopup.background.visible, true)
+            compare(bar.columnOptionsPopup.content.enabled, true)
+
+            mouseMove(bar.insertTableButton, -50, -50)
+            wait(20)
+            compare(bar.columnOptionsPopup.wantsVisible, false,
+                    "moving the pointer away from both the icon and the popup should hide it again")
+        }
+
+        function test_column_options_popup_is_anchored_below_the_grid_icon() {
+            bar.noteWindow = noteA
+            noteA.currentInTable = true
+            wait(20)
+
+            mouseMove(bar.insertTableButton, bar.insertTableButton.width / 2, bar.insertTableButton.height / 2)
+            wait(20)
+
+            const buttonTopLeft = bar.insertTableButton.mapToGlobal(0, 0)
+            compare(bar.columnOptionsPopup.x, buttonTopLeft.x)
+            verify(bar.columnOptionsPopup.y > buttonTopLeft.y,
+                   "the popup should sit below the grid icon by default")
         }
 
         function test_content_visible_and_enabled_once_a_note_is_tracked() {
@@ -96,6 +174,22 @@ Item {
             compare(bar.background.visible, false)
             compare(bar.content.visible, false)
             compare(bar.boldButton.enabled, false)
+        }
+
+        // Main.qml's toolbar-persistence fix (feature request: the toolbar
+        // used to disappear after a while even though the note was still
+        // focused) relies on this `hovered` alias as a mouse-presence signal
+        // independent of window activation — verify it actually tracks the
+        // pointer.
+        function test_hovered_tracks_whether_the_pointer_is_over_the_toolbar() {
+            bar.noteWindow = noteA
+            wait(20)
+
+            mouseMove(bar.contentItem, bar.width / 2, bar.height / 2)
+            tryCompare(bar, "hovered", true)
+
+            mouseMove(bar.contentItem, -50, -50)
+            tryCompare(bar, "hovered", false)
         }
 
         // Default placement (feature request): the bar should sit just

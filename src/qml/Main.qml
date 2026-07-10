@@ -45,6 +45,27 @@ Item {
         return (root.activeNoteWindow && root.activeNoteWindow.active) || selectionToolbar.active
     }
 
+    // A brief, spurious activation blip on the tracked note or the toolbar
+    // — neither window's fault, just a transient compositor-level hiccup —
+    // could otherwise let the debounce below race past the moment a real
+    // focus hand-off (e.g. clicking a toolbar button) resolves, hiding the
+    // toolbar despite the user still visibly working in/around the note.
+    // `hovered` (plain mouse presence, unrelated to and far less prone to
+    // blip than window activation) is used as a one-time grace signal for
+    // exactly that: see activeNoteWindowClearDebounce below. Deliberately
+    // NOT used as a standalone, indefinite "still in use" signal — that
+    // would leave the toolbar stuck open forever once the user genuinely
+    // switched focus to a different app entirely, if their mouse simply
+    // never happened to move off the note afterward.
+    function noteOrToolbarHovered() {
+        return (root.activeNoteWindow && root.activeNoteWindow.hovered) || selectionToolbar.hovered
+    }
+
+    // Sees exactly one grace retry per deactivation episode, so the bound
+    // on "how long the toolbar can possibly outlive real focus" stays
+    // small and predictable rather than open-ended.
+    property bool activeNoteWindowClearGraceUsed: false
+
     // Debounces clearing activeNoteWindow to null, restarted by every real
     // "the tracked note just deactivated" event (never runs on a schedule
     // — see CLAUDE.md on polling timers) and re-checked (not just delayed)
@@ -52,11 +73,26 @@ Item {
     // toolbar never gets cleared out from under itself.
     Timer {
         id: activeNoteWindowClearDebounce
-        interval: 150
+        interval: 250
         repeat: false
         onTriggered: {
-            if (!root.noteOrToolbarActive())
-                root.activeNoteWindow = null
+            if (root.noteOrToolbarActive()) {
+                root.activeNoteWindowClearGraceUsed = false
+                return
+            }
+            // One bounded extra grace period if the pointer is still
+            // resting on the note/toolbar, in case a brief activation blip
+            // is still resolving — never more than one, so genuinely
+            // switching focus to a different app entirely still clears
+            // this promptly (within 2 * interval) even if the mouse never
+            // moved off the note meanwhile.
+            if (!root.activeNoteWindowClearGraceUsed && root.noteOrToolbarHovered()) {
+                root.activeNoteWindowClearGraceUsed = true
+                activeNoteWindowClearDebounce.restart()
+                return
+            }
+            root.activeNoteWindowClearGraceUsed = false
+            root.activeNoteWindow = null
         }
     }
 
@@ -68,6 +104,7 @@ Item {
             onActiveChanged: {
                 if (active) {
                     activeNoteWindowClearDebounce.stop()
+                    root.activeNoteWindowClearGraceUsed = false
                     root.activeNoteWindow = thisNoteWindow
                 } else if (root.activeNoteWindow === thisNoteWindow) {
                     activeNoteWindowClearDebounce.restart()

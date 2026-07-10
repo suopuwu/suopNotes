@@ -1,4 +1,5 @@
 #include "MarkdownSerialization.h"
+#include "TextFormatting.h"
 
 #include <QRegularExpression>
 #include <QTextBlock>
@@ -59,6 +60,29 @@ QString markdownForRun(QTextDocument *document, const Run &run)
 {
     const QTextBlock startBlock = document->findBlockByNumber(run.startBlockNumber);
     const QTextBlock endBlock = document->findBlockByNumber(run.endBlockNumber);
+
+    // A run is homogeneous by construction (see the run-splitting loop
+    // above) — checking the first block is enough to know every block in
+    // it is a hand-rolled list item. Their marker text is already exactly
+    // correct GFM syntax, but Qt's own markdown WRITER treats any plain
+    // paragraph merely starting with what looks like list syntax as
+    // ambiguous and defensively escapes it ("1. " -> "1\. ", "- " -> "\- ",
+    // confirmed empirically) since it has no way to know the block was
+    // deliberately meant to render as a list marker rather than being
+    // coincidental prose. Bypassing Qt's writer entirely here sidesteps
+    // that unconditionally, without risking unescaping a genuinely-plain
+    // paragraph elsewhere that just happens to look similar (see
+    // TextFormatting::isHandRolledListBlock's own comment).
+    if (TextFormatting::isHandRolledListBlock(startBlock)) {
+        QStringList lines;
+        for (QTextBlock block = startBlock; block.isValid(); block = block.next()) {
+            lines << block.text();
+            if (block == endBlock)
+                break;
+        }
+        return lines.join(QLatin1Char('\n'));
+    }
+
     const bool startsInTable = QTextCursor(startBlock).currentTable() != nullptr;
 
     QTextCursor cursor(document);
@@ -112,6 +136,7 @@ QString toMarkdownPreservingBlankLines(QTextDocument *document)
     int pendingSpacers = 0;
     int runStart = -1;
     bool runIsCode = false;
+    bool runIsHandRolledList = false;
     int blockNumber = 0;
     for (QTextBlock block = document->begin(); block.isValid(); block = block.next(), ++blockNumber) {
         if (isBlankSpacerBlock(block)) {
@@ -119,21 +144,26 @@ QString toMarkdownPreservingBlankLines(QTextDocument *document)
             continue;
         }
         const bool blockIsCode = isCodeFormatted(block);
+        const bool blockIsHandRolledList = TextFormatting::isHandRolledListBlock(block);
         if (!seenContent) {
             leadingSpacers = pendingSpacers;
             runStart = blockNumber;
             runIsCode = blockIsCode;
-        } else if (pendingSpacers > 0 || blockIsCode != runIsCode) {
+            runIsHandRolledList = blockIsHandRolledList;
+        } else if (pendingSpacers > 0 || blockIsCode != runIsCode || blockIsHandRolledList != runIsHandRolledList) {
             // A code-format transition forces a run boundary even with zero
             // spacer blocks between them: Qt's writer, when a fenced code
             // block sits tight against a plain block in the same pass,
             // silently drops the blank line that's supposed to separate them
             // (confirmed empirically) — splitting the run guarantees at
             // least the CommonMark-minimum blank line gets written back in.
+            // A hand-rolled-list transition forces one for a different
+            // reason — see markdownForRun's own handling of such runs.
             runs.append({runStart, blockNumber - 1 - pendingSpacers});
             interiorGapSpacers.append(pendingSpacers);
             runStart = blockNumber;
             runIsCode = blockIsCode;
+            runIsHandRolledList = blockIsHandRolledList;
         }
         pendingSpacers = 0;
         seenContent = true;
@@ -245,13 +275,39 @@ void insertChunk(QTextCursor &cursor, const QString &chunkText)
 {
     QTextDocument chunkDocument;
     chunkDocument.setMarkdown(chunkText);
-    // insertFragment() merges the fragment's first block's text into the
-    // cursor's current (already-existing, plain) block, but does NOT carry
-    // that first block's own format onto the destination — it silently
-    // keeps whatever format the destination block already had. Align them
-    // first so a chunk starting with, say, a fenced code block doesn't get
-    // its first line demoted to a plain paragraph.
-    cursor.setBlockFormat(chunkDocument.begin().blockFormat());
+    // Converts Qt's own native QTextList-based numbered/checkbox items
+    // (freshly parsed above) into the hand-rolled, selectable-marker
+    // representation this app actually edits with — see TextFormatting.h's
+    // own comment on convertNativeListsToHandRolled for why, and why this
+    // must run before the textList() check below even considers this
+    // chunk's first block (a hand-rolled block never carries a QTextList
+    // object attachment, so it's exempt from the phantom-item risk that
+    // check exists to guard against — it's just a plain block with custom
+    // properties, the same as a heading).
+    TextFormatting::convertNativeListsToHandRolled(&chunkDocument);
+    const QTextBlock firstChunkBlock = chunkDocument.begin();
+    if (firstChunkBlock.textList()) {
+        // A list item's block format carries a QTextList *object* attachment,
+        // not just plain properties — copying it (the way headings/code
+        // fences are handled below) onto the cursor's pre-existing empty
+        // destination block doesn't join that block to the real list being
+        // inserted; it turns it into its own permanent phantom empty list
+        // item sitting above the real first item (confirmed empirically).
+        // Consuming the leftover empty block first — same move
+        // TextFormatting::insertTable makes before a table lands — lets
+        // insertFragment() create the real first item fresh, with no
+        // leftover block for it to strand.
+        if (cursor.atBlockStart() && cursor.atBlockEnd())
+            cursor.deletePreviousChar();
+    } else {
+        // insertFragment() merges the fragment's first block's text into the
+        // cursor's current (already-existing, plain) block, but does NOT
+        // carry that first block's own format onto the destination — it
+        // silently keeps whatever format the destination block already had.
+        // Align them first so a chunk starting with, say, a fenced code
+        // block doesn't get its first line demoted to a plain paragraph.
+        cursor.setBlockFormat(firstChunkBlock.blockFormat());
+    }
     cursor.insertFragment(QTextDocumentFragment(&chunkDocument));
 }
 

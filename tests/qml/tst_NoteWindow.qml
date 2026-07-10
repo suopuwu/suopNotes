@@ -98,6 +98,21 @@ Item {
                 verify((instantiator.objectAt(i).flags & Qt.Tool) !== 0)
         }
 
+        // Main.qml's toolbar-persistence fix (feature request: the toolbar
+        // used to disappear after a while even though the note was still
+        // focused) relies on this `hovered` alias as a mouse-presence signal
+        // independent of window activation — verify it actually tracks the
+        // pointer.
+        function test_hovered_tracks_whether_the_pointer_is_over_the_note() {
+            const win = instantiator.objectAt(0)
+
+            mouseMove(win.contentItem, win.width / 2, win.height / 2)
+            tryCompare(win, "hovered", true)
+
+            mouseMove(win.contentItem, -50, -50)
+            tryCompare(win, "hovered", false)
+        }
+
         // Regression test: restoring a note's already-persisted width/height
         // in Component.onCompleted used to fire persistSize() on the very
         // assignments that were just restoring known-good values (each of
@@ -138,9 +153,13 @@ Item {
             w.destroy()
         }
 
-        function test_mouse_drag_is_scoped_to_right_button_only() {
+        // Middle is included alongside right (feature request: middle-click
+        // autoscroll) — left stays excluded so normal editing clicks keep
+        // falling through to the editor underneath, except transiently
+        // while an autoscroll is armed (see mouseDragArea's own comment).
+        function test_mouse_drag_is_scoped_to_right_and_middle_button_only() {
             const area = instantiator.objectAt(0).mouseDragArea
-            compare(area.acceptedButtons, Qt.RightButton)
+            compare(area.acceptedButtons, Qt.RightButton | Qt.MiddleButton)
         }
 
         function test_touch_drag_accepts_touch_input() {
@@ -169,6 +188,236 @@ Item {
             mousePress(editor, cx, cy, Qt.RightButton)
             verify(area.pressed, "the drag area, not TextInput underneath, should own a right-button press over the editor")
             mouseRelease(editor, cx, cy, Qt.RightButton)
+        }
+
+        // Right-click copy/paste menu (feature request): a plain right-click
+        // (no drag in between press and release) opens the menu instead of
+        // starting a window move.
+        function test_right_click_without_dragging_opens_the_context_menu() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+            const cx = editor.width / 2
+            const cy = editor.height / 2
+
+            mouseClick(editor, cx, cy, Qt.RightButton)
+            verify(win.editorContextMenu.visible,
+                   "a plain right-click (no drag) should open the context menu")
+
+            win.editorContextMenu.close()
+        }
+
+        // The other half of the same fix: dragging past the threshold
+        // should still move the window like before, and must NOT also open
+        // the menu once the drag has started.
+        function test_right_click_drag_past_threshold_starts_a_move_not_the_menu() {
+            const win = instantiator.objectAt(0)
+            const area = win.mouseDragArea
+            const editor = win.editor
+            const cx = editor.width / 2
+            const cy = editor.height / 2
+
+            mouseDrag(editor, cx, cy, 20, 20, Qt.RightButton, Qt.NoModifier, 50)
+
+            verify(area.rightDragStarted,
+                   "moving past the threshold while right-button is held should start a drag")
+            verify(!win.editorContextMenu.visible, "a drag must not also open the context menu")
+        }
+
+        // Cut/Copy only make sense with an actual selection; Select All
+        // should always work as long as there's any text.
+        function test_context_menu_cut_and_copy_are_disabled_without_a_selection() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+
+            win.docHandler.setMarkdown("hello world")
+            wait(50)
+            editor.cursorPosition = 0
+            editor.deselect()
+
+            verify(!win.editorContextMenu.cutItem.enabled, "Cut should be disabled with no selection")
+            verify(!win.editorContextMenu.copyItem.enabled, "Copy should be disabled with no selection")
+
+            editor.select(0, 5)
+            verify(win.editorContextMenu.cutItem.enabled, "Cut should be enabled once text is selected")
+            verify(win.editorContextMenu.copyItem.enabled, "Copy should be enabled once text is selected")
+
+            win.docHandler.setMarkdown("")
+            wait(50)
+        }
+
+        function test_context_menu_select_all_selects_the_whole_note() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+
+            win.docHandler.setMarkdown("hello world")
+            wait(50)
+            editor.cursorPosition = 0
+            editor.deselect()
+
+            win.editorContextMenu.selectAllItem.triggered()
+
+            compare(editor.selectionStart, 0)
+            compare(editor.selectionEnd, editor.length)
+
+            win.docHandler.setMarkdown("")
+            wait(50)
+        }
+
+        function test_context_menu_cut_removes_the_selected_text() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+
+            win.docHandler.setMarkdown("hello world")
+            wait(50)
+            editor.select(0, 5)
+
+            win.editorContextMenu.cutItem.triggered()
+
+            // editor.text always carries TextArea's own trailing "\n\n" for
+            // a single-paragraph document, independent of anything cut()
+            // does — asserting the visible content survives via
+            // startsWith(), not an exact match against it.
+            verify(editor.text.startsWith(" world"), "expected \"hello\" to be cut, leaving \" world\": " + editor.text)
+
+            win.docHandler.setMarkdown("")
+            wait(50)
+        }
+
+        // Middle-mouse autoscroll (feature request, Chrome-style): a
+        // middle-click arms it; moving the pointer afterward — with no
+        // button held — scrolls the note continuously in that direction.
+        // Middle-mouse autoscroll (feature request, Chrome-style): a
+        // middle-click arms it; moving the pointer afterward — with no
+        // button held — scrolls the note continuously in that direction.
+        function test_middle_click_arms_autoscroll_and_movement_scrolls_the_note() {
+            const win = instantiator.objectAt(0)
+            const area = win.mouseDragArea
+            const flick = win.editorFlick
+            const editor = win.editor
+
+            let many = ""
+            for (let i = 0; i < 60; ++i)
+                many += "line " + i + "\n\n"
+            win.docHandler.setMarkdown(many)
+            wait(50)
+            // setMarkdown() here (unlike a fresh note's initial load) does
+            // NOT go through Component.onCompleted's own top-scroll fix
+            // (req. 10) — that only runs once, when the editor is first
+            // created — so this editor, being reused across the whole test
+            // file, is left scrolled to the bottom by the same
+            // cursor-rides-to-the-end mechanism that fix addresses. Reset
+            // it explicitly so a small, fixed y coordinate below reliably
+            // lands within the actual visible (and thus hit-testable)
+            // window area, instead of somewhere off-screen above a
+            // bottom-scrolled viewport.
+            editor.cursorPosition = 0
+            wait(50)
+            verify(flick.contentHeight > flick.height, "precondition: content must overflow to scroll at all")
+            compare(flick.contentY, 0, "precondition: the viewport must actually be scrolled to the top")
+
+            const cx = editor.width / 2
+            const cy = 20
+
+            mouseClick(editor, cx, cy, Qt.MiddleButton)
+            verify(area.middleScrollArmed, "a middle-click should arm autoscroll")
+
+            const before = flick.contentY
+            mouseMove(editor, cx, cy + 60)
+            wait(200) // let a few of the timer's 16ms ticks actually run
+
+            verify(flick.contentY > before,
+                   "moving the pointer below the origin should scroll the note downward")
+
+            // A further click anywhere disarms it again. Targets `area`
+            // itself (fixed window coordinates), not `editor` — the
+            // autoscroll that just happened moved editorFlick's contentY,
+            // which shifts where editor's OWN local (cx, cy) now maps to
+            // on screen; area's local coordinate space doesn't move.
+            mouseClick(area, cx, cy, Qt.LeftButton)
+            verify(!area.middleScrollArmed, "a subsequent click should disarm autoscroll")
+
+            win.docHandler.setMarkdown("hi")
+            wait(50)
+        }
+
+        // Chrome shows a distinct scroll-mode cursor while autoscroll is
+        // armed (feature request).
+        function test_middle_click_autoscroll_shows_a_scroll_cursor_while_armed() {
+            const win = instantiator.objectAt(0)
+            const area = win.mouseDragArea
+            const flick = win.editorFlick
+            const editor = win.editor
+
+            let many = ""
+            for (let i = 0; i < 60; ++i)
+                many += "line " + i + "\n\n"
+            win.docHandler.setMarkdown(many)
+            wait(50)
+            editor.cursorPosition = 0
+            wait(50)
+
+            const cx = editor.width / 2
+            const cy = 20
+
+            verify(area.cursorShape !== Qt.SizeAllCursor, "precondition: not the scroll cursor before arming")
+
+            mouseClick(editor, cx, cy, Qt.MiddleButton)
+            compare(area.cursorShape, Qt.SizeAllCursor,
+                    "armed but still at the origin (nothing to scroll yet) should show the neutral four-way cursor")
+
+            // Qt has no distinct single-direction up/down cursor pair, only
+            // SizeVerCursor (bidirectional vertical) — the best available
+            // "makes sense for the direction" indicator without shipping
+            // custom cursor bitmaps, and correct either way since this app
+            // only ever scrolls vertically.
+            mouseMove(editor, cx, cy + 60) // past the deadzone -> actually scrolling
+            wait(50)
+            compare(area.cursorShape, Qt.SizeVerCursor,
+                    "once actually scrolling, the cursor should switch to the vertical-scroll shape")
+
+            mouseClick(area, cx, cy, Qt.LeftButton) // disarm
+            verify(area.cursorShape !== Qt.SizeAllCursor && area.cursorShape !== Qt.SizeVerCursor,
+                   "the scroll cursor should go away once disarmed")
+
+            win.docHandler.setMarkdown("hi")
+            wait(50)
+        }
+
+        // Feature request: besides click-to-arm/click-to-disarm, pressing
+        // and HOLDING the middle button while dragging should also scroll,
+        // stopping the instant the button is released — no second click
+        // needed for that gesture specifically.
+        function test_holding_middle_button_and_dragging_scrolls_and_stops_on_release() {
+            const win = instantiator.objectAt(0)
+            const area = win.mouseDragArea
+            const flick = win.editorFlick
+            const editor = win.editor
+
+            let many = ""
+            for (let i = 0; i < 60; ++i)
+                many += "line " + i + "\n\n"
+            win.docHandler.setMarkdown(many)
+            wait(50)
+            editor.cursorPosition = 0
+            wait(50)
+            verify(flick.contentHeight > flick.height, "precondition: content must overflow to scroll at all")
+
+            const cx = editor.width / 2
+            const cy = 20
+
+            mousePress(editor, cx, cy, Qt.MiddleButton)
+            verify(area.middleScrollArmed, "pressing (not yet releasing) the middle button should arm autoscroll")
+
+            const before = flick.contentY
+            mouseMove(editor, cx, cy + 60) // dragged while still held
+            wait(200) // let a few of the timer's 16ms ticks actually run
+            verify(flick.contentY > before, "dragging while held should scroll, same as the click-then-move gesture")
+
+            mouseRelease(area, cx, cy + 60, Qt.MiddleButton)
+            verify(!area.middleScrollArmed, "releasing after an actual drag should stop the scroll immediately")
+
+            win.docHandler.setMarkdown("hi")
+            wait(50)
         }
 
         // Guards against the fix above regressing normal editing: the drag
@@ -659,6 +908,45 @@ Item {
             wait(50)
         }
 
+        // Feature request: a note whose saved content overflows the visible
+        // area used to always open scrolled to the very bottom (the load
+        // path's own cursor rides to the end of the freshly-inserted text —
+        // see NoteWindow.qml's Component.onCompleted comment). It should
+        // open at the top instead. Needs a genuinely fresh window (not
+        // instantiator.objectAt(0), whose Component.onCompleted already ran
+        // against empty content before this test's content ever existed on
+        // disk) so Component.onCompleted's own initial load is what's being
+        // exercised, not a later setMarkdown() call.
+        function test_note_with_overflowing_content_opens_scrolled_to_the_top_not_the_bottom() {
+            let many = ""
+            for (let i = 0; i < 60; ++i)
+                many += "line " + i + "\n\n"
+            noteStore.saveNoteContent("scroll-to-top-test", many)
+            wait(350) // let NoteStore's ~300ms debounced write flush to disk
+
+            const w = restoreOrderTestComponent.createObject(root, {
+                noteId: "scroll-to-top-test",
+                index: 71,
+                noteX: 0,
+                noteY: 0,
+                noteWidth: 260,
+                noteHeight: 260,
+                screenName: "",
+                alwaysOnTop: false,
+            })
+            verify(w !== null)
+            wait(50)
+
+            verify(w.editorFlick.contentHeight > w.editorFlick.height,
+                   "precondition: content must overflow for a scroll position to mean anything")
+            compare(w.editor.cursorPosition, 0,
+                    "a freshly-loaded note's cursor must start at position 0, not ride to the end")
+            compare(w.editorFlick.contentY, 0,
+                    "a freshly-loaded overflowing note must open scrolled to the top, not the bottom")
+
+            w.destroy()
+        }
+
         function test_window_title_is_unique_per_note_for_kwin_rule_matching() {
             compare(instantiator.objectAt(0).title, "suopNotes-note-a")
             compare(instantiator.objectAt(1).title, "suopNotes-note-b")
@@ -783,6 +1071,74 @@ Item {
                    "the second Enter on an empty item should exit the list, not add another bullet:\n" + md)
         }
 
+        // Toggling a heading (feature request): clicking/shortcutting H1 on a
+        // line that's already H1 should revert it to a plain paragraph,
+        // matching every other toolbar toggle (Bold, bullet list, ...) —
+        // DocumentHandler::setHeadingLevel.
+        function test_setting_the_same_heading_level_twice_toggles_it_back_to_a_paragraph() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+
+            win.docHandler.setMarkdown("some text")
+            wait(50)
+            editor.cursorPosition = 0
+
+            win.docHandler.setHeadingLevel(editor.selectionStart, editor.selectionEnd, 1)
+            compare(win.docHandler.headingLevel(editor.selectionStart, editor.selectionEnd), 1,
+                    "first click should apply heading level 1")
+
+            win.docHandler.setHeadingLevel(editor.selectionStart, editor.selectionEnd, 1)
+            compare(win.docHandler.headingLevel(editor.selectionStart, editor.selectionEnd), 0,
+                    "clicking H1 again on an already-H1 line should toggle it back to a paragraph")
+        }
+
+        // Switching directly between H1 and H2 (not via a toggle-off first)
+        // should just switch the level, not require clearing first.
+        function test_switching_from_h1_to_h2_applies_h2_without_needing_to_clear_first() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+
+            win.docHandler.setMarkdown("some text")
+            wait(50)
+            editor.cursorPosition = 0
+
+            win.docHandler.setHeadingLevel(editor.selectionStart, editor.selectionEnd, 1)
+            win.docHandler.setHeadingLevel(editor.selectionStart, editor.selectionEnd, 2)
+            compare(win.docHandler.headingLevel(editor.selectionStart, editor.selectionEnd), 2)
+        }
+
+        // Pressing Enter from within a heading line should NOT continue the
+        // heading style onto the new line — a heading is a one-line label,
+        // not a style that propagates — DocumentHandler::
+        // tryResetHeadingOnReturn.
+        function test_pressing_enter_in_a_heading_does_not_continue_the_heading_on_the_next_line() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+
+            win.docHandler.setMarkdown("Title")
+            wait(50)
+
+            editor.cursorPosition = 0
+            win.docHandler.setHeadingLevel(0, 0, 1)
+
+            editor.cursorPosition = editor.length
+            win.requestActivate()
+            tryCompare(win, "active", true)
+            editor.forceActiveFocus()
+            tryCompare(editor, "activeFocus", true)
+
+            keyClick(Qt.Key_Return)
+            typeText("plain body text")
+
+            compare(win.docHandler.headingLevel(editor.selectionStart, editor.selectionEnd), 0,
+                    "the new line after a heading must not still be a heading")
+            const md = win.docHandler.toMarkdown()
+            verify(md.indexOf("# Title") !== -1)
+            verify(md.indexOf("plain body text") !== -1)
+            verify(md.indexOf("# plain body text") === -1,
+                   "the new line must not have been serialized as a heading:\n" + md)
+        }
+
         // Auto-list shorthand (feature request): typing "- " at the very
         // start of an otherwise-plain line converts it into a real bullet
         // list, consuming the typed marker — DocumentHandler::
@@ -840,6 +1196,155 @@ Item {
 
             const md = win.docHandler.toMarkdown().trim()
             verify(/^5\.\s+milk$/.test(md), "expected the list to start at 5, got: " + md)
+        }
+
+        // Checkbox list shorthand (feature request): "- [ ] " at the start
+        // of an otherwise-plain line converts it into a real checkbox item.
+        function test_typing_dash_bracket_space_at_line_start_converts_to_a_checkbox_list() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+
+            win.docHandler.setMarkdown("")
+            wait(50)
+            win.requestActivate()
+            tryCompare(win, "active", true)
+            editor.forceActiveFocus()
+            tryCompare(editor, "activeFocus", true)
+
+            typeText("- [ ] milk")
+
+            compare(win.docHandler.toMarkdown().trim(), "- [ ] milk")
+        }
+
+        // Enter/Return inside a numbered list item continues the list —
+        // same convention as bullet lists (see
+        // test_pressing_enter_in_a_bullet_list_item_continues_the_list
+        // above), now via DocumentHandler::continueHandRolledList instead
+        // of a QTextList.
+        function test_pressing_enter_in_a_numbered_list_item_continues_the_list() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+
+            win.docHandler.setMarkdown("1. item one\n")
+            wait(50)
+
+            editor.cursorPosition = editor.length
+            win.requestActivate()
+            tryCompare(win, "active", true)
+            editor.forceActiveFocus()
+            tryCompare(editor, "activeFocus", true)
+
+            keyClick(Qt.Key_Return)
+            typeText("item two")
+
+            const md = win.docHandler.toMarkdown()
+            verify(md.indexOf("1. item one") !== -1)
+            verify(md.indexOf("2. item two") !== -1,
+                   "expected the second item to be numbered 2, not a plain paragraph:\n" + md)
+        }
+
+        function test_pressing_enter_on_an_empty_numbered_list_item_exits_the_list() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+
+            win.docHandler.setMarkdown("1. item one\n")
+            wait(50)
+
+            editor.cursorPosition = editor.length
+            win.requestActivate()
+            tryCompare(win, "active", true)
+            editor.forceActiveFocus()
+            tryCompare(editor, "activeFocus", true)
+
+            keyClick(Qt.Key_Return) // new, empty numbered item
+            keyClick(Qt.Key_Return) // empty item -> exit the list
+            typeText("plain paragraph")
+
+            const md = win.docHandler.toMarkdown()
+            verify(md.indexOf("1. item one") !== -1)
+            verify(md.indexOf("plain paragraph") !== -1)
+            verify(md.indexOf("2. plain paragraph") === -1,
+                   "the second Enter on an empty item should exit the list, not add another item:\n" + md)
+        }
+
+        // Same two behaviors, checkbox variant.
+        function test_pressing_enter_in_a_checkbox_list_item_continues_the_list() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+
+            win.docHandler.setMarkdown("- [ ] item one\n")
+            wait(50)
+
+            editor.cursorPosition = editor.length
+            win.requestActivate()
+            tryCompare(win, "active", true)
+            editor.forceActiveFocus()
+            tryCompare(editor, "activeFocus", true)
+
+            keyClick(Qt.Key_Return)
+            typeText("item two")
+
+            const md = win.docHandler.toMarkdown()
+            verify(md.indexOf("- [ ] item one") !== -1)
+            verify(md.indexOf("- [ ] item two") !== -1,
+                   "expected a second checkbox item, not a plain paragraph:\n" + md)
+        }
+
+        function test_pressing_enter_on_an_empty_checkbox_list_item_exits_the_list() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+
+            win.docHandler.setMarkdown("- [ ] item one\n")
+            wait(50)
+
+            editor.cursorPosition = editor.length
+            win.requestActivate()
+            tryCompare(win, "active", true)
+            editor.forceActiveFocus()
+            tryCompare(editor, "activeFocus", true)
+
+            keyClick(Qt.Key_Return) // new, empty checkbox item
+            keyClick(Qt.Key_Return) // empty item -> exit the list
+            typeText("plain paragraph")
+
+            const md = win.docHandler.toMarkdown()
+            verify(md.indexOf("- [ ] item one") !== -1)
+            verify(md.indexOf("plain paragraph") !== -1)
+            verify(md.indexOf("- [ ] plain paragraph") === -1,
+                   "the second Enter on an empty item should exit the list, not add another item:\n" + md)
+        }
+
+        // Click-to-toggle (feature request): clicking directly on a
+        // checkbox item's own glyph flips its checked state.
+        function test_clicking_the_checkbox_glyph_toggles_its_checked_state() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+
+            win.docHandler.setMarkdown("- [ ] milk\n")
+            wait(50)
+
+            // "- [ ] " is 6 characters — click near its start, well inside
+            // the glyph itself, not the "milk" text after it.
+            const rect = editor.positionToRectangle(2)
+            mouseClick(editor, rect.x, rect.y + rect.height / 2, Qt.LeftButton)
+
+            verify(win.docHandler.toMarkdown().indexOf("- [x] milk") !== -1,
+                   "clicking the checkbox glyph should check it: " + win.docHandler.toMarkdown())
+        }
+
+        // Selectable numbers (feature request): unlike Qt's own QTextList
+        // markers (paint-time decoration with no character position, never
+        // selectable), a hand-rolled numbered marker is literal text —
+        // selecting from the very start of the line includes it.
+        function test_numbered_list_marker_text_is_selectable() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+
+            win.docHandler.setMarkdown("1. milk\n")
+            wait(50)
+
+            editor.select(0, 2) // "1."
+            compare(editor.selectedText, "1.")
         }
 
         // Configurable keyboard shortcuts (feature request): Ctrl+B (the

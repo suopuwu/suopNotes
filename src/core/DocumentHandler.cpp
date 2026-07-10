@@ -80,9 +80,24 @@ void DocumentHandler::toggleNumberedList(int selectionStart, int selectionEnd)
     emit formattingChanged();
 }
 
+void DocumentHandler::toggleCheckboxList(int selectionStart, int selectionEnd)
+{
+    TextFormatting::toggleCheckboxList(cursorFor(selectionStart, selectionEnd));
+    emit formattingChanged();
+}
+
 void DocumentHandler::setHeadingLevel(int selectionStart, int selectionEnd, int level)
 {
-    TextFormatting::setHeadingLevel(cursorFor(selectionStart, selectionEnd), level);
+    QTextCursor cursor = cursorFor(selectionStart, selectionEnd);
+    // A toggle, not a plain setter: clicking H1 on a line that's already H1
+    // reverts it to a normal paragraph, matching every other toolbar toggle
+    // (Bold, bullet list, ...). Callers that always want a specific level
+    // unconditionally (e.g. an explicit "clear formatting" shortcut passing
+    // level 0) still get exactly that level whenever the current level
+    // differs from it — only the "already at the requested level" case
+    // clears instead of re-applying it.
+    const int currentLevel = TextFormatting::headingLevel(cursor);
+    TextFormatting::setHeadingLevel(cursor, currentLevel == level ? 0 : level);
     emit formattingChanged();
 }
 
@@ -154,6 +169,16 @@ bool DocumentHandler::tryContinueList(int cursorPosition)
     QTextCursor cursor(m_document->textDocument());
     cursor.setPosition(cursorPosition);
 
+    // Numbered/checkbox items are hand-rolled (see TextFormatting.h) and
+    // handled independently of the QTextList-based bullet path below.
+    if (TextFormatting::isNumberedList(cursor) || TextFormatting::isCheckboxList(cursor)) {
+        if (TextFormatting::isHandRolledListItemEmpty(cursor)) {
+            TextFormatting::exitHandRolledList(cursor);
+            return true;
+        }
+        return TextFormatting::continueHandRolledList(cursor);
+    }
+
     QTextList *list = cursor.currentList();
     if (!list)
         return false;
@@ -182,20 +207,23 @@ bool DocumentHandler::tryAutoConvertListShorthand(int cursorPosition)
     QTextCursor cursor(m_document->textDocument());
     cursor.setPosition(cursorPosition);
 
-    // Already inside a list — nothing to shorthand-convert.
-    if (cursor.currentList())
+    // Already inside a list — nothing to shorthand-convert. Numbered/
+    // checkbox items are hand-rolled (no QTextList), hence the extra checks.
+    if (cursor.currentList() || TextFormatting::isNumberedList(cursor) || TextFormatting::isCheckboxList(cursor))
         return false;
 
     const QTextBlock block = cursor.block();
     const QString textBeforeCursor = block.text().left(cursorPosition - block.position());
 
+    static const QRegularExpression checkboxShorthand(QStringLiteral("^[-*] \\[[ xX]?\\] $"));
     static const QRegularExpression bulletShorthand(QStringLiteral("^[-*] $"));
     static const QRegularExpression numberedShorthand(QStringLiteral("^(\\d+)\\. $"));
 
-    const bool isBullet = bulletShorthand.match(textBeforeCursor).hasMatch();
+    const bool isCheckbox = checkboxShorthand.match(textBeforeCursor).hasMatch();
+    const bool isBullet = !isCheckbox && bulletShorthand.match(textBeforeCursor).hasMatch();
     const QRegularExpressionMatch numberedMatch = numberedShorthand.match(textBeforeCursor);
-    const bool isNumbered = !isBullet && numberedMatch.hasMatch();
-    if (!isBullet && !isNumbered)
+    const bool isNumbered = !isCheckbox && !isBullet && numberedMatch.hasMatch();
+    if (!isCheckbox && !isBullet && !isNumbered)
         return false;
 
     QTextCursor stripCursor(m_document->textDocument());
@@ -203,13 +231,31 @@ bool DocumentHandler::tryAutoConvertListShorthand(int cursorPosition)
     stripCursor.setPosition(cursorPosition, QTextCursor::KeepAnchor);
     stripCursor.removeSelectedText();
 
-    if (isNumbered)
+    if (isCheckbox)
+        TextFormatting::toggleCheckboxList(stripCursor);
+    else if (isNumbered)
         // Preserves whatever number the user actually typed (e.g. "5. "
         // starts the list at 5, not silently resetting to 1) — Qt's own
         // auto-numbering still increments normally for every item after it.
         TextFormatting::toggleNumberedList(stripCursor, numberedMatch.captured(1).toInt());
     else
         TextFormatting::toggleBulletList(stripCursor);
+    return true;
+}
+
+bool DocumentHandler::tryResetHeadingOnReturn(int cursorPosition)
+{
+    if (!m_document || !m_document->textDocument())
+        return false;
+
+    QTextCursor cursor(m_document->textDocument());
+    cursor.setPosition(cursorPosition);
+
+    if (TextFormatting::headingLevel(cursor) == 0)
+        return false;
+
+    cursor.insertBlock();
+    TextFormatting::setHeadingLevel(cursor, 0);
     return true;
 }
 
@@ -241,4 +287,37 @@ bool DocumentHandler::isBulletList(int selectionStart, int selectionEnd) const
 bool DocumentHandler::isNumberedList(int selectionStart, int selectionEnd) const
 {
     return TextFormatting::isNumberedList(cursorFor(selectionStart, selectionEnd));
+}
+
+bool DocumentHandler::isCheckboxList(int selectionStart, int selectionEnd) const
+{
+    return TextFormatting::isCheckboxList(cursorFor(selectionStart, selectionEnd));
+}
+
+bool DocumentHandler::isCheckboxChecked(int selectionStart, int selectionEnd) const
+{
+    return TextFormatting::isCheckboxChecked(cursorFor(selectionStart, selectionEnd));
+}
+
+bool DocumentHandler::tryToggleCheckboxAt(int position)
+{
+    if (!m_document || !m_document->textDocument())
+        return false;
+
+    QTextCursor cursor(m_document->textDocument());
+    cursor.setPosition(position);
+    const bool toggled = TextFormatting::tryToggleCheckboxAtPosition(cursor);
+    if (toggled)
+        emit formattingChanged();
+    return toggled;
+}
+
+bool DocumentHandler::isInTable(int position) const
+{
+    if (!m_document || !m_document->textDocument())
+        return false;
+
+    QTextCursor cursor(m_document->textDocument());
+    cursor.setPosition(position);
+    return TextFormatting::isInTable(cursor);
 }

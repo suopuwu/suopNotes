@@ -72,6 +72,12 @@ Window {
     // observes every NoteWindow's own activeChanged.
     property var noteWindow: null
 
+    // Whether the pointer is currently anywhere over the toolbar itself —
+    // see NoteWindow.qml's own `hovered` alias for why Main.qml treats this
+    // as a keep-alive signal for toolbar visibility alongside `active`.
+    readonly property alias hovered: barHoverHandler.hovered
+    HoverHandler { id: barHoverHandler }
+
     // Exposed for tests only (structural/behavioral verification), not used
     // by app code outside this file — same convention NoteWindow.qml's own
     // mouseDragArea/editor aliases follow.
@@ -79,6 +85,9 @@ Window {
     readonly property alias boldButton: boldButton
     readonly property alias italicButton: italicButton
     readonly property alias strikethroughButton: strikethroughButton
+    readonly property alias insertTableButton: insertTableButton
+    readonly property alias insertTableButtonHover: insertTableButtonHover
+    readonly property alias columnOptionsPopup: columnOptionsPopup
     readonly property alias background: background
     readonly property alias content: content
     readonly property alias gripDotsGrid: gripDotsGrid
@@ -539,6 +548,9 @@ Window {
             checkable: true
             checked: bar.noteWindow ? bar.noteWindow.currentBold : false
             onClicked: bar.runAction(() => bar.noteWindow.docHandler.toggleBold(bar.noteWindow.editor.selectionStart, bar.noteWindow.editor.selectionEnd))
+            ToolTip.text: "Bold"
+            ToolTip.visible: hovered
+            ToolTip.delay: 500
         }
         ToolButton {
             id: italicButton
@@ -552,6 +564,9 @@ Window {
             checkable: true
             checked: bar.noteWindow ? bar.noteWindow.currentItalic : false
             onClicked: bar.runAction(() => bar.noteWindow.docHandler.toggleItalic(bar.noteWindow.editor.selectionStart, bar.noteWindow.editor.selectionEnd))
+            ToolTip.text: "Italic"
+            ToolTip.visible: hovered
+            ToolTip.delay: 500
         }
         ToolButton {
             id: strikethroughButton
@@ -565,6 +580,9 @@ Window {
             checkable: true
             checked: bar.noteWindow ? bar.noteWindow.currentStrikethrough : false
             onClicked: bar.runAction(() => bar.noteWindow.docHandler.toggleStrikethrough(bar.noteWindow.editor.selectionStart, bar.noteWindow.editor.selectionEnd))
+            ToolTip.text: "Strikethrough"
+            ToolTip.visible: hovered
+            ToolTip.delay: 500
         }
         ToolButton {
             text: "H1"
@@ -576,6 +594,9 @@ Window {
             checkable: true
             checked: bar.noteWindow ? bar.noteWindow.currentHeadingLevel === 1 : false
             onClicked: bar.runAction(() => bar.noteWindow.docHandler.setHeadingLevel(bar.noteWindow.editor.selectionStart, bar.noteWindow.editor.selectionEnd, 1))
+            ToolTip.text: "Heading 1"
+            ToolTip.visible: hovered
+            ToolTip.delay: 500
         }
         ToolButton {
             text: "H2"
@@ -587,6 +608,9 @@ Window {
             checkable: true
             checked: bar.noteWindow ? bar.noteWindow.currentHeadingLevel === 2 : false
             onClicked: bar.runAction(() => bar.noteWindow.docHandler.setHeadingLevel(bar.noteWindow.editor.selectionStart, bar.noteWindow.editor.selectionEnd, 2))
+            ToolTip.text: "Heading 2"
+            ToolTip.visible: hovered
+            ToolTip.delay: 500
         }
         ToolButton {
             text: "¶"
@@ -598,6 +622,9 @@ Window {
             checkable: true
             checked: bar.noteWindow ? bar.noteWindow.currentHeadingLevel === 0 : false
             onClicked: bar.runAction(() => bar.noteWindow.docHandler.setHeadingLevel(bar.noteWindow.editor.selectionStart, bar.noteWindow.editor.selectionEnd, 0))
+            ToolTip.text: "Paragraph (clear heading)"
+            ToolTip.visible: hovered
+            ToolTip.delay: 500
         }
         ToolButton {
             text: "•"
@@ -609,6 +636,9 @@ Window {
             checkable: true
             checked: bar.noteWindow ? bar.noteWindow.currentBulletList : false
             onClicked: bar.runAction(() => bar.noteWindow.docHandler.toggleBulletList(bar.noteWindow.editor.selectionStart, bar.noteWindow.editor.selectionEnd))
+            ToolTip.text: "Bullet List"
+            ToolTip.visible: hovered
+            ToolTip.delay: 500
         }
         ToolButton {
             text: "1."
@@ -620,8 +650,33 @@ Window {
             checkable: true
             checked: bar.noteWindow ? bar.noteWindow.currentNumberedList : false
             onClicked: bar.runAction(() => bar.noteWindow.docHandler.toggleNumberedList(bar.noteWindow.editor.selectionStart, bar.noteWindow.editor.selectionEnd))
+            ToolTip.text: "Numbered List"
+            ToolTip.visible: hovered
+            ToolTip.delay: 500
         }
         ToolButton {
+            text: "☑"
+            implicitWidth: bar.buttonSize
+            implicitHeight: bar.buttonSize
+            Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
+            background: ToolbarButtonHighlight {}
+            contentItem: ToolbarButtonLabel {}
+            checkable: true
+            checked: bar.noteWindow ? bar.noteWindow.currentCheckboxList : false
+            onClicked: bar.runAction(() => bar.noteWindow.docHandler.toggleCheckboxList(bar.noteWindow.editor.selectionStart, bar.noteWindow.editor.selectionEnd))
+            ToolTip.text: "Checkbox List"
+            ToolTip.visible: hovered
+            ToolTip.delay: 500
+        }
+        // The "grid icon" (feature request): inserts a starter table when
+        // clicked with the cursor outside any table (unchanged behavior),
+        // and doubles as the anchor for the row/column-editing popup below
+        // once the cursor IS inside a table — hovering it (or the popup
+        // itself) reveals that popup instead of cluttering this main row
+        // with buttons that used to render as permanent no-ops outside a
+        // table.
+        ToolButton {
+            id: insertTableButton
             text: "▦"
             implicitWidth: bar.buttonSize
             implicitHeight: bar.buttonSize
@@ -629,54 +684,173 @@ Window {
             background: ToolbarButtonHighlight {}
             contentItem: ToolbarButtonLabel {}
             onClicked: bar.runAction(() => bar.noteWindow.docHandler.insertTable(bar.noteWindow.editor.selectionEnd))
+            ToolTip.text: "Insert Table"
+            ToolTip.visible: hovered && !(bar.noteWindow ? bar.noteWindow.currentInTable : false)
+            ToolTip.delay: 500
+
+            HoverHandler { id: insertTableButtonHover }
         }
-        // The five below each act on whichever table the cursor is
-        // currently inside, and no-op (per TextFormatting.h) when it isn't
-        // in one at all.
-        ToolButton {
-            text: "+R"
-            implicitWidth: bar.buttonSize
-            implicitHeight: bar.buttonSize
-            Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
-            background: ToolbarButtonHighlight {}
-            contentItem: ToolbarButtonLabel {}
-            onClicked: bar.runAction(() => bar.noteWindow.docHandler.insertTableRow(bar.noteWindow.editor.selectionEnd))
+    }
+
+    // Row/column-editing popup (feature request): the five buttons that
+    // used to sit permanently in the main row above — acting as silent
+    // no-ops (per TextFormatting.h) whenever the cursor wasn't actually
+    // inside a table — now live in their own popup, shown only while the
+    // cursor IS inside a table AND the pointer is hovering either the grid
+    // icon above or this popup itself (the latter so moving the mouse from
+    // the button down into the popup doesn't dismiss it mid-move).
+    //
+    // A genuine second top-level Window, not an Item embedded in this
+    // Window's own tree, for the exact same reason `bar` itself is one
+    // (see its own header comment): it needs to render below the grid
+    // icon, extending past this toolbar's own small fixed surface, and —
+    // per the feature request — is explicitly allowed to overlap the note,
+    // unlike the main bar which always keeps clear of it.
+    Window {
+        id: columnOptionsPopup
+        title: "suopNotes-columnOptionsPopup"
+        flags: Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint
+        color: "transparent"
+        width: columnOptionsBackground.width
+        height: columnOptionsBackground.height
+
+        readonly property bool wantsVisible: bar.noteWindow
+            && bar.noteWindow.currentInTable
+            && (insertTableButtonHover.hovered || columnOptionsHover.hovered)
+
+        // Exposed for tests only, same convention as bar's own aliases
+        // above.
+        readonly property alias background: columnOptionsBackground
+        readonly property alias content: columnOptionsContent
+        readonly property alias insertRowButton: insertRowButton
+        readonly property alias deleteRowButton: deleteRowButton
+        readonly property alias insertColumnButton: insertColumnButton
+        readonly property alias deleteColumnButton: deleteColumnButton
+        readonly property alias deleteTableButton: deleteTableButton
+
+        // Same "shown once at startup, content-visibility toggled from then
+        // on" discipline as `bar` itself — see its own Component.onCompleted
+        // comment for why repeatedly mapping/unmapping a window while a
+        // note holds Wayland keyboard focus disrupts that note's own text
+        // input. The seeded position is a throwaway default, same reasoning
+        // as bar's own seed: repositionColumnOptionsPopup() below takes
+        // over for every real placement, the instant it first becomes
+        // relevant.
+        visible: false
+        Component.onCompleted: {
+            positionManager.applyPosition("columnOptionsPopup", columnOptionsPopup.title, 100, 100, true)
+            show()
+            hide()
+            show()
         }
-        ToolButton {
-            text: "-R"
-            implicitWidth: bar.buttonSize
-            implicitHeight: bar.buttonSize
-            Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
-            background: ToolbarButtonHighlight {}
-            contentItem: ToolbarButtonLabel {}
-            onClicked: bar.runAction(() => bar.noteWindow.docHandler.deleteTableRow(bar.noteWindow.editor.selectionEnd))
+
+        onWantsVisibleChanged: {
+            columnOptionsBackground.visible = wantsVisible
+            columnOptionsContent.visible = wantsVisible
+            columnOptionsContent.enabled = wantsVisible
+            if (wantsVisible)
+                repositionColumnOptionsPopup()
         }
-        ToolButton {
-            text: "+C"
-            implicitWidth: bar.buttonSize
-            implicitHeight: bar.buttonSize
-            Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
-            background: ToolbarButtonHighlight {}
-            contentItem: ToolbarButtonLabel {}
-            onClicked: bar.runAction(() => bar.noteWindow.docHandler.insertTableColumn(bar.noteWindow.editor.selectionEnd))
+
+        // Prefers directly below the grid icon (closest to where the
+        // pointer already is, having just hovered that button); falls back
+        // above it only when there isn't room below on the tracked note's
+        // own screen — the popup is allowed to overlap the note itself
+        // (feature request), just not run off the screen entirely.
+        function repositionColumnOptionsPopup() {
+            const buttonTopLeft = insertTableButton.mapToGlobal(0, 0)
+            let targetX = buttonTopLeft.x
+            let targetY = buttonTopLeft.y + insertTableButton.height + 4
+
+            const screen = bar.noteWindow ? bar.noteWindow.screen : null
+            if (screen && targetY + columnOptionsPopup.height > screen.virtualY + screen.height)
+                targetY = buttonTopLeft.y - columnOptionsPopup.height - 4
+
+            columnOptionsPopup.x = targetX
+            columnOptionsPopup.y = targetY
+            positionManager.moveWindow(columnOptionsPopup.title, targetX, targetY)
         }
-        ToolButton {
-            text: "-C"
-            implicitWidth: bar.buttonSize
-            implicitHeight: bar.buttonSize
-            Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
-            background: ToolbarButtonHighlight {}
-            contentItem: ToolbarButtonLabel {}
-            onClicked: bar.runAction(() => bar.noteWindow.docHandler.deleteTableColumn(bar.noteWindow.editor.selectionEnd))
+
+        HoverHandler { id: columnOptionsHover }
+
+        Rectangle {
+            id: columnOptionsBackground
+            visible: false
+            width: columnOptionsContent.implicitWidth + 8
+            height: columnOptionsContent.implicitHeight + 8
+            radius: 6
+            color: background.color
+            border.width: background.border.width
+            border.color: background.border.color
         }
-        ToolButton {
-            text: "-▦"
-            implicitWidth: bar.buttonSize
-            implicitHeight: bar.buttonSize
-            Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
-            background: ToolbarButtonHighlight {}
-            contentItem: ToolbarButtonLabel {}
-            onClicked: bar.runAction(() => bar.noteWindow.docHandler.deleteTable(bar.noteWindow.editor.selectionEnd))
+
+        RowLayout {
+            id: columnOptionsContent
+            visible: false
+            enabled: false
+            anchors.centerIn: columnOptionsBackground
+            spacing: 2
+
+            ToolButton {
+                id: insertRowButton
+                text: "+R"
+                implicitWidth: bar.buttonSize
+                implicitHeight: bar.buttonSize
+                background: ToolbarButtonHighlight {}
+                contentItem: ToolbarButtonLabel {}
+                onClicked: bar.runAction(() => bar.noteWindow.docHandler.insertTableRow(bar.noteWindow.editor.selectionEnd))
+                ToolTip.text: "Insert Row"
+                ToolTip.visible: hovered
+                ToolTip.delay: 500
+            }
+            ToolButton {
+                id: deleteRowButton
+                text: "-R"
+                implicitWidth: bar.buttonSize
+                implicitHeight: bar.buttonSize
+                background: ToolbarButtonHighlight {}
+                contentItem: ToolbarButtonLabel {}
+                onClicked: bar.runAction(() => bar.noteWindow.docHandler.deleteTableRow(bar.noteWindow.editor.selectionEnd))
+                ToolTip.text: "Delete Row"
+                ToolTip.visible: hovered
+                ToolTip.delay: 500
+            }
+            ToolButton {
+                id: insertColumnButton
+                text: "+C"
+                implicitWidth: bar.buttonSize
+                implicitHeight: bar.buttonSize
+                background: ToolbarButtonHighlight {}
+                contentItem: ToolbarButtonLabel {}
+                onClicked: bar.runAction(() => bar.noteWindow.docHandler.insertTableColumn(bar.noteWindow.editor.selectionEnd))
+                ToolTip.text: "Insert Column"
+                ToolTip.visible: hovered
+                ToolTip.delay: 500
+            }
+            ToolButton {
+                id: deleteColumnButton
+                text: "-C"
+                implicitWidth: bar.buttonSize
+                implicitHeight: bar.buttonSize
+                background: ToolbarButtonHighlight {}
+                contentItem: ToolbarButtonLabel {}
+                onClicked: bar.runAction(() => bar.noteWindow.docHandler.deleteTableColumn(bar.noteWindow.editor.selectionEnd))
+                ToolTip.text: "Delete Column"
+                ToolTip.visible: hovered
+                ToolTip.delay: 500
+            }
+            ToolButton {
+                id: deleteTableButton
+                text: "-▦"
+                implicitWidth: bar.buttonSize
+                implicitHeight: bar.buttonSize
+                background: ToolbarButtonHighlight {}
+                contentItem: ToolbarButtonLabel {}
+                onClicked: bar.runAction(() => bar.noteWindow.docHandler.deleteTable(bar.noteWindow.editor.selectionEnd))
+                ToolTip.text: "Delete Table"
+                ToolTip.visible: hovered
+                ToolTip.delay: 500
+            }
         }
     }
 
