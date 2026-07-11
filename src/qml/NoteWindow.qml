@@ -755,9 +755,20 @@ Window {
             // mouseDragArea below) but only over the strip below editor's
             // real content — reprojecting onto the bottom edge of that
             // content before hit-testing gets a proper nearest-x lookup on
-            // the last line instead. Zero height (so no hit at all) once
-            // real content already fills or exceeds the viewport, since
-            // there's no fill space left to click into.
+            // the last line instead.
+            //
+            // Bugfix: height used to be editor.height - editor.contentHeight
+            // (zero once real content already filled/exceeded the
+            // viewport, "no fill space left to click into") — true before
+            // "scroll past end" existed (see editorFlick.contentHeight's
+            // own comment above), but that feature deliberately extends
+            // editorFlick.contentHeight past editor.height so the last
+            // line can reach the note's top, which opens up exactly that
+            // "fill space" again once scrolled down: real dead space below
+            // the text, just reachable only after scrolling. Sizing off
+            // editorFlick.contentHeight instead covers that too — for a
+            // short note (no scroll-past-end applied at all) the two are
+            // identical, so this changes nothing there.
             //
             // Handles the full press/drag/release cycle itself (rather than
             // a plain onClicked) so a drag that *starts* down here — in
@@ -781,7 +792,7 @@ Window {
                 x: 0
                 y: editor.contentHeight
                 width: editorFlick.width
-                height: Math.max(0, editor.height - editor.contentHeight)
+                height: Math.max(0, editorFlick.contentHeight - editor.contentHeight)
 
                 // mouse.y is relative to this area's own origin, which
                 // itself sits editor.contentHeight below editor's origin

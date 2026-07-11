@@ -1261,6 +1261,50 @@ Item {
                    "the second Enter on an empty item should exit the list, not add another item:\n" + md)
         }
 
+        // Bugfix, two parts. (1) Continuing a numbered list reacts to a
+        // single Enter keypress with several separate document edits
+        // (insert the new block, tag it, insert its "2. " marker, then
+        // re-margin every item in the run) — DocumentHandler::
+        // tryContinueList now wraps all of that in one QTextDocument edit
+        // block, so it lands on the undo stack as a single command. (2)
+        // Typing "item two" afterward re-triggers TextFormatting::
+        // renumberRun on every single keystroke (see DocumentHandler::
+        // maintainListNumbering, called reactively from onTextChanged),
+        // and it used to re-merge every block's margin/indent
+        // unconditionally even when already correct — flooding the undo
+        // stack with a real (if invisible) no-op edit per keystroke.
+        // renumberRun now skips that merge when nothing would actually
+        // change. Without both fixes, a single undo() right after typing
+        // only unwound one of these many small edits, leaving the list
+        // visibly untouched (the undone edit was an invisible margin
+        // no-op) instead of cleanly restoring the pre-Enter text.
+        function test_undoing_a_numbered_list_continuation_is_a_single_step() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+
+            win.docHandler.setMarkdown("1. item one\n")
+            wait(50)
+
+            editor.cursorPosition = editor.length
+            win.requestActivate()
+            tryCompare(win, "active", true)
+            editor.forceActiveFocus()
+            tryCompare(editor, "activeFocus", true)
+
+            keyClick(Qt.Key_Return)
+            typeText("item two")
+            verify(win.docHandler.toMarkdown().indexOf("2. item two") !== -1,
+                   "precondition: the list should have continued to a second item")
+
+            verify(editor.canUndo, "precondition: there should be undo history after typing")
+            editor.undo()
+
+            const md = win.docHandler.toMarkdown().trim()
+            compare(md, "1. item one",
+                   "a single undo() after continuing the list should fully restore the " +
+                   "pre-Enter text, not leave a partially-undone second item behind:\n" + md)
+        }
+
         // Same two behaviors, checkbox variant.
         function test_pressing_enter_in_a_checkbox_list_item_continues_the_list() {
             const win = instantiator.objectAt(0)

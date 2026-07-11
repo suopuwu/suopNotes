@@ -116,7 +116,16 @@ Window {
             height: iconRoot.viewBoxSize
             scale: iconRoot.iconSize / iconRoot.viewBoxSize
             preferredRendererType: Shape.CurveRenderer
-            transform: Translate { y: -iconRoot.viewBoxOriginY }
+            // Bugfix: this item's `transform` list is composed in the
+            // OUTER, unscaled coordinate space — NOT scaled down together
+            // with the rest of this Shape's content by the `scale`
+            // property above, confirmed empirically (a raw
+            // -viewBoxOriginY offset landed the glyph ~864px away from
+            // the tiny icon box, comfortably outside the button's own
+            // bounds, i.e. invisible). Scaling the offset by the same
+            // iconSize/viewBoxSize factor here compensates, so it lands
+            // as the intended pre-scale shift once scale is applied.
+            transform: Translate { y: -iconRoot.viewBoxOriginY * (iconRoot.iconSize / iconRoot.viewBoxSize) }
 
             ShapePath {
                 fillColor: iconRoot.iconColor
@@ -215,6 +224,143 @@ Window {
         }
     }
 
+    // Drag handle + adjacent divider (feature request/dedup): both the
+    // main bar and the table column-options popup below need an identical
+    // draggable grip — an explicit 2x4 (row mode) / 4x2 (column mode) grid
+    // of dots, not a single Unicode glyph (a rotated braille character
+    // "⣿" rendered as a near-illegible sliver in column mode, font
+    // hinting/anti-aliasing doesn't preserve its dot pattern under
+    // arbitrary rotation) — plus the divider rule that always follows it.
+    // Used to be two separate hand-copies (one per toolbar), which had
+    // already drifted out of sync once (the popup's own edge padding
+    // didn't match the main bar's, a real bug — see edgePadding's own
+    // comment); one shared component means there is only one place left
+    // to get this right.
+    //
+    // Regression found live in the original per-toolbar implementation:
+    // laying out the 8 dots with a `Grid` positioner (columns bound to
+    // 2/4, letting it auto-compute rows) checked out perfectly in the
+    // offscreen Quick Test harness (verified via a diagnostic dump of
+    // every dot's real x/y — 2 clean rows of 4, correctly spaced), but
+    // only ever rendered ONE row's worth of dots in the real windowed app
+    // (confirmed live via screenshot, same "works offscreen, not in the
+    // real compositor" split as ToolbarButtonLabel's own comment
+    // elsewhere). Root cause not identified (suspected Grid-positioner-
+    // specific), so rather than keep chasing an environment-specific Grid
+    // quirk, this computes each dot's x/y explicitly from its own
+    // Repeater index — no positioner involved at all, nothing left to
+    // behave differently between environments.
+    component ToolbarDragHandleGroup: Item {
+        id: dragHandleGroup
+        property bool isVertical: false
+        // The Window (bar itself, or columnOptionsPopup) to move on a
+        // left-click-drag of the grip.
+        required property var dragTarget
+
+        // Exposed for tests, same convention as the toolbars' own aliases.
+        readonly property alias gripHandle: gripItem
+        readonly property alias gripDotsGrid: gripDotsGrid
+
+        readonly property int gripThickness: 9
+        readonly property int gripLength: 21
+        readonly property int dividerThickness: 1
+        readonly property int dividerLength: 18
+        // The gap from the grip to the divider is the grid/row layout's
+        // own 2px spacing (shared by every other gap in the toolbar this
+        // group sits in) plus the divider's own 4px margin below — 6px
+        // total. The gap from the grip to the toolbar's OUTER edge
+        // doesn't get that base spacing "for free" the way an inter-item
+        // gap does (nothing precedes it to create spacing from), so it's
+        // spelled out here in full rather than relying on the host
+        // layout's shared spacing value — otherwise the grip ends up
+        // sitting closer to the outer edge than to the divider, a real
+        // bug once spotted live.
+        //
+        // edgePadding is settable (not baked in like the other constants
+        // above) because "distance from the grip to the toolbar's outer
+        // edge" isn't ALL internal padding for every host: the main bar's
+        // own width is a fixed constant sized tightly to its content (no
+        // slack of its own), so it needs the full 8px here; the table
+        // popup's background is instead sized as content.implicitWidth +
+        // 8 and centered, which already contributes 4px of slack on this
+        // side for free — asking this component for another 8 on top
+        // double-counted it (bugfix: the popup ended up with 12px total,
+        // 4px more than the main bar, despite sharing this component).
+        // Each host sets this to whatever closes the gap between its own
+        // free slack and the shared 8px total, so the two toolbars still
+        // read identically despite their outer sizing models differing.
+        property int edgePadding: 8
+        readonly property int gripToDividerGap: 6
+
+        Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
+
+        implicitWidth: isVertical ? gripLength
+            : edgePadding + gripThickness + gripToDividerGap + dividerThickness
+        implicitHeight: isVertical
+            ? edgePadding + gripThickness + gripToDividerGap + dividerThickness
+            : gripLength
+
+        Item {
+            id: gripItem
+            implicitWidth: dragHandleGroup.isVertical ? dragHandleGroup.gripLength : dragHandleGroup.gripThickness
+            implicitHeight: dragHandleGroup.isVertical ? dragHandleGroup.gripThickness : dragHandleGroup.gripLength
+            width: implicitWidth
+            height: implicitHeight
+            x: dragHandleGroup.isVertical ? (dragHandleGroup.width - width) / 2 : dragHandleGroup.edgePadding
+            y: dragHandleGroup.isVertical ? dragHandleGroup.edgePadding : (dragHandleGroup.height - height) / 2
+
+            Item {
+                id: gripDotsGrid
+                anchors.centerIn: parent
+                width: parent.width
+                height: parent.height
+                readonly property int columns: dragHandleGroup.isVertical ? 4 : 2
+
+                Repeater {
+                    model: 8
+                    Rectangle {
+                        required property int index
+                        width: 3
+                        height: 3
+                        radius: 1.5
+                        color: "#888888"
+                        x: (index % gripDotsGrid.columns) * 6
+                        y: Math.floor(index / gripDotsGrid.columns) * 6
+                    }
+                }
+            }
+
+            // Left-click-drag directly on the grip (feature request — a
+            // drag handle should be draggable with a plain left click, the
+            // standard convention, not require the right-click-drag the
+            // rest of the bar/NoteWindow's own notes use). Each host's own
+            // right-click dragArea still covers right-click-drag anywhere
+            // on it including here, for consistency with that convention;
+            // this is additive, not a replacement.
+            MouseArea {
+                anchors.fill: parent
+                acceptedButtons: Qt.LeftButton
+                cursorShape: Qt.OpenHandCursor
+                onPressed: dragHandleGroup.dragTarget.startSystemMove()
+            }
+        }
+
+        // Rotates to match orientation: a vertical rule under a
+        // horizontal (row) layout, a horizontal rule under a vertical
+        // (column) one.
+        Rectangle {
+            width: dragHandleGroup.isVertical ? dragHandleGroup.dividerLength : dragHandleGroup.dividerThickness
+            height: dragHandleGroup.isVertical ? dragHandleGroup.dividerThickness : dragHandleGroup.dividerLength
+            color: Qt.rgba(1, 1, 1, 0.15)
+            x: dragHandleGroup.isVertical
+                ? (dragHandleGroup.width - width) / 2
+                : dragHandleGroup.edgePadding + dragHandleGroup.gripThickness + dragHandleGroup.gripToDividerGap
+            y: dragHandleGroup.isVertical
+                ? dragHandleGroup.edgePadding + dragHandleGroup.gripThickness + dragHandleGroup.gripToDividerGap
+                : (dragHandleGroup.height - height) / 2
+        }
+    }
+
     // Scope the toolbar acts on — the currently-focused NoteWindow, or null
     // when no note has focus. Sourced from Main.qml, the one place that
     // observes every NoteWindow's own activeChanged.
@@ -244,7 +390,8 @@ Window {
     readonly property alias tooltipWindow: tooltipWindow
     readonly property alias background: background
     readonly property alias content: content
-    readonly property alias gripDotsGrid: gripDotsGrid
+    readonly property alias gripHandle: dragHandleGroup.gripHandle
+    readonly property alias gripDotsGrid: dragHandleGroup.gripDotsGrid
 
     // Fixed cross-axis / main-axis sizes, not derived from content's own
     // implicitWidth/implicitHeight — the toolbar's layout direction itself
@@ -411,6 +558,27 @@ Window {
         function onBlurEnabledChanged() {
             bar.updateBlur()
             columnOptionsPopup.updateBlur()
+        }
+    }
+
+    // Bugfix: on Wayland, QWindow::screen() updates asynchronously (the
+    // platform plugin only reassigns it once it processes the
+    // wl_surface enter/leave event for the note's new output), lagging
+    // behind KWin's own activation notification. reposition() below reads
+    // noteWindow.screen once, synchronously, from onNoteWindowChanged —
+    // if that fires before screen has caught up (e.g. right after a note
+    // was moved/activated on a different monitor), the bar gets clamped
+    // into the WRONG monitor's geometry and nothing ever re-triggers
+    // reposition() once screen settles, since nothing else read it. That's
+    // why unfocusing/refocusing "fixes" it: it's just the next thing that
+    // happens to re-run onNoteWindowChanged, by which point screen has
+    // caught up. Re-running reposition() the moment screen itself changes
+    // closes that gap without needing a focus round-trip.
+    Connections {
+        target: bar.noteWindow
+        function onScreenChanged() {
+            if (bar.noteWindow)
+                bar.reposition()
         }
     }
 
@@ -636,90 +804,13 @@ Window {
         // own comment for why a plain binding isn't trusted in this file.
         enabled: false
 
-        // Drag handle (feature request): an explicit 2x4 (row mode) / 4x2
-        // (column mode) grid of dots, not a single Unicode glyph — a
-        // rotated braille character ("⣿") rendered as a near-illegible
-        // sliver in column mode (font hinting/anti-aliasing doesn't
-        // preserve its dot pattern under arbitrary rotation).
-        //
-        // Regression found live: the original implementation used a `Grid`
-        // positioner (columns bound to 2/4, letting it auto-compute rows)
-        // to lay out the 8 dots. That logic checked out perfectly in the
-        // offscreen Quick Test harness (verified via a diagnostic dump of
-        // every dot's real x/y — 2 clean rows of 4, correctly spaced), but
-        // only ever rendered ONE row's worth of dots in the real windowed
-        // app — confirmed live via screenshot, same "works offscreen, not
-        // in the real compositor" split as the button-label bug just above
-        // this file's ToolbarButtonLabel comment. Root cause not
-        // identified (suspected Grid-positioner-specific), so rather than
-        // keep chasing an environment-specific Grid quirk, this computes
-        // each dot's x/y explicitly from its own Repeater index — no
-        // positioner involved at all, nothing left to behave differently
-        // between environments.
-        Item {
-            id: gripHandle
-            implicitWidth: bar.isVertical ? 21 : 9
-            implicitHeight: bar.isVertical ? 9 : 21
-            Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
-            // Bugfix: the grip used to sit flush against the toolbar's own
-            // outer edge (its rounded corner, in row mode's left edge) —
-            // a little breathing room on that outer side only (not the
-            // side facing the divider/buttons, which already has its own
-            // spacing).
-            Layout.leftMargin: bar.isVertical ? 0 : 4
-            Layout.topMargin: bar.isVertical ? 4 : 0
-
-            Item {
-                id: gripDotsGrid
-                anchors.centerIn: parent
-                width: bar.isVertical ? 21 : 9
-                height: bar.isVertical ? 9 : 21
-                readonly property int columns: bar.isVertical ? 4 : 2
-
-                Repeater {
-                    model: 8
-                    Rectangle {
-                        required property int index
-                        width: 3
-                        height: 3
-                        radius: 1.5
-                        color: "#888888"
-                        x: (index % gripDotsGrid.columns) * 6
-                        y: Math.floor(index / gripDotsGrid.columns) * 6
-                    }
-                }
-            }
-
-            // Left-click-drag directly on the grip (feature request — a
-            // drag handle should be draggable with a plain left click, the
-            // standard convention, not require the right-click-drag the
-            // rest of the bar/NoteWindow's own notes use). dragArea below
-            // still covers right-click-drag anywhere on the bar including
-            // here, for consistency with that convention; this is
-            // additive, not a replacement.
-            MouseArea {
-                anchors.fill: parent
-                acceptedButtons: Qt.LeftButton
-                cursorShape: Qt.OpenHandCursor
-                onPressed: bar.startSystemMove()
-            }
-        }
-
-        // Rotates to match orientation: a vertical rule under a
-        // horizontal (row) layout, a horizontal rule under a vertical
-        // (column) one.
-        Rectangle {
-            implicitWidth: bar.isVertical ? 18 : 1
-            implicitHeight: bar.isVertical ? 1 : 18
-            color: Qt.rgba(1, 1, 1, 0.15)
-            Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
-            // A little breathing room from gripHandle beyond the grid's
-            // own rowSpacing/columnSpacing (2px, shared by every other
-            // gap) — otherwise the divider sits flush against the grip's
-            // dots. Applied on whichever side actually faces the grip in
-            // the current flow direction.
-            Layout.leftMargin: bar.isVertical ? 0 : 4
-            Layout.topMargin: bar.isVertical ? 4 : 0
+        // Drag handle + divider (dedup: see ToolbarDragHandleGroup's own
+        // comment above for why this is a shared component rather than a
+        // hand-copy).
+        ToolbarDragHandleGroup {
+            id: dragHandleGroup
+            isVertical: bar.isVertical
+            dragTarget: bar
         }
 
         ToolButton {
@@ -957,7 +1048,8 @@ Window {
         readonly property alias deleteColumnButton: deleteColumnButton
         readonly property alias deleteTableButton: deleteTableButton
         readonly property alias dragArea: columnOptionsDragArea
-        readonly property alias gripHandle: columnOptionsGripHandle
+        readonly property alias gripHandle: columnOptionsDragHandleGroup.gripHandle
+        readonly property alias gripDotsGrid: columnOptionsDragHandleGroup.gripDotsGrid
 
         // Same "shown once at startup, content-visibility toggled from then
         // on" discipline as `bar` itself — see its own Component.onCompleted
@@ -1015,6 +1107,18 @@ Window {
         Connections {
             target: bar.noteWindow
             function onCurrentInTableChanged() {
+                if (columnOptionsPopup.wantsVisible)
+                    columnOptionsPopup.repositionColumnOptionsPopup()
+            }
+        }
+
+        // Same stale-screen bugfix as bar's own onScreenChanged handler
+        // above (see its comment) — repositionColumnOptionsPopup() reads
+        // note.screen too (see its own body below), so it needs the same
+        // late-arriving-screen re-trigger.
+        Connections {
+            target: bar.noteWindow
+            function onScreenChanged() {
                 if (columnOptionsPopup.wantsVisible)
                     columnOptionsPopup.repositionColumnOptionsPopup()
             }
@@ -1098,51 +1202,20 @@ Window {
             anchors.centerIn: columnOptionsBackground
             spacing: 2
 
-            // Same drag handle as the main bar's own gripHandle (feature
-            // request: this popup should match the main bar's own styling
-            // and behavior) — always the row-mode 2x4 dot pattern, since
-            // this popup is never vertical.
-            Item {
-                id: columnOptionsGripHandle
-                implicitWidth: 9
-                implicitHeight: 21
-                Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
-                Layout.leftMargin: 4
-
-                Item {
-                    anchors.centerIn: parent
-                    width: 9
-                    height: 21
-                    readonly property int columns: 2
-
-                    Repeater {
-                        model: 8
-                        Rectangle {
-                            required property int index
-                            width: 3
-                            height: 3
-                            radius: 1.5
-                            color: "#888888"
-                            x: (index % 2) * 6
-                            y: Math.floor(index / 2) * 6
-                        }
-                    }
-                }
-
-                MouseArea {
-                    anchors.fill: parent
-                    acceptedButtons: Qt.LeftButton
-                    cursorShape: Qt.OpenHandCursor
-                    onPressed: columnOptionsPopup.startSystemMove()
-                }
-            }
-
-            Rectangle {
-                implicitWidth: 1
-                implicitHeight: 18
-                color: Qt.rgba(1, 1, 1, 0.15)
-                Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
-                Layout.leftMargin: 4
+            // Same drag handle as the main bar's own (dedup: see
+            // ToolbarDragHandleGroup's own comment near the top of this
+            // file) — always the row-mode 2x4 dot pattern, since this
+            // popup is never vertical. edgePadding is halved (see the
+            // component's own edgePadding comment): columnOptionsBackground
+            // below already contributes 4px of slack on this side via its
+            // own "+8, centered" sizing, so only 4 more is needed here to
+            // reach the same 8px total the main bar gets entirely from its
+            // own edgePadding.
+            ToolbarDragHandleGroup {
+                id: columnOptionsDragHandleGroup
+                isVertical: false
+                dragTarget: columnOptionsPopup
+                edgePadding: 4
             }
 
             ToolButton {

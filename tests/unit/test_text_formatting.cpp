@@ -559,6 +559,33 @@ SCENARIO("A numbered list's hanging-indent buffer is sized per-list, to its own 
             CHECK(firstListFormat.leftMargin() < secondListFormat.leftMargin());
         }
     }
+
+    // Bugfix: growing a list from 9 to 10 items widens every item's own
+    // marker-width buffer ("9. " -> "10. "), continueHandRolledList calls
+    // renumberRun on every item as it's added — including item 9, every
+    // time a later item joins the run. Regression coverage for item 9
+    // specifically getting left behind at the old, narrower buffer.
+    GIVEN("a numbered list grown one item at a time up to 10 items")
+    {
+        QTextDocument doc;
+        QTextCursor cursor(&doc);
+        TextFormatting::toggleNumberedList(cursor, 1);
+        cursor.insertText("item 1");
+        for (int i = 2; i <= 10; ++i) {
+            TextFormatting::continueHandRolledList(cursor);
+            cursor.insertText(QStringLiteral("item %1").arg(i));
+        }
+
+        THEN("every item, including item 9, ends up with the same widened buffer as item 10")
+        {
+            const QTextBlockFormat item9Format = doc.findBlockByNumber(8).blockFormat();
+            const QTextBlockFormat item10Format = doc.findBlockByNumber(9).blockFormat();
+            CHECK(doc.findBlockByNumber(8).text() == "9. item 9");
+            CHECK(doc.findBlockByNumber(9).text() == "10. item 10");
+            CHECK(item9Format.leftMargin() == item10Format.leftMargin());
+            CHECK(item9Format.textIndent() == item10Format.textIndent());
+        }
+    }
 }
 
 SCENARIO("Querying whether bold is active at the cursor/selection", "[text_formatting]")

@@ -208,11 +208,26 @@ void renumberRun(const QTextBlock &anyBlockInRun, HandRolledKind kind, int start
             }
         }
 
-        QTextBlockFormat format = block.blockFormat();
-        format.setLeftMargin(markerWidth);
-        format.setTextIndent(-markerWidth);
-        QTextCursor formatCursor(block);
-        formatCursor.mergeBlockFormat(format);
+        // Bugfix: this used to merge unconditionally, even when the block's
+        // margin/indent already matched — renumberRun reruns reactively on
+        // EVERY keystroke typed anywhere inside a numbered list (see
+        // DocumentHandler::maintainListNumbering, called from onTextChanged
+        // in NoteWindow.qml), so a bare majority of those calls have
+        // nothing to actually fix. Each still-unconditional merge became
+        // its own undo-stack entry, so simply typing inside a list item
+        // flooded the undo history with a wall of no-op format merges —
+        // exactly what made Ctrl+Z feel like it was "cycling" instead of
+        // stepping back through real edits. Skipping the merge when
+        // nothing would change makes reactive maintenance passes a true
+        // no-op — nothing to undo — rather than an invisible-but-real edit.
+        const QTextBlockFormat existingFormat = block.blockFormat();
+        if (existingFormat.leftMargin() != markerWidth || existingFormat.textIndent() != -markerWidth) {
+            QTextBlockFormat format = existingFormat;
+            format.setLeftMargin(markerWidth);
+            format.setTextIndent(-markerWidth);
+            QTextCursor formatCursor(block);
+            formatCursor.mergeBlockFormat(format);
+        }
 
         if (block == last)
             break;
@@ -481,10 +496,31 @@ void setHeadingLevel(QTextCursor cursor, int level)
         adjustment = 2;
     charFormat.setProperty(QTextFormat::FontSizeAdjustment, adjustment);
 
-    const QTextBlock block = cursor.block();
-    QTextCursor formatCursor(cursor.document());
-    formatCursor.setPosition(block.position());
-    formatCursor.setPosition(block.position() + block.length() - 1, QTextCursor::KeepAnchor);
+    // Bugfix: this used to scope the char-format pass to cursor.block()
+    // alone. For a selection spanning multiple lines, mergeBlockFormat
+    // above already applies the HeadingLevel property to every block the
+    // selection touches, but only the LAST block (cursor.block(), since
+    // cursor.position() sits at the selection's moving end) actually got
+    // its bold/size char format updated — every earlier line kept its old
+    // styling despite its heading level having genuinely changed, which is
+    // exactly what makes the button look like it silently did nothing on
+    // those lines. Widen the char-format pass to the same block range
+    // mergeBlockFormat just touched, using selectionStart()/selectionEnd()
+    // rather than anchor()/position() since a backwards selection has
+    // anchor() > position().
+    QTextDocument *document = cursor.document();
+    const int rangeStart = cursor.selectionStart();
+    const int rangeEnd = cursor.selectionEnd();
+    const QTextBlock firstBlock = document->findBlock(rangeStart);
+    // rangeEnd - 1 when there's a real selection: a selection ending
+    // exactly at the start of the next block (i.e. it only swallowed the
+    // previous block's trailing newline) shouldn't pull that next,
+    // unselected block in too.
+    const QTextBlock lastBlock =
+        document->findBlock(rangeEnd > rangeStart ? rangeEnd - 1 : rangeEnd);
+    QTextCursor formatCursor(document);
+    formatCursor.setPosition(firstBlock.position());
+    formatCursor.setPosition(lastBlock.position() + lastBlock.length() - 1, QTextCursor::KeepAnchor);
     formatCursor.mergeCharFormat(charFormat);
 }
 

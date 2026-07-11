@@ -13,16 +13,41 @@ namespace
 {
 // RAII helper for DocumentHandler::m_handlingListMutation — see that
 // member's own comment for why this guard exists at all.
+//
+// Also wraps the whole call in a single QTextDocument edit block (bugfix):
+// every list-mutating entry point below used to issue many separate,
+// unbatched QTextCursor edits (one insertText/mergeBlockFormat per block
+// TextFormatting::renumberRun touches, for instance) as a reaction to a
+// single keystroke. Each one became its own entry on Qt's native undo
+// stack, so repeatedly pressing Ctrl+Z inside a list mostly just replayed
+// those auto-formatting micro-edits at the same handful of block
+// positions instead of stepping back through real edit history — and
+// QTextDocument::contentsChanged() (which QML's TextArea.onTextChanged
+// listens to, and which re-enters these very functions) is deferred and
+// coalesced to a single emission at endEditBlock() rather than firing
+// once per edit, so this also cuts down on how often that reentrant path
+// runs. Only begins/ends a block when this guard is actually the
+// outermost (non-reentrant) one — a reentrant call returns immediately
+// without editing anything, so there is nothing for it to batch.
 class ListMutationGuard
 {
 public:
-    explicit ListMutationGuard(bool &flag)
+    ListMutationGuard(bool &flag, QTextDocument *document)
         : m_flag(flag)
         , m_reentrant(flag)
     {
         m_flag = true;
+        if (!m_reentrant && document) {
+            m_editBlockCursor = QTextCursor(document);
+            m_editBlockCursor.beginEditBlock();
+        }
     }
-    ~ListMutationGuard() { m_flag = m_reentrant; }
+    ~ListMutationGuard()
+    {
+        if (!m_reentrant && !m_editBlockCursor.isNull())
+            m_editBlockCursor.endEditBlock();
+        m_flag = m_reentrant;
+    }
     // True if a list-mutating call was ALREADY in progress when this guard
     // was constructed — callers bail out immediately in that case.
     bool reentrant() const { return m_reentrant; }
@@ -30,6 +55,10 @@ public:
 private:
     bool &m_flag;
     bool m_reentrant;
+    // beginEditBlock()/endEditBlock() are QTextCursor methods (not
+    // QTextDocument's, despite grouping the whole document's undo stack) —
+    // this cursor exists purely to call them, never to edit through.
+    QTextCursor m_editBlockCursor;
 };
 }
 
@@ -96,7 +125,7 @@ void DocumentHandler::toggleStrikethrough(int selectionStart, int selectionEnd)
 
 void DocumentHandler::toggleBulletList(int selectionStart, int selectionEnd)
 {
-    ListMutationGuard guard(m_handlingListMutation);
+    ListMutationGuard guard(m_handlingListMutation, m_document ? m_document->textDocument() : nullptr);
     if (guard.reentrant())
         return;
     TextFormatting::toggleBulletList(cursorFor(selectionStart, selectionEnd));
@@ -105,7 +134,7 @@ void DocumentHandler::toggleBulletList(int selectionStart, int selectionEnd)
 
 void DocumentHandler::toggleNumberedList(int selectionStart, int selectionEnd)
 {
-    ListMutationGuard guard(m_handlingListMutation);
+    ListMutationGuard guard(m_handlingListMutation, m_document ? m_document->textDocument() : nullptr);
     if (guard.reentrant())
         return;
     TextFormatting::toggleNumberedList(cursorFor(selectionStart, selectionEnd));
@@ -114,7 +143,7 @@ void DocumentHandler::toggleNumberedList(int selectionStart, int selectionEnd)
 
 void DocumentHandler::toggleCheckboxList(int selectionStart, int selectionEnd)
 {
-    ListMutationGuard guard(m_handlingListMutation);
+    ListMutationGuard guard(m_handlingListMutation, m_document ? m_document->textDocument() : nullptr);
     if (guard.reentrant())
         return;
     TextFormatting::toggleCheckboxList(cursorFor(selectionStart, selectionEnd));
@@ -204,7 +233,7 @@ void DocumentHandler::deleteTable(int position)
 
 bool DocumentHandler::tryContinueList(int cursorPosition)
 {
-    ListMutationGuard guard(m_handlingListMutation);
+    ListMutationGuard guard(m_handlingListMutation, m_document ? m_document->textDocument() : nullptr);
     if (guard.reentrant())
         return false;
 
@@ -246,7 +275,7 @@ bool DocumentHandler::tryContinueList(int cursorPosition)
 
 bool DocumentHandler::tryAutoConvertListShorthand(int cursorPosition)
 {
-    ListMutationGuard guard(m_handlingListMutation);
+    ListMutationGuard guard(m_handlingListMutation, m_document ? m_document->textDocument() : nullptr);
     if (guard.reentrant())
         return false;
 
@@ -294,7 +323,7 @@ bool DocumentHandler::tryAutoConvertListShorthand(int cursorPosition)
 
 void DocumentHandler::maintainListNumbering(int cursorPosition)
 {
-    ListMutationGuard guard(m_handlingListMutation);
+    ListMutationGuard guard(m_handlingListMutation, m_document ? m_document->textDocument() : nullptr);
     if (guard.reentrant())
         return;
 
@@ -364,7 +393,7 @@ bool DocumentHandler::isCheckboxChecked(int selectionStart, int selectionEnd) co
 
 bool DocumentHandler::tryToggleCheckboxAt(int position)
 {
-    ListMutationGuard guard(m_handlingListMutation);
+    ListMutationGuard guard(m_handlingListMutation, m_document ? m_document->textDocument() : nullptr);
     if (guard.reentrant())
         return false;
 
