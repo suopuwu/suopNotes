@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import QtQuick.Shapes
 import QtQuick.Window
 
 // Single, app-wide floating formatting toolbar (feature request, revised
@@ -65,6 +66,79 @@ Window {
         color: bar.noteWindow ? bar.noteWindow.noteAppearance.fontColor : "#ffffff"
         horizontalAlignment: Text.AlignHCenter
         verticalAlignment: Text.AlignVCenter
+    }
+
+    // Toolbar icon glyphs (feature request: replace the plain-symbol
+    // buttons' Unicode characters — ✂, ⧉, ▦ etc., and the 📋 clipboard
+    // emoji before them — with real vector icons). The emoji specifically
+    // couldn't be recolored at all: Noto Color Emoji renders it in fixed
+    // full color regardless of the Text.color a glyph is given, so it
+    // alone ignored the theme-follows-note-appearance styling
+    // ToolbarButtonLabel gives every plain-text button above. A vector
+    // icon sidesteps that entirely: Shape/ShapePath's fillColor is an
+    // ordinary color property, so it recolors exactly like every text
+    // glyph here, at any size, with no emoji font involved.
+    //
+    // Path data throughout is copied by hand from Google's Material Icons/
+    // Material Symbols (Apache License 2.0) — vendored sources + license
+    // + a table of which file feeds which button at
+    // third_party/material-icons/ (NOTICE.md, LICENSE). Nothing is
+    // fetched at build or runtime.
+    component ToolbarSvgIcon: Item {
+        id: iconRoot
+        readonly property color iconColor: bar.noteWindow ? bar.noteWindow.noteAppearance.fontColor : "#ffffff"
+        // The glyph's own fillColor'd path data, and the square viewBox it
+        // was authored against. Classic Material Icons use viewBox
+        // "0 0 24 24" (viewBoxOriginY 0, the default); the two Material
+        // *Symbols* icons below (insert row/column) instead use
+        // "0 -960 960 960" — viewBoxOriginY compensates for that so both
+        // icon families render through this one component.
+        property string path: ""
+        property real viewBoxSize: 24
+        property real viewBoxOriginY: 0
+        // Draws an additional corner-to-corner diagonal stroke across the
+        // glyph above — used only by the Delete Row/Column icons below,
+        // which have no dedicated Material glyph of their own. It mirrors
+        // the same diagonal-slash-means-delete/off convention Material's
+        // own grid_off glyph (used for Delete Table, just above) already
+        // draws baked into its own path data, without hand-splicing a
+        // knockout badge into table_rows'/view_column's own path.
+        property bool strikethrough: false
+        // Rendered smaller than the full button, matching how much
+        // whitespace the text-glyph buttons around it (B, I, H1, etc.)
+        // leave at buttonSize (32) — a 24x24 SVG glyph drawn at full size
+        // would look noticeably larger/heavier than its neighbors.
+        readonly property real iconSize: 18
+
+        Shape {
+            anchors.centerIn: parent
+            width: iconRoot.viewBoxSize
+            height: iconRoot.viewBoxSize
+            scale: iconRoot.iconSize / iconRoot.viewBoxSize
+            preferredRendererType: Shape.CurveRenderer
+            transform: Translate { y: -iconRoot.viewBoxOriginY }
+
+            ShapePath {
+                fillColor: iconRoot.iconColor
+                strokeWidth: -1
+                PathSvg { path: iconRoot.path }
+            }
+            // Zero-width (rather than absent) when unused, so every
+            // instance can share this one ShapePath instead of needing a
+            // second variant of the component just for these two buttons.
+            ShapePath {
+                fillColor: "transparent"
+                strokeColor: iconRoot.iconColor
+                strokeWidth: iconRoot.strikethrough ? iconRoot.viewBoxSize * 0.11 : 0
+                capStyle: ShapePath.RoundCap
+                startX: iconRoot.viewBoxSize * 0.125
+                startY: iconRoot.viewBoxSize * 0.125
+                PathLine {
+                    x: iconRoot.viewBoxSize * 0.875
+                    y: iconRoot.viewBoxSize * 0.875
+                }
+            }
+        }
     }
 
     // Hover tooltip (feature request), one instance per button below.
@@ -720,39 +794,42 @@ Window {
             ToolbarButtonTip { text: "Heading 2" }
         }
         ToolButton {
-            text: "•"
             implicitWidth: bar.buttonSize
             implicitHeight: bar.buttonSize
             Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
             background: ToolbarButtonHighlight {}
             hoverEnabled: true
-            contentItem: ToolbarButtonLabel {}
+            contentItem: ToolbarSvgIcon {
+                path: "M4 10.5c-.83 0-1.5.67-1.5 1.5s.67 1.5 1.5 1.5 1.5-.67 1.5-1.5-.67-1.5-1.5-1.5zm0-6c-.83 0-1.5.67-1.5 1.5S3.17 7.5 4 7.5 5.5 6.83 5.5 6 4.83 4.5 4 4.5zm0 12c-.83 0-1.5.68-1.5 1.5s.68 1.5 1.5 1.5 1.5-.68 1.5-1.5-.67-1.5-1.5-1.5zM7 19h14v-2H7v2zm0-6h14v-2H7v2zm0-8v2h14V5H7z"
+            }
             checkable: true
             checked: bar.noteWindow ? bar.noteWindow.currentBulletList : false
             onClicked: bar.runAction(() => bar.noteWindow.docHandler.toggleBulletList(bar.noteWindow.editor.selectionStart, bar.noteWindow.editor.selectionEnd))
             ToolbarButtonTip { text: "Bullet List" }
         }
         ToolButton {
-            text: "1."
             implicitWidth: bar.buttonSize
             implicitHeight: bar.buttonSize
             Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
             background: ToolbarButtonHighlight {}
             hoverEnabled: true
-            contentItem: ToolbarButtonLabel {}
+            contentItem: ToolbarSvgIcon {
+                path: "M2 17h2v.5H3v1h1v.5H2v1h3v-4H2v1zm1-9h1V4H2v1h1v3zm-1 3h1.8L2 13.1v.9h3v-1H3.2L5 10.9V10H2v1zm5-6v2h14V5H7zm0 14h14v-2H7v2zm0-6h14v-2H7v2z"
+            }
             checkable: true
             checked: bar.noteWindow ? bar.noteWindow.currentNumberedList : false
             onClicked: bar.runAction(() => bar.noteWindow.docHandler.toggleNumberedList(bar.noteWindow.editor.selectionStart, bar.noteWindow.editor.selectionEnd))
             ToolbarButtonTip { text: "Numbered List" }
         }
         ToolButton {
-            text: "☑"
             implicitWidth: bar.buttonSize
             implicitHeight: bar.buttonSize
             Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
             background: ToolbarButtonHighlight {}
             hoverEnabled: true
-            contentItem: ToolbarButtonLabel {}
+            contentItem: ToolbarSvgIcon {
+                path: "M22,7h-9v2h9V7z M22,15h-9v2h9V15z M5.54,11L2,7.46l1.41-1.41l2.12,2.12l4.24-4.24l1.41,1.41L5.54,11z M5.54,19L2,15.46 l1.41-1.41l2.12,2.12l4.24-4.24l1.41,1.41L5.54,19z"
+            }
             checkable: true
             checked: bar.noteWindow ? bar.noteWindow.currentCheckboxList : false
             onClicked: bar.runAction(() => bar.noteWindow.docHandler.toggleCheckboxList(bar.noteWindow.editor.selectionStart, bar.noteWindow.editor.selectionEnd))
@@ -767,13 +844,14 @@ Window {
         // table.
         ToolButton {
             id: insertTableButton
-            text: "▦"
             implicitWidth: bar.buttonSize
             implicitHeight: bar.buttonSize
             Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
             background: ToolbarButtonHighlight {}
             hoverEnabled: true
-            contentItem: ToolbarButtonLabel {}
+            contentItem: ToolbarSvgIcon {
+                path: "M20 2H4c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zM8 20H4v-4h4v4zm0-6H4v-4h4v4zm0-6H4V4h4v4zm6 12h-4v-4h4v4zm0-6h-4v-4h4v4zm0-6h-4V4h4v4zm6 12h-4v-4h4v4zm0-6h-4v-4h4v4zm0-6h-4V4h4v4z"
+            }
             onClicked: bar.runAction(() => bar.noteWindow.docHandler.insertTable(bar.noteWindow.editor.selectionEnd))
             ToolbarButtonTip {
                 text: "Insert Table"
@@ -798,38 +876,41 @@ Window {
 
         ToolButton {
             id: cutButton
-            text: "✂"
             implicitWidth: bar.buttonSize
             implicitHeight: bar.buttonSize
             Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
             background: ToolbarButtonHighlight {}
             hoverEnabled: true
-            contentItem: ToolbarButtonLabel {}
+            contentItem: ToolbarSvgIcon {
+                path: "M9.64 7.64c.23-.5.36-1.05.36-1.64 0-2.21-1.79-4-4-4S2 3.79 2 6s1.79 4 4 4c.59 0 1.14-.13 1.64-.36L10 12l-2.36 2.36C7.14 14.13 6.59 14 6 14c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4c0-.59-.13-1.14-.36-1.64L12 14l7 7h3v-1L9.64 7.64zM6 8c-1.1 0-2-.89-2-2s.9-2 2-2 2 .89 2 2-.9 2-2 2zm0 12c-1.1 0-2-.89-2-2s.9-2 2-2 2 .89 2 2-.9 2-2 2zm6-7.5c-.28 0-.5-.22-.5-.5s.22-.5.5-.5.5.22.5.5-.22.5-.5.5z"
+            }
             enabled: bar.noteWindow ? bar.noteWindow.editor.selectionStart !== bar.noteWindow.editor.selectionEnd : false
             onClicked: bar.runAction(() => bar.noteWindow.editor.cut())
             ToolbarButtonTip { text: "Cut" }
         }
         ToolButton {
             id: copyButton
-            text: "⧉"
             implicitWidth: bar.buttonSize
             implicitHeight: bar.buttonSize
             Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
             background: ToolbarButtonHighlight {}
             hoverEnabled: true
-            contentItem: ToolbarButtonLabel {}
+            contentItem: ToolbarSvgIcon {
+                path: "M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"
+            }
             onClicked: bar.runAction(() => bar.noteWindow.performCopy())
             ToolbarButtonTip { text: "Copy" }
         }
         ToolButton {
             id: pasteButton
-            text: "📋"
             implicitWidth: bar.buttonSize
             implicitHeight: bar.buttonSize
             Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
             background: ToolbarButtonHighlight {}
             hoverEnabled: true
-            contentItem: ToolbarButtonLabel {}
+            contentItem: ToolbarSvgIcon {
+                path: "M19 2h-4.18C14.4.84 13.3 0 12 0c-1.3 0-2.4.84-2.82 2H5c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-7 0c.55 0 1 .45 1 1s-.45 1-1 1-1-.45-1-1 .45-1 1-1zm7 18H5V4h2v3h10V4h2v16z"
+            }
             enabled: bar.noteWindow ? bar.noteWindow.editor.canPaste : false
             onClicked: bar.runAction(() => bar.noteWindow.editor.paste())
             ToolbarButtonTip { text: "Paste" }
@@ -1066,56 +1147,75 @@ Window {
 
             ToolButton {
                 id: insertRowButton
-                text: "+R"
                 implicitWidth: bar.buttonSize
                 implicitHeight: bar.buttonSize
                 background: ToolbarButtonHighlight {}
                 hoverEnabled: true
-                contentItem: ToolbarButtonLabel {}
+                // Material Symbols (not classic Material Icons — see
+                // third_party/material-icons/NOTICE.md for why), so its
+                // own viewBox origin is "0 -960" rather than "0 0".
+                contentItem: ToolbarSvgIcon {
+                    viewBoxSize: 960
+                    viewBoxOriginY: -960
+                    path: "M200-560h560v-240H200v240Zm-80 400v-720h720v720H680v-80h80v-240H200v240h80v80H120Zm360-320Zm0-80v80-80Zm0 0ZM440-80v-80h-80v-80h80v-80h80v80h80v80h-80v80h-80Z"
+                }
                 onClicked: bar.runAction(() => bar.noteWindow.docHandler.insertTableRow(bar.noteWindow.editor.selectionEnd))
                 ToolbarButtonTip { text: "Insert Row" }
             }
             ToolButton {
                 id: deleteRowButton
-                text: "-R"
                 implicitWidth: bar.buttonSize
                 implicitHeight: bar.buttonSize
                 background: ToolbarButtonHighlight {}
                 hoverEnabled: true
-                contentItem: ToolbarButtonLabel {}
+                // table_rows plus a diagonal strike — see ToolbarSvgIcon's
+                // strikethrough doc comment for why (no dedicated Material
+                // "delete row" glyph exists).
+                contentItem: ToolbarSvgIcon {
+                    path: "M21,8H3V4h18V8z M21,10H3v4h18V10z M21,16H3v4h18V16z"
+                    strikethrough: true
+                }
                 onClicked: bar.runAction(() => bar.noteWindow.docHandler.deleteTableRow(bar.noteWindow.editor.selectionEnd))
                 ToolbarButtonTip { text: "Delete Row" }
             }
             ToolButton {
                 id: insertColumnButton
-                text: "+C"
                 implicitWidth: bar.buttonSize
                 implicitHeight: bar.buttonSize
                 background: ToolbarButtonHighlight {}
                 hoverEnabled: true
-                contentItem: ToolbarButtonLabel {}
+                contentItem: ToolbarSvgIcon {
+                    viewBoxSize: 960
+                    viewBoxOriginY: -960
+                    path: "M160-760v560h240v-560H160ZM80-120v-720h720v160h-80v-80H480v560h240v-80h80v160H80Zm400-360Zm-80 0h80-80Zm0 0Zm320 120v-80h-80v-80h80v-80h80v80h80v80h-80v80h-80Z"
+                }
                 onClicked: bar.runAction(() => bar.noteWindow.docHandler.insertTableColumn(bar.noteWindow.editor.selectionEnd))
                 ToolbarButtonTip { text: "Insert Column" }
             }
             ToolButton {
                 id: deleteColumnButton
-                text: "-C"
                 implicitWidth: bar.buttonSize
                 implicitHeight: bar.buttonSize
                 background: ToolbarButtonHighlight {}
                 hoverEnabled: true
-                contentItem: ToolbarButtonLabel {}
+                // view_column plus a diagonal strike — same reasoning as
+                // deleteRowButton above.
+                contentItem: ToolbarSvgIcon {
+                    path: "M14.67,5v14H9.33V5H14.67z M15.67,19H21V5h-5.33V19z M8.33,19V5H3v14H8.33z"
+                    strikethrough: true
+                }
                 onClicked: bar.runAction(() => bar.noteWindow.docHandler.deleteTableColumn(bar.noteWindow.editor.selectionEnd))
                 ToolbarButtonTip { text: "Delete Column" }
             }
             ToolButton {
                 id: deleteTableButton
-                text: "-▦"
                 implicitWidth: bar.buttonSize
                 implicitHeight: bar.buttonSize
                 background: ToolbarButtonHighlight {}
                 hoverEnabled: true
-                contentItem: ToolbarButtonLabel {}
+                contentItem: ToolbarSvgIcon {
+                    path: "M8 4v1.45l2 2V4h4v4h-3.45l2 2H14v1.45l2 2V10h4v4h-3.45l2 2H20v1.45l2 2V4c0-1.1-.9-2-2-2H4.55l2 2H8zm8 0h4v4h-4V4zM1.27 1.27L0 2.55l2 2V20c0 1.1.9 2 2 2h15.46l2 2 1.27-1.27L1.27 1.27zM10 12.55L11.45 14H10v-1.45zm-6-6L5.45 8H4V6.55zM8 20H4v-4h4v4zm0-6H4v-4h3.45l.55.55V14zm6 6h-4v-4h3.45l.55.54V20zm2 0v-1.46L17.46 20H16z"
+                }
                 onClicked: bar.runAction(() => bar.noteWindow.docHandler.deleteTable(bar.noteWindow.editor.selectionEnd))
                 ToolbarButtonTip { text: "Delete Table" }
             }
