@@ -366,6 +366,14 @@ Window {
     // observes every NoteWindow's own activeChanged.
     property var noteWindow: null
 
+    // Same wantsVisible convention columnOptionsPopup/spellingSuggestionsPopup
+    // each have their own copy of below — whether this permanently-mapped
+    // window (see its own visible: false / Component.onCompleted comment)
+    // should currently be showing anything at all. Drives its own
+    // width/height (see below) the same way it drives content.visible in
+    // onNoteWindowChanged.
+    readonly property bool wantsVisible: noteWindow !== null
+
     // Whether the pointer is currently anywhere over the toolbar itself —
     // see NoteWindow.qml's own `hovered` alias for why Main.qml treats this
     // as a keep-alive signal for toolbar visibility alongside `active`.
@@ -387,6 +395,9 @@ Window {
     readonly property alias copyButton: copyButton
     readonly property alias pasteButton: pasteButton
     readonly property alias columnOptionsPopup: columnOptionsPopup
+    readonly property alias spellingSuggestionsPopup: spellingSuggestionsPopup
+    readonly property alias addToDictionaryButton: addToDictionaryButton
+    readonly property alias noSuggestionsLabel: noSuggestionsLabel
     readonly property alias tooltipWindow: tooltipWindow
     readonly property alias background: background
     readonly property alias content: content
@@ -478,6 +489,31 @@ Window {
     flags: Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint
     color: "transparent"
 
+    // wantsVisible-gated, not just isVertical directly: this window stays
+    // permanently mapped with WindowStaysOnTopHint (see
+    // Component.onCompleted's own comment below) even while no note is
+    // tracked, so without a gate here it stayed a full barLength x
+    // barThickness hit target — sitting wherever it was last positioned,
+    // silently eating clicks meant for whatever was underneath even though
+    // its content had gone invisible (bug found live).
+    //
+    // NOT gated on wantsVisible anymore, though (bug found live: a 1px
+    // popup elsewhere in this file that persisted no matter what — see
+    // spellingSuggestionsPopup's own width/height comment for the full
+    // trace-confirmed story): shrinking to 1x1 on every hide, then back to
+    // real size on every show, forces a genuine client<->compositor
+    // Wayland resize negotiation each time, not just a QML property write
+    // — two such negotiations close together can race, with a stale
+    // belated "you're 1x1 now" acknowledgment landing after a fresh
+    // "you're your real size again" one and silently clobbering the
+    // window's actual on-screen geometry. parkOffscreen() below, called
+    // from onNoteWindowChanged, already fully solves the original
+    // "blocks clicks after closing" problem on its own — a window sitting
+    // off every connected screen can't overlap real content regardless of
+    // its size — so shrinking was never load-bearing for that fix, just an
+    // extra step that turned out to actively cause a worse bug. Width/
+    // height now stay at their real size unconditionally; only position
+    // changes on hide.
     width: isVertical ? barThickness : barLength
     height: isVertical ? barLength : barThickness
 
@@ -500,13 +536,23 @@ Window {
         // uses) Force-keeping this window above others. "selectionToolbar"
         // is a fixed id, not a real note id — applyPosition() only ever
         // uses it as an opaque rule-group key, so this doesn't collide
-        // with or need cleanup alongside any actual note's rule. The
-        // seeded position itself is essentially a throwaway default
-        // (100, 100): it's an Apply-Initially rule, so it only ever
-        // matters for this one spawn, and reposition()'s own
-        // moveWindow() call takes over for every placement after that,
-        // the instant a note first focuses.
-        positionManager.applyPosition("selectionToolbar", bar.title, 100, 100, true)
+        // with or need cleanup alongside any actual note's rule.
+        //
+        // Seeded at offscreenPoint(), NOT a fixed on-screen throwaway like
+        // (100, 100) used to be (bug found live): this is an
+        // "Apply Initially" rule, applied synchronously here, in effect
+        // from this window's very first show() below — no separate
+        // moveWindow() thread involved, so seeding it off-screen doesn't
+        // reintroduce the startup race described further down. Without
+        // this, the window's FIRST-EVER real show (e.g. tapping a
+        // misspelled word soon after launch) started from an on-screen
+        // spot and stayed there, fully visible, until reposition()'s own
+        // async moveWindow() call landed moments later — a real, visible
+        // flash at the wrong location every single session, exactly once,
+        // that every later show avoided only because its OWN prior hide
+        // had already parked it off-screen first.
+        const seed = offscreenPoint()
+        positionManager.applyPosition("selectionToolbar", bar.title, seed.x, seed.y, true)
 
         // The extra hide()+show() right after is deliberate, not
         // redundant: confirmed live that writing an "above"/Force rule
@@ -522,6 +568,67 @@ Window {
         bar.hide()
         bar.show()
         updateBlur()
+
+        // Deliberately NOT calling parkOffscreen() here too, unlike every
+        // real hide transition below — bug found live: positionManager.
+        // moveWindow() spawns its own untracked, unsynchronized background
+        // thread per call (see PositionManager::moveWindow), and
+        // KWinRuleApplier::moveWindow does three sequential qdbus6
+        // round-trips plus a hardcoded 50ms sleep, so it's genuinely slow
+        // and two concurrent calls for the same window have no ordering
+        // guarantee — whichever finishes LAST wins, not whichever was
+        // issued last. Calling it here queued a park-off-screen move at
+        // the exact moment the app starts, right when a user could
+        // plausibly trigger this window's very first real show (e.g.
+        // tapping a misspelled word seconds after launch) — if that early
+        // startup move was still in flight when the real show's own
+        // moveWindow call landed first, the stale startup move finished
+        // moments later and silently dragged the freshly-shown popup back
+        // off-screen: exactly the "flashes and immediately disappears"
+        // bug. width/height above are already 1x1 from this window's very
+        // first frame regardless (wantsVisible starts false), and the seed
+        // above is already off-screen too now, so skipping this call
+        // entirely costs nothing — there's no on-screen resting spot left
+        // to correct.
+    }
+
+    // Returns a point guaranteed to fall outside the combined virtual
+    // desktop of every connected screen, regardless of how the monitors
+    // are arranged (including layouts with negative-coordinate monitors
+    // above/left of the primary, where a fixed negative offset like
+    // (-10000, -10000) could still land ON a real monitor instead of past
+    // all of them). Exceeding just the combined right edge is
+    // mathematically enough on its own — a point to the right of every
+    // screen's right edge can't sit inside any of their rects, whatever
+    // its y is — but both axes are pushed out here for clarity/defense in
+    // depth.
+    function offscreenPoint() {
+        let maxX = 0
+        let maxY = 0
+        const screens = Qt.application.screens
+        for (let i = 0; i < screens.length; i++) {
+            maxX = Math.max(maxX, screens[i].virtualX + screens[i].width)
+            maxY = Math.max(maxY, screens[i].virtualY + screens[i].height)
+        }
+        return Qt.point(maxX + 1000, maxY + 1000)
+    }
+
+    // Parks any of this file's permanently-mapped windows (this bar
+    // itself, columnOptionsPopup, spellingSuggestionsPopup, tooltipWindow)
+    // at offscreenPoint() — paired everywhere with shrinking that same
+    // window's width/height to 1x1, never 0x0 (see each one's own comment
+    // for why 0 is actively dangerous on real Wayland, not just untidy).
+    // Neither alone is a complete fix: size-only still leaves a 1x1
+    // sliver sitting at the window's last real, on-note position;
+    // position-only would still leave a full-sized window that could
+    // briefly overlap real content if a resize ever raced a move. Doing
+    // both means there's no monitor, anywhere, this window could still be
+    // seen or intercept a click on while it isn't wanted.
+    function parkOffscreen(win) {
+        const pt = offscreenPoint()
+        win.x = pt.x
+        win.y = pt.y
+        positionManager.moveWindow(win.title, pt.x, pt.y)
     }
 
     // Mirrors the tracked note's real compositor blur-behind (feature
@@ -558,6 +665,7 @@ Window {
         function onBlurEnabledChanged() {
             bar.updateBlur()
             columnOptionsPopup.updateBlur()
+            spellingSuggestionsPopup.updateBlur()
         }
     }
 
@@ -588,6 +696,16 @@ Window {
     // they like (see dragArea below) until focus switches to a different
     // note, at which point it defaults again.
     onNoteWindowChanged: {
+        // Computed fresh here, not read from the wantsVisible property:
+        // wantsVisible and this handler are both listeners on the same
+        // noteWindowChanged signal, and QML doesn't guarantee wantsVisible's
+        // own binding has already re-evaluated by the time this handler
+        // runs (bindings vs. on-handlers on the same signal race) — same
+        // reasoning insertTableButton's own dragArea.enabled comment below
+        // already gives for not trusting a plain declarative binding here.
+        // wantsVisible itself stays fine for width/height above, which are
+        // read declaratively rather than from inside another signal
+        // handler racing the same change.
         const tracking = (noteWindow !== null)
         background.visible = tracking
         content.visible = tracking
@@ -595,8 +713,34 @@ Window {
         dragArea.enabled = tracking
         if (tracking)
             reposition()
+        else
+            parkOffscreen(bar)
         updateBlur()
         columnOptionsPopup.updateBlur()
+        spellingSuggestionsPopup.updateBlur()
+        // Bug found live ("switching between misspelled words that are on
+        // different notes causes the position to not update to the new
+        // note, though the suggestions do... inconsistent, rarely works"):
+        // spellingSuggestionsPopup.wantsVisible depends on
+        // bar.noteWindow.currentMisspelledWord, so its own
+        // onWantsVisibleChanged only fires on a false->true (or true->false)
+        // EDGE. If the newly-focused note already has a misspelled word
+        // flagged by the time noteWindow retargets here — a real race
+        // between window activation and tap-handling order (see
+        // NoteWindow.qml's TapHandler, which sets currentMisspelledWord) —
+        // wantsVisible reads true both immediately before AND after this
+        // reassignment (the old note's word, then the new note's), so it
+        // never toggles, and the popup silently keeps showing at the OLD
+        // note's position while only its suggestion list (bound straight
+        // through to noteWindow, no edge-detection involved) updates to
+        // match the new word. This explicit, unconditional check — not
+        // gated on any edge — catches exactly that case; it's a harmless
+        // no-op duplicate on the normal false->true path, since
+        // beginSpellingSuggestionsTransition() just re-issues the same
+        // hide/reposition/reveal cycle onWantsVisibleChanged already
+        // started.
+        if (tracking && noteWindow.currentMisspelledWord !== "")
+            spellingSuggestionsPopup.beginSpellingSuggestionsTransition()
     }
 
     // Tries each edge of the note in priority order — top, left, right,
@@ -1027,8 +1171,37 @@ Window {
         title: "suopNotes-columnOptionsPopup"
         flags: Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint
         color: "transparent"
-        width: columnOptionsBackground.width
-        height: columnOptionsBackground.height
+
+        // wantsVisible-gated, not just columnOptionsBackground's own
+        // width/height directly: this window stays permanently mapped with
+        // WindowStaysOnTopHint (see Component.onCompleted's own comment
+        // below), and the background's implicit size doesn't collapse to 0
+        // just because it goes invisible. Without this gate, the popup kept
+        // sitting on top of the note at its last anchored position after
+        // leaving the table, silently eating clicks meant for the note
+        // underneath even though nothing was visibly there anymore (bug
+        // found live — same root cause as spellingSuggestionsPopup's own
+        // width/height below, and the reason updateBlur()/dragArea.enabled
+        // alone, right below, weren't a complete fix: they stopped the
+        // popup from being visibly blurred/draggable while unwanted, but
+        // not from still occupying screen space and intercepting clicks).
+        // NOT gated on wantsVisible anymore (bug found live: a 1px popup
+        // elsewhere in this file that persisted no matter what — see
+        // bar's own width/height comment and spellingSuggestionsPopup's
+        // own, trace-confirmed, for the full story): shrinking to 1x1 on
+        // every hide, then back to real size on every show, forces a
+        // genuine client<->compositor Wayland resize negotiation each
+        // time, and two such negotiations close together can race, with a
+        // stale belated "you're 1x1 now" acknowledgment silently
+        // clobbering a fresher "you're real size again" one.
+        // onWantsVisibleChanged below already calls bar.parkOffscreen(),
+        // which alone fully solves the original "blocks clicks after
+        // closing" problem — a window sitting off every connected screen
+        // can't overlap real content regardless of its size. Width/height
+        // now stay at their real content size unconditionally; only
+        // position changes on hide.
+        width: isFinite(columnOptionsBackground.width) ? columnOptionsBackground.width : 80
+        height: isFinite(columnOptionsBackground.height) ? columnOptionsBackground.height : 32
 
         // Feature request: shown automatically whenever the cursor is
         // inside a table, not just while hovering the grid icon/the popup
@@ -1055,17 +1228,27 @@ Window {
         // on" discipline as `bar` itself — see its own Component.onCompleted
         // comment for why repeatedly mapping/unmapping a window while a
         // note holds Wayland keyboard focus disrupts that note's own text
-        // input. The seeded position is a throwaway default, same reasoning
-        // as bar's own seed: repositionColumnOptionsPopup() below takes
-        // over for every real placement, the instant it first becomes
-        // relevant.
+        // input. The seeded position is offscreenPoint(), not an on-screen
+        // throwaway — same reasoning as bar's own seed (see its comment
+        // for the "first-ever show flashes at the wrong spot" bug this
+        // avoids): repositionColumnOptionsPopup() below takes over for
+        // every real placement, the instant it first becomes relevant.
         visible: false
         Component.onCompleted: {
-            positionManager.applyPosition("columnOptionsPopup", columnOptionsPopup.title, 100, 100, true)
+            const seed = bar.offscreenPoint()
+            positionManager.applyPosition("columnOptionsPopup", columnOptionsPopup.title, seed.x, seed.y, true)
             show()
             hide()
             show()
             updateBlur()
+
+            // Deliberately NOT calling bar.parkOffscreen() here too — see
+            // bar's own Component.onCompleted comment for why: it races
+            // moveWindow's slow, unsynchronized background thread against
+            // this window's very first real show, and losing that race is
+            // exactly what caused the popup to flash into view then get
+            // silently dragged back off-screen moments later (bug found
+            // live).
         }
 
         // Same real compositor blur-behind as the main bar (feature
@@ -1095,6 +1278,8 @@ Window {
             columnOptionsDragArea.enabled = wantsVisible
             if (wantsVisible)
                 repositionColumnOptionsPopup()
+            else
+                bar.parkOffscreen(columnOptionsPopup)
             updateBlur()
         }
 
@@ -1315,6 +1500,623 @@ Window {
         }
     }
 
+    // Spelling-suggestion popup (feature request): shown when the user taps
+    // a misspelled word flagged by the spellcheck highlighter — NoteWindow's
+    // own TapHandler sets currentMisspelledWord/currentSpellingSuggestions/
+    // misspelledWordStart/misspelledWordEnd on the tracked note when that
+    // happens (see NoteWindow.qml), and clears currentMisspelledWord again
+    // once nothing is relevant to show. Offers a short list of replacement
+    // words, anchored below the tapped word itself.
+    //
+    // A genuine third top-level Window, not an Item embedded in this
+    // Window's own tree, for the same reason `bar`/columnOptionsPopup are
+    // (see their own header comments): it needs to render outside this
+    // toolbar's own small fixed surface, anchored to an arbitrary point
+    // inside the note rather than to the toolbar itself.
+    //
+    // Deliberately simpler than columnOptionsPopup: no drag handle/grip
+    // (this is an ephemeral suggestion list, not something worth letting the
+    // user drag around) — but DOES get the same real compositor blur-behind
+    // now (feature request: every popup should match the toolbar's own
+    // styling), wired up the same wantsVisible-gated way columnOptionsPopup's
+    // own updateBlur() already is (see its comment for the bug that gating
+    // avoids: a still-mapped, blurred window sitting around after "closing").
+    Window {
+        id: spellingSuggestionsPopup
+        title: "suopNotes-spellingSuggestionsPopup"
+        flags: Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint
+        color: "transparent"
+
+        // wantsVisible-gated, not just spellingSuggestionsBackground's own
+        // width/height directly: this window stays permanently mapped with
+        // WindowStaysOnTopHint (see Component.onCompleted's own comment
+        // below), and the background's implicit size doesn't collapse to 0
+        // just because it goes invisible. Without this gate, the popup kept
+        // sitting on top of the note at its last anchored position after
+        // "closing," silently eating clicks meant for the note underneath
+        // even though nothing was visibly there anymore (bug found live).
+        // Shrinking to 1x1 (NOT 0x0 — bug found live: a real xdg-shell
+        // Wayland surface rejects a 0-width/height window geometry commit
+        // as a protocol error and kills the whole Wayland connection,
+        // crashing the app; see bar's own width/height comment above for
+        // the full story).
+        //
+        // NOT gated on wantsVisible at all anymore (bug found live: "1px
+        // popup" persisting even with the isFinite+Math.max floor below in
+        // place) — shrinking to 1x1 on every hide, then back to real size
+        // on every show, meant EVERY hide/show cycle forced a genuine
+        // client<->compositor Wayland resize negotiation (request,
+        // configure, ack), not just a QML property write. Two such
+        // negotiations close together (hide, then show again moments
+        // later — routine once a word's popup can reopen for the same or
+        // a different word) could race: a stale, belated "you're 1x1 now"
+        // acknowledgment from the PRIOR hide landing after the fresh
+        // "you're back to your real size" one, silently overwriting the
+        // window's actual on-screen geometry back to 1x1 — with NO
+        // corresponding change to spellingSuggestionsBackground.width
+        // (confirmed live via trace logging: width dropped to 1 while
+        // wantsVisible stayed true and background.width never changed),
+        // meaning this was a real platform-level race, not a QML binding
+        // bug. bar.parkOffscreen() below already fully solves the
+        // original "blocks clicks after closing" problem on its own — a
+        // window sitting off every connected screen can't overlap real
+        // content regardless of its size — so shrinking was never load-
+        // bearing for that fix to begin with, just an extra (and, it turns
+        // out, actively harmful) belt-and-suspenders that introduced its
+        // own worse bug. Width/height now track content size
+        // unconditionally; only position changes on hide.
+        width: isFinite(spellingSuggestionsBackground.width) ? spellingSuggestionsBackground.width : 80
+        height: isFinite(spellingSuggestionsBackground.height) ? spellingSuggestionsBackground.height : 32
+
+        // "" means "nothing to show" (see NoteWindow.qml's own
+        // currentMisspelledWord doc comment) — mirrors columnOptionsPopup's
+        // own wantsVisible, just gated on the misspelled-word property
+        // instead of currentInTable.
+        readonly property bool wantsVisible: bar.noteWindow && bar.noteWindow.currentMisspelledWord !== ""
+
+        // Exposed for tests only, same convention as bar's/
+        // columnOptionsPopup's own aliases above.
+        readonly property alias background: spellingSuggestionsBackground
+        readonly property alias content: spellingSuggestionsContent
+        readonly property alias repeater: suggestionsRepeater
+
+        // Same "shown once at startup, content-visibility toggled from then
+        // on" discipline as `bar`/columnOptionsPopup — see bar's own
+        // Component.onCompleted comment for why repeatedly mapping/
+        // unmapping a window while a note holds Wayland keyboard focus
+        // disrupts that note's own text input. The seeded position is
+        // offscreenPoint(), not an on-screen throwaway — same reasoning as
+        // the other two popups (see bar's own comment for the "first-ever
+        // show flashes at the wrong spot" bug this avoids):
+        // repositionSpellingSuggestionsPopup() below takes over for every
+        // real placement, the instant it first becomes relevant.
+        visible: false
+        Component.onCompleted: {
+            const seed = bar.offscreenPoint()
+            positionManager.applyPosition("spellingSuggestionsPopup", spellingSuggestionsPopup.title, seed.x, seed.y, true)
+            show()
+            hide()
+            show()
+            updateBlur()
+
+            // Deliberately NOT calling bar.parkOffscreen() here too — bug
+            // found live: it raced moveWindow's slow, unsynchronized
+            // background thread (see PositionManager::moveWindow) against
+            // this popup's very first real show — tapping a misspelled
+            // word shortly after launch — and losing that race is exactly
+            // what made the popup flash into view then get silently
+            // dragged back off-screen moments later. See bar's own
+            // Component.onCompleted comment for the full story.
+        }
+
+        // Same real compositor blur-behind as columnOptionsPopup's own
+        // (feature request) — see its updateBlur() for the reasoning
+        // behind gating on wantsVisible, not just bar.noteWindow.
+        //
+        // Gated on spellingSuggestionsBackground.visible here, NOT
+        // wantsVisible directly (bug found live: "the blur is visible
+        // before the actual popup shows up, creating another flash") —
+        // wantsVisible flips true the INSTANT a word is tapped, well
+        // before content reveal is confirmed (see
+        // spellingSuggestionsRevealIfReady's own comment), but the
+        // compositor blur-behind region is a real, immediately-visible
+        // effect applied to the window's current geometry regardless of
+        // whether spellingSuggestionsBackground itself is painting
+        // anything — enabling it on wantsVisible alone put a blurred
+        // patch on screen at the popup's stale, not-yet-confirmed
+        // position before the real content ever appeared. Tying it to the
+        // same visible flag the reveal/hide logic itself flips means blur
+        // only ever turns on at the exact moment real content does too.
+        function updateBlur() {
+            blurEffect.applyTo(spellingSuggestionsPopup,
+                spellingSuggestionsBackground.visible && bar.noteWindow ? bar.noteWindow.noteAppearance.blurEnabled : false,
+                spellingSuggestionsBackground.radius)
+        }
+
+        // Bug found live ("becomes visible before the position changes,
+        // leading to bad UX"): revealing content synchronously here, the
+        // instant wantsVisible flips true, meant the popup painted at
+        // whatever position it happened to be sitting at already (its
+        // off-screen park spot, or the seed) — repositionSpellingSuggestionsPopup()
+        // below only REQUESTS the real position; positionManager.moveWindow()
+        // actually applies it via a slow (~60-100ms observed), asynchronous
+        // KWin script call (see PositionManager::moveWindow), so the
+        // content was visibly popping in at the wrong spot and then
+        // jumping once the move eventually landed.
+        //
+        // A fixed debounce delay used to paper over this, but a delay is
+        // just a guess at how long the move will take — too short and the
+        // same bug resurfaces, too long and it reads as sluggish. Instead,
+        // this waits for actual CONFIRMATION that the position landed:
+        // positionManager.windowMoved fires once moveWindow()'s background
+        // thread genuinely finishes (see PositionManager::moveWindow), and
+        // reveal only happens once every move issued so far
+        // (spellingSuggestionsMovesIssued) has a matching completion
+        // (spellingSuggestionsMovesCompleted) — a COUNT comparison, not an
+        // identity check, because moveWindow calls for the same window
+        // have no ordering guarantee on completion (see its own comment),
+        // so "the latest move's own completion arrived" can't be detected
+        // directly, but "as many completions as issuances" implies it has.
+        // Hiding stays immediate (nothing to wait for when tucking
+        // something away).
+        property int spellingSuggestionsMovesIssued: 0
+        property int spellingSuggestionsMovesCompleted: 0
+
+        // Bug found live ("sometimes the popup will be cut off — only 2
+        // options show up... sometimes cut off but the space is reserved
+        // [the blur shows where the third would be]... sometimes it works
+        // normally"): position confirmation alone says nothing about
+        // whether spellingSuggestionsContent's own SIZE has finished
+        // settling — the suggestion-list Repeater rebuild that
+        // spellingSuggestionsResettleDebounce's own comment documents (real
+        // content, then a wobble, then its real final size again) can still
+        // be in progress at the moment the position confirmation arrives,
+        // especially switching straight from one note's word to a
+        // DIFFERENT note's — reveal used to fire the instant position
+        // landed regardless, painting whatever partial size the content
+        // happened to be at that instant. False the moment a transition
+        // begins (and again on every width/height wobble in between);
+        // flips true only once spellingSuggestionsResettleDebounce fires
+        // with no further size change in between — see that Timer's own
+        // trigger below.
+        property bool spellingSuggestionsSizeSettled: false
+
+        function spellingSuggestionsRevealIfReady() {
+            if (wantsVisible && spellingSuggestionsMovesCompleted >= spellingSuggestionsMovesIssued
+                    && spellingSuggestionsSizeSettled) {
+                spellingSuggestionsBackground.visible = true
+                spellingSuggestionsContent.visible = true
+                spellingSuggestionsContent.enabled = true
+                spellingSuggestionsRevealFallback.stop()
+                updateBlur()
+            }
+        }
+
+        Connections {
+            target: positionManager
+            function onWindowMoved(windowTitle) {
+                if (windowTitle === spellingSuggestionsPopup.title) {
+                    spellingSuggestionsPopup.spellingSuggestionsMovesCompleted++
+                    spellingSuggestionsPopup.spellingSuggestionsRevealIfReady()
+                }
+            }
+        }
+
+        // Safety net, not the primary mechanism: reveals unconditionally
+        // if windowMoved somehow never arrives (e.g. KWin scripting
+        // genuinely unavailable — see KWinRuleApplier::isAvailable — still
+        // lets the worker thread finish and emit, but this covers any
+        // other way completion could go missing) — a real popup that never
+        // reveals is a worse bug than a rare, late reveal at a
+        // not-yet-confirmed position. Restarted on every new move request,
+        // not recurring — costs nothing once actually revealed.
+        //
+        // Bug found live ("still get a flash of the original position, not
+        // sure what causes it"): observed KWin round-trips are usually
+        // ~60-100ms (see PositionManager::moveWindow's own comment), but
+        // under load — several moves queued back-to-back (a fresh show
+        // plus its own resettle-debounce re-reposition, say) — a real
+        // confirmation can occasionally land past the old 400ms mark. When
+        // that happened, THIS fallback fired first and revealed the popup
+        // still sitting at its prior, unconfirmed position, which then
+        // visibly jumped once the real confirmation arrived a moment
+        // later. Raised well past the observed worst case so it only ever
+        // fires as a genuine last resort, not a normal-latency race.
+        Timer {
+            id: spellingSuggestionsRevealFallback
+            interval: 1200
+            onTriggered: {
+                if (spellingSuggestionsPopup.wantsVisible) {
+                    spellingSuggestionsBackground.visible = true
+                    spellingSuggestionsContent.visible = true
+                    spellingSuggestionsContent.enabled = true
+                    spellingSuggestionsPopup.updateBlur()
+                }
+            }
+        }
+
+        // Bug found live ("doesn't transition position between two
+        // misspelled words" / "stuck at the prior word until the user
+        // clicks out"): wantsVisible only depends on currentMisspelledWord
+        // being empty vs non-empty, so tapping misspelled word A then
+        // DIRECTLY misspelled word B — both non-empty — never toggles it
+        // at all, meaning onWantsVisibleChanged below (the only thing that
+        // used to call repositionSpellingSuggestionsPopup() for a "show")
+        // never re-fired for that transition. The popup only happened to
+        // move at all when the resettle-debounce further below ALSO
+        // happened to fire — which needs a real width/height change, so
+        // two words whose suggestion lists produce the same popup size
+        // (far more likely for two words near the same screen edge, since
+        // both clamp to that same edge regardless of a few pixels of size
+        // difference) left NOTHING to retrigger it, and the popup just
+        // stayed stuck. Mirrors columnOptionsPopup's own
+        // onCurrentInTableChanged Connections below for the exact same
+        // reason (see its comment): wantsVisible alone doesn't capture
+        // every case the anchor can move.
+        //
+        // Routed through the same hide-then-reveal-once-confirmed cycle
+        // onWantsVisibleChanged's own "show" branch uses (rather than just
+        // repositioning an already-visible popup in place) so a word-to-
+        // word jump reveals at its new, confirmed position instead of
+        // visibly sliding/flashing there while already on-screen.
+        function beginSpellingSuggestionsTransition() {
+            spellingSuggestionsBackground.visible = false
+            spellingSuggestionsContent.visible = false
+            spellingSuggestionsContent.enabled = false
+            // Turns blur off immediately too (see updateBlur's own
+            // comment) — matters here specifically for the word-to-word
+            // path below, which calls this directly without going through
+            // onWantsVisibleChanged's own trailing updateBlur() call.
+            updateBlur()
+            // Restarted here unconditionally, not just inside
+            // repositionSpellingSuggestionsPopup() itself: if that bails
+            // out early (e.g. the misspelledWordStart < 0 guard above —
+            // defense in depth only, shouldn't happen given
+            // NoteWindow.qml's own ordering fix, but just in case) no move
+            // ever gets issued, and this safety net must still cover that
+            // case so the popup can never end up permanently stuck
+            // invisible.
+            spellingSuggestionsRevealFallback.restart()
+            // Not settled yet — this transition is about to (re)assign the
+            // suggestion list, and its own content size may still be
+            // mid-wobble (or, for a same-size word-to-word jump, might
+            // never fire a width/height change at all) — restarted here
+            // unconditionally, not left to onWidthChanged/onHeightChanged
+            // alone, so a same-size jump still gets exactly one settle
+            // window instead of leaving spellingSuggestionsSizeSettled
+            // permanently false (see that property's own comment).
+            spellingSuggestionsSizeSettled = false
+            spellingSuggestionsResettleDebounce.restart()
+            repositionSpellingSuggestionsPopup()
+        }
+
+        Connections {
+            target: bar.noteWindow
+            function onMisspelledWordStartChanged() {
+                if (spellingSuggestionsPopup.wantsVisible)
+                    spellingSuggestionsPopup.beginSpellingSuggestionsTransition()
+            }
+        }
+
+        onWantsVisibleChanged: {
+            if (wantsVisible) {
+                beginSpellingSuggestionsTransition()
+            } else {
+                spellingSuggestionsRevealFallback.stop()
+                spellingSuggestionsBackground.visible = false
+                spellingSuggestionsContent.visible = false
+                spellingSuggestionsContent.enabled = false
+                // Counted the same as repositionSpellingSuggestionsPopup()'s
+                // own move, not a bare bar.parkOffscreen() call (bug found
+                // live): parkOffscreen() also calls positionManager.
+                // moveWindow(), and that move's eventual completion ALSO
+                // fires windowMoved for this window's title — the
+                // Connections handler below matches purely by title, with
+                // no way to tell "a move I'm gating on" apart from "some
+                // other move for the same window". Leaving this
+                // uncounted let that completion arrive as unearned credit
+                // toward a LATER show's spellingSuggestionsMovesCompleted,
+                // satisfying spellingSuggestionsRevealIfReady()'s check
+                // before the NEW move had actually landed — revealing
+                // content at the stale, PRIOR word's position instead of
+                // the new one (this is what made tapping a correctly-spelled
+                // word, which hides via this exact path, poison the next
+                // real show — clicking outside every note instead cleared
+                // bar.noteWindow only after Main.qml's own debounce delay,
+                // long enough for any in-flight move to have already
+                // settled, which is why that path alone seemed to "fix" it).
+                spellingSuggestionsMovesIssued++
+                bar.parkOffscreen(spellingSuggestionsPopup)
+            }
+            updateBlur()
+        }
+
+        // Bug found live (root cause of the popup flashing into view then
+        // immediately vanishing): the suggestion list is data-driven
+        // (suggestionsRepeater.model tracks currentSpellingSuggestions), so
+        // reassigning that model tears down and rebuilds every delegate —
+        // during that churn, spellingSuggestionsContent's own implicit
+        // size genuinely wobbles through several intermediate values over
+        // the following tens of milliseconds before settling (observed
+        // live: real content size, then a near-zero dip mid-rebuild, then
+        // its real final size again). onWantsVisibleChanged's own
+        // immediate repositionSpellingSuggestionsPopup() call above only
+        // ever captures ONE of those sizes — whichever happened to be
+        // current at that instant, sometimes the near-zero one — and
+        // nothing corrected the popup's position afterward as its real,
+        // final size arrived, so it could end up positioned (partly or
+        // fully) off-screen once settled, since the "does it fit below
+        // the screen" check never saw the size it would actually end up
+        // being. Restarting this debounce on every width/height change and
+        // repositioning once more when it fires means the popup's position
+        // always catches up to its real, settled size.
+        //
+        // Debounced, not repositioned on every wobble directly: each
+        // reposition call also calls positionManager.moveWindow(), which
+        // spawns its own slow (~100ms), unsynchronized background thread
+        // per call (see PositionManager::moveWindow) — repositioning on
+        // every intermediate wobble would queue several overlapping KWin
+        // script calls with no ordering guarantee between them, the same
+        // class of startup race already fixed elsewhere in this file (see
+        // Component.onCompleted's own comment above). A one-shot Timer
+        // restarted by a real size-change event, not a recurring poll —
+        // costs nothing while the popup is settled.
+        Timer {
+            id: spellingSuggestionsResettleDebounce
+            interval: 40
+            onTriggered: {
+                if (spellingSuggestionsPopup.wantsVisible)
+                    spellingSuggestionsPopup.repositionSpellingSuggestionsPopup()
+                // No further width/height change landed in the last 40ms —
+                // see spellingSuggestionsSizeSettled's own comment: this is
+                // what actually allows a reveal that's still waiting on it
+                // (position may already have confirmed earlier) to finally
+                // go through, painting the popup's real, fully-settled size
+                // instead of whatever partial size it happened to be
+                // mid-wobble.
+                spellingSuggestionsPopup.spellingSuggestionsSizeSettled = true
+                spellingSuggestionsPopup.spellingSuggestionsRevealIfReady()
+            }
+        }
+        onWidthChanged: {
+            if (wantsVisible) {
+                spellingSuggestionsSizeSettled = false
+                spellingSuggestionsResettleDebounce.restart()
+            }
+            updateBlur()
+        }
+        onHeightChanged: {
+            if (wantsVisible) {
+                spellingSuggestionsSizeSettled = false
+                spellingSuggestionsResettleDebounce.restart()
+            }
+            updateBlur()
+        }
+
+        // Same stale-screen bugfix as bar's/columnOptionsPopup's own
+        // onScreenChanged handlers above (see bar's own comment) —
+        // repositionSpellingSuggestionsPopup() reads note.screen too (see
+        // its own body below), so it needs the same late-arriving-screen
+        // re-trigger. (The onMisspelledWordStartChanged Connections above
+        // covers the "anchor moved without wantsVisible itself changing"
+        // case for jumping between two misspelled words directly.)
+        Connections {
+            target: bar.noteWindow
+            function onScreenChanged() {
+                if (spellingSuggestionsPopup.wantsVisible)
+                    spellingSuggestionsPopup.repositionSpellingSuggestionsPopup()
+            }
+        }
+
+        // Feature request: the popup should track the flagged word as the
+        // note scrolls, not just stay frozen at its last on-screen spot —
+        // NoteWindow.qml's own editorFlick.onContentYChanged already
+        // clears currentMisspelledWord (hiding this popup) once the word
+        // scrolls fully out of view; this covers the other half, keeping
+        // the popup anchored correctly while the word is still visible but
+        // has moved within the note. Guarded on wantsVisible rather than
+        // assuming NoteWindow's own clear (a listener on the very same
+        // contentYChanged signal) has already run first — listener order
+        // between two independent objects isn't guaranteed, so this reads
+        // its own current wantsVisible rather than relying on that
+        // ordering; if the word IS about to go out of view, this issues
+        // one harmless extra reposition moments before NoteWindow's own
+        // handler hides the popup anyway.
+        Connections {
+            target: bar.noteWindow ? bar.noteWindow.editorFlick : null
+            function onContentYChanged() {
+                if (spellingSuggestionsPopup.wantsVisible)
+                    spellingSuggestionsPopup.repositionSpellingSuggestionsPopup()
+            }
+        }
+
+        // Anchors directly below the tapped word itself — same technique
+        // repositionColumnOptionsPopup() uses for a table's own rect (see
+        // its own comment), just via positionToRectangle(start) (a
+        // TextArea builtin converting a text offset to a local rect)
+        // instead of docHandler.tableRect(...). Falls back to ABOVE the
+        // anchor only when there isn't room below on the tracked note's own
+        // screen, same as the other two popups.
+        function repositionSpellingSuggestionsPopup() {
+            const note = bar.noteWindow
+            if (!note)
+                return
+
+            // Defense in depth, not the primary fix (see NoteWindow.qml's
+            // own tap-to-suggest TapHandler comment for that — it now
+            // assigns currentMisspelledWord LAST specifically so this
+            // always runs with a real, already-current
+            // misspelledWordStart): bails out rather than calling
+            // positionToRectangle(-1), which logs a live "QTextCursor::
+            // setPosition: Position '-1' out of range" warning and hands
+            // back a garbage rect, silently mispositioning the popup —
+            // exactly the bug this guard is here in case any other call
+            // site ever gets the ordering wrong again.
+            if (note.misspelledWordStart < 0)
+                return
+
+            const rect = note.editor.positionToRectangle(note.misspelledWordStart)
+            const topLeft = note.editor.mapToGlobal(rect.x, rect.y)
+            const anchorTop = topLeft.y
+            const anchorBottom = topLeft.y + rect.height
+
+            let targetX = topLeft.x
+            let targetY = anchorBottom + 4
+
+            const screen = note.screen
+            if (screen && targetY + spellingSuggestionsPopup.height > screen.virtualY + screen.height)
+                targetY = anchorTop - spellingSuggestionsPopup.height - 4
+
+            // X-axis clamp (bug found live: a word right at the screen's
+            // left/right edge), mirroring bar's own reposition()'s
+            // clampedHorizontalX — targetX used to be the anchor's raw x
+            // with no clamping at all, so a word near either edge could
+            // request a position with the popup's own width extending
+            // past that edge.
+            if (screen)
+                targetX = Math.max(screen.virtualX, Math.min(targetX, screen.virtualX + screen.width - spellingSuggestionsPopup.width))
+
+            spellingSuggestionsPopup.x = targetX
+            spellingSuggestionsPopup.y = targetY
+            spellingSuggestionsMovesIssued++
+            positionManager.moveWindow(spellingSuggestionsPopup.title, targetX, targetY)
+        }
+
+        Rectangle {
+            id: spellingSuggestionsBackground
+            visible: false
+            // Math.max floor, not a bare implicitWidth/Height passthrough
+            // (bug found live: "sometimes a 1px-wide popup"): suggestionsRepeater's
+            // model is data-driven (currentSpellingSuggestions), so every
+            // reassignment tears down and rebuilds its delegates —
+            // spellingSuggestionsContent's own implicit size genuinely
+            // dips to a near-zero value mid-rebuild before settling (see
+            // the debounced re-reposition Timer above, which fixes the
+            // resulting stale POSITION but not a stale SIZE if the window
+            // happens to render during that exact dip). A floor well below
+            // any real suggestion popup's natural size means a mid-rebuild
+            // dip can never visually squish the popup, regardless of
+            // exactly when Qt Quick Layouts settles.
+            //
+            // isFinite-guarded, not a bare Math.max (bug found live: the
+            // 1px-wide popup persisted even with the floor above in place)
+            // — Math.max(NaN, 80) evaluates to NaN in JavaScript, not 80,
+            // because NaN compares false against everything including
+            // itself; a mid-rebuild layout pass that momentarily produces
+            // an invalid (NaN) implicitWidth/Height, not just a near-zero
+            // one, silently poisoned the floor entirely, and Qt's own
+            // handling of an assigned NaN window dimension is what actually
+            // produced the visible 1px sliver. Falling straight to the
+            // floor for any non-finite value closes that gap.
+            width: isFinite(spellingSuggestionsContent.implicitWidth) ? Math.max(spellingSuggestionsContent.implicitWidth + 8, 80) : 80
+            height: isFinite(spellingSuggestionsContent.implicitHeight) ? Math.max(spellingSuggestionsContent.implicitHeight + 8, 32) : 32
+            radius: 6
+            color: background.color
+            border.width: background.border.width
+            border.color: background.border.color
+        }
+
+        // Same glass treatment as the main bar's/columnOptionsPopup's own
+        // backgrounds (feature request: every popup should look like it
+        // belongs to the toolbar, not a plain flat rectangle).
+        GlassOverlay {
+            anchors.fill: spellingSuggestionsBackground
+            cornerRadius: spellingSuggestionsBackground.radius
+            visible: spellingSuggestionsBackground.visible && (settings.chromeGlassFollowsNote
+                ? (bar.noteWindow ? bar.noteWindow.noteAppearance.glassEnabled : false)
+                : settings.chromeGlassEnabled)
+            tintColor: bar.noteWindow ? bar.noteWindow.noteAppearance.glassTintColor : "#ffffff"
+            sheenOpacity: bar.noteWindow ? bar.noteWindow.noteAppearance.glassSheenOpacity : 0.12
+            ringCount: bar.noteWindow ? bar.noteWindow.noteAppearance.glassSheenStrength : 10
+            sheenSize: bar.noteWindow ? bar.noteWindow.noteAppearance.glassSheenSize : 0.18
+        }
+
+        // A stacked column of suggestion buttons reads more naturally than
+        // a row for a short word list (up to ~5 short entries) — the first
+        // Repeater in this file, since there's no existing dynamic-content
+        // popup to mirror (every other popup here has a fixed, hand-written
+        // set of buttons).
+        ColumnLayout {
+            id: spellingSuggestionsContent
+            visible: false
+            enabled: false
+            anchors.centerIn: spellingSuggestionsBackground
+            spacing: 2
+
+            Repeater {
+                id: suggestionsRepeater
+                model: bar.noteWindow ? bar.noteWindow.currentSpellingSuggestions : []
+
+                ToolButton {
+                    id: suggestionButton
+                    required property string modelData
+                    text: modelData
+                    implicitHeight: bar.buttonSize
+                    leftPadding: 10
+                    rightPadding: 10
+                    Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
+                    background: ToolbarButtonHighlight {}
+                    hoverEnabled: true
+                    contentItem: ToolbarButtonLabel {}
+                    // Replaces the misspelled word with this suggestion,
+                    // then immediately clears currentMisspelledWord so the
+                    // popup closes right away — doesn't depend on ordering
+                    // against NoteWindow's own onTextChanged handler (which
+                    // would also eventually clear it as a side effect of the
+                    // text actually changing), just does it explicitly here
+                    // for a more immediate, certain close.
+                    onClicked: bar.runAction(() => {
+                        bar.noteWindow.docHandler.replaceRange(bar.noteWindow.misspelledWordStart, bar.noteWindow.misspelledWordEnd, suggestionButton.modelData)
+                        bar.noteWindow.currentMisspelledWord = ""
+                    })
+                }
+            }
+
+            // Bug found live: a misspelled word can have zero suggestions
+            // (e.g. too garbled for the dictionary to find any close match)
+            // — the popup used to just show an empty Repeater in that case,
+            // reading as "nothing happened" even though it WAS open. This
+            // makes that state explicit instead.
+            Label {
+                id: noSuggestionsLabel
+                text: "No suggestions"
+                visible: suggestionsRepeater.count === 0
+                color: bar.noteWindow ? bar.noteWindow.noteAppearance.fontColor : "#ffffff"
+                opacity: 0.6
+                Layout.alignment: Qt.AlignHCenter
+                leftPadding: 10
+                rightPadding: 10
+                topPadding: 4
+                bottomPadding: 4
+            }
+
+            // "Add to dictionary" (feature request): the misspelled word
+            // currently selected via tap becomes permanently exempt from
+            // spellcheck, app-wide, regardless of which backend/language is
+            // active — see UserDictionaryFilteringBackend. Only THIS note's
+            // highlighter is forced to re-check immediately
+            // (rehighlightSpellcheck()); other already-open notes pick up
+            // the change on their own next edit, a deliberate scope cut
+            // (see DocumentHandler::rehighlightSpellcheck's own comment).
+            ToolButton {
+                id: addToDictionaryButton
+                text: "Add to dictionary"
+                implicitHeight: bar.buttonSize
+                leftPadding: 10
+                rightPadding: 10
+                Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
+                background: ToolbarButtonHighlight {}
+                hoverEnabled: true
+                contentItem: ToolbarButtonLabel {}
+                onClicked: bar.runAction(() => {
+                    settings.addUserDictionaryWord(bar.noteWindow.currentMisspelledWord)
+                    bar.noteWindow.docHandler.rehighlightSpellcheck()
+                    bar.noteWindow.currentMisspelledWord = ""
+                })
+            }
+        }
+    }
+
     // Single shared tooltip window for every ToolbarButtonTip above and
     // every column-options button below — see ToolbarButtonTip's own
     // comment for why this exists as a separate window rather than
@@ -1331,8 +2133,25 @@ Window {
         title: "suopNotes-toolbarTooltip"
         flags: Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint
         color: "transparent"
-        width: tooltipBackground.width
-        height: tooltipBackground.height
+
+        // NOT gated on contentVisible anymore (bug found live: a 1px popup
+        // elsewhere in this file that persisted no matter what — see
+        // bar's own width/height comment and spellingSuggestionsPopup's
+        // own, trace-confirmed, for the full story): this window stays
+        // permanently mapped with WindowStaysOnTopHint (see
+        // Component.onCompleted's own comment below), and shrinking it to
+        // 1x1 on every hide, then back to real size on every show — which
+        // for a tooltip that toggles on every hover in/out happens VERY
+        // often — forces a genuine client<->compositor Wayland resize
+        // negotiation each time, with two close together able to race and
+        // leave the window stuck at a stale size. hideTip() below already
+        // calls bar.parkOffscreen(), which alone fully solves the original
+        // "blocks clicks after hiding" problem — a window sitting off
+        // every connected screen can't overlap real content regardless of
+        // its size. Width/height now stay at their real text size
+        // unconditionally; only position changes on hide.
+        width: isFinite(tooltipBackground.width) ? tooltipBackground.width : 40
+        height: isFinite(tooltipBackground.height) ? tooltipBackground.height : 20
 
         property string text: ""
         property bool contentVisible: false
@@ -1346,14 +2165,25 @@ Window {
 
         visible: false
         Component.onCompleted: {
-            // Same throwaway-seed-position reasoning as bar/
-            // columnOptionsPopup's own Component.onCompleted — showTip()
-            // below takes over real positioning the instant any tooltip
-            // is first shown.
-            positionManager.applyPosition("toolbarTooltip", tooltipWindow.title, 100, 100, true)
+            // Seeded at offscreenPoint(), not an on-screen throwaway — same
+            // reasoning as bar's/columnOptionsPopup's own
+            // Component.onCompleted (see bar's own comment for the
+            // "first-ever show flashes at the wrong spot" bug this
+            // avoids). showTip() below takes over real positioning the
+            // instant any tooltip is first shown.
+            const seed = bar.offscreenPoint()
+            positionManager.applyPosition("toolbarTooltip", tooltipWindow.title, seed.x, seed.y, true)
             show()
             hide()
             show()
+
+            // Deliberately NOT calling bar.parkOffscreen() here too — bug
+            // found live: it raced moveWindow's slow, unsynchronized
+            // background thread (see PositionManager::moveWindow) against
+            // this tooltip's very first real show, and losing that race is
+            // exactly what made a tooltip flash into view then get
+            // silently dragged back off-screen moments later. See bar's
+            // own Component.onCompleted comment for the full story.
         }
 
         function showTip(button, tipText) {
@@ -1369,6 +2199,7 @@ Window {
         function hideTip() {
             tooltipWindow.contentVisible = false
             tooltipWindow.activeButton = null
+            bar.parkOffscreen(tooltipWindow)
         }
 
         // color/border mirror the main bar's own background exactly (same

@@ -56,6 +56,16 @@ Window {
     // cursor actually inside a table.
     property bool currentInTable: false
 
+    // Spellcheck tap-to-suggest (feature): populated by the spellcheck
+    // TapHandler below when a tap lands on a flagged word; SelectionToolbar's
+    // own suggestion popup reads these to know what to show/replace. Empty
+    // string means "no misspelled word currently selected via tap" — the
+    // popup hides whenever this is empty.
+    property string currentMisspelledWord: ""
+    property var currentSpellingSuggestions: []
+    property int misspelledWordStart: -1
+    property int misspelledWordEnd: -1
+
     // Re-polls every currentXxx property above from the editor's real
     // selection and the document's own format at that selection. Called
     // whenever either could have changed: the cursor/selection moves (see
@@ -87,6 +97,7 @@ Window {
     readonly property alias checkboxHighlight: checkboxHighlight
     readonly property alias noteAppearance: noteAppearance
     readonly property alias docHandler: docHandler
+    readonly property alias misspelledWordRepeater: misspelledWordRepeater
     readonly property alias scrollIndicator: scrollIndicator
     readonly property alias scrollHandle: scrollHandle
     readonly property alias mainFrame: mainFrame
@@ -422,6 +433,27 @@ Window {
                     contentY = rect.y + rect.height - height
             }
 
+            // Feature request: the spelling-suggestion popup (see
+            // SelectionToolbar.qml's own spellingSuggestionsPopup) is
+            // anchored to one specific word's on-screen rect — if the note
+            // scrolls enough that the flagged word itself scrolls out of
+            // the visible viewport, that anchor no longer points at
+            // anything the user can see, so this clears
+            // currentMisspelledWord (the same property the tap-to-suggest
+            // TapHandler above already uses to close the popup on a normal
+            // click) the moment that happens, rather than leaving the
+            // popup pinned to text that's no longer on screen. Same
+            // content-coordinate comparison ensureCursorVisible above
+            // already uses — no mapping needed, editor sits at (0,0)
+            // inside editorFlick's own content.
+            onContentYChanged: {
+                if (noteWindow.currentMisspelledWord === "")
+                    return
+                const rect = editor.positionToRectangle(noteWindow.misspelledWordStart)
+                if (rect.y + rect.height < contentY || rect.y > contentY + height)
+                    noteWindow.currentMisspelledWord = ""
+            }
+
             // Restores mouse-wheel scrolling now that `interactive` above is
             // false (see its own comment). acceptedButtons: Qt.NoButton
             // means press/release/click all fall straight through to
@@ -560,6 +592,70 @@ Window {
                         }
                     }
 
+                    // Tap-to-suggest (feature request): tapping a misspelled (underlined)
+                    // word selects it and surfaces suggestions via the properties above, which
+                    // SelectionToolbar's own popup displays. Tapping a word that ISN'T
+                    // misspelled (or tapping whitespace/a list marker) just clears any
+                    // previously-shown suggestions — same non-exclusive pattern as the
+                    // checkbox TapHandler above, so normal click-to-place-cursor still works
+                    // unmodified either way.
+                    //
+                    // Checks isWordMisspelledAt() to decide whether to show the popup at all —
+                    // NOT suggestions.length (bug found live: a genuinely misspelled word can
+                    // still have zero suggestions, e.g. it's too garbled for the dictionary to
+                    // find any close match; treating "no suggestions" as "not misspelled" made
+                    // such words silently show no popup on tap, even though they were still
+                    // correctly underlined). The popup still opens in that case — with an empty
+                    // suggestion list, just the "Add to dictionary" action — rather than hiding
+                    // entirely.
+                    TapHandler {
+                        acceptedButtons: Qt.LeftButton
+                        onTapped: (eventPoint) => {
+                            const position = editor.positionAt(eventPoint.position.x, eventPoint.position.y)
+                            if (!docHandler.isWordMisspelledAt(position)) {
+                                noteWindow.currentMisspelledWord = ""
+                                return
+                            }
+                            const word = docHandler.wordAt(position)
+                            editor.select(word.start, word.end)
+                            // currentMisspelledWord is assigned LAST, not
+                            // first — bug found live: SelectionToolbar's
+                            // spellingSuggestionsPopup.wantsVisible depends
+                            // only on currentMisspelledWord, so assigning it
+                            // first used to synchronously trigger that
+                            // popup's reposition-and-show logic immediately,
+                            // while misspelledWordStart/End here still held
+                            // their PREVIOUS value (or -1, on the very first
+                            // tap of a session — hence a live
+                            // "QTextCursor::setPosition: Position '-1' out
+                            // of range" warning) and
+                            // currentSpellingSuggestions still held the
+                            // previous word's list. The popup positioned
+                            // itself from that stale/garbage data — often
+                            // well outside the note's visible area — with
+                            // nothing left afterward to re-trigger a correct
+                            // reposition once the real values landed a few
+                            // lines below, so it flashed briefly at its old
+                            // position and then snapped to the wrong one.
+                            // Setting every dependency first means the
+                            // popup only ever reacts once, with fully
+                            // correct data already in place.
+                            //
+                            // Capped at settings.spellcheckMaxSuggestions
+                            // (feature request: some words return 10+
+                            // candidates, making the popup unwieldy) —
+                            // truncated here, once, rather than in the popup
+                            // itself, so every consumer of
+                            // currentSpellingSuggestions sees the already-
+                            // bounded list.
+                            noteWindow.currentSpellingSuggestions =
+                                docHandler.suggestionsForWordAt(position).slice(0, settings.spellcheckMaxSuggestions)
+                            noteWindow.misspelledWordStart = word.start
+                            noteWindow.misspelledWordEnd = word.end
+                            noteWindow.currentMisspelledWord = word.text
+                        }
+                    }
+
                     // On-hover highlight over the checkbox glyph itself
                     // (feature request: "real checkboxes with on hover
                     // animations") — reuses the same InteractableHighlight
@@ -591,12 +687,190 @@ Window {
                     DocumentHandler {
                         id: docHandler
                         document: editor.textDocument
+                        spellcheckEnabled: settings.spellcheckEnabled
+                        spellcheckLanguage: settings.spellcheckLanguage
+                        userDictionaryWords: settings.userDictionaryWords
+                        // Excludes the word the cursor is currently inside
+                        // from misspelled-word flagging (see DocumentHandler
+                        // ::cursorPosition's own comment) — but only while
+                        // there's no active selection. Bug found live ("the
+                        // current word that has a popup currently loses the
+                        // underline when the popup is on"): tapping a
+                        // misspelled word calls editor.select(word.start,
+                        // word.end) below, which lands editor.cursorPosition
+                        // at the word's own end — indistinguishable, by
+                        // position alone, from someone still mid-typing that
+                        // exact word. -1 (a position no word can ever
+                        // contain) is passed instead whenever a real
+                        // selection is held, so a tapped/selected word keeps
+                        // its underline for as long as its suggestion popup
+                        // stays open, and only a genuine, zero-length caret
+                        // can exclude a word.
+                        cursorPosition: editor.selectionStart === editor.selectionEnd ? editor.cursorPosition : -1
                         // Catches formatting changes that don't move the
                         // selection at all — e.g. clicking Bold on a held
                         // selection (persistentSelection keeps selectionStart/
                         // End exactly where they were) — see
                         // refreshFormatState()'s own comment above.
                         onFormattingChanged: noteWindow.refreshFormatState()
+                        // Keeps misspelledWordOverlay's ListModel in sync
+                        // via targeted updates rather than handing it a
+                        // fresh QVariantList directly — see that model's
+                        // own comment for why (avoids a full underline
+                        // delegate rebuild on every keystroke).
+                        onMisspelledWordRangesChanged: misspelledWordOverlay.syncMisspelledWordsModel()
+                    }
+
+                    // Visual underline overlay for misspelled words (bug
+                    // found live: QtQuick's TextArea does not render
+                    // underline decorations applied via QSyntaxHighlighter::
+                    // setFormat() at all — confirmed empirically via
+                    // grabToImage + pixel inspection: a plain SingleUnderline
+                    // format produced zero colored pixels, with or without
+                    // Text.NativeRendering, while background/foreground color
+                    // from the SAME kind of format rendered correctly. See
+                    // DocumentHandler::misspelledWordRanges' own doc comment.
+                    // A child of `editor` (not a sibling) specifically so it
+                    // shares editor's own local coordinate space — the same
+                    // space editor.positionToRectangle() already returns
+                    // rects in — and therefore scrolls/repositions in
+                    // lockstep with the text automatically, no extra
+                    // scroll-tracking needed. Purely decorative: a plain Item
+                    // has no input handling by default, so it never competes
+                    // with the TapHandler/MouseAreas above for clicks.
+                    Item {
+                        id: misspelledWordOverlay
+                        anchors.fill: parent
+                        z: 1
+
+                        // Bug found live ("every letter typed seems to
+                        // recalculate the spellcheck, causing the underline
+                        // to flicker" — persisted even after excluding the
+                        // in-progress word and adding DocumentHandler's own
+                        // per-block cache): docHandler.misspelledWordRanges
+                        // reports ABSOLUTE document positions, so typing or
+                        // deleting anywhere before a misspelled word
+                        // genuinely shifts that word's own start/end by the
+                        // edit's size — correct, not a bug, and true for
+                        // EVERY misspelled word after the edit point, not
+                        // just the one being typed. Feeding that plain
+                        // QVariantList straight to a Repeater's `model` used
+                        // to mean a single keystroke near the top of a note
+                        // with several typos further down destroyed and
+                        // recreated ALL of their underline delegates at
+                        // once, every keystroke — visible as the whole
+                        // note's underlines flickering, not just the word
+                        // under the cursor. A ListModel kept in sync via
+                        // targeted set()/append()/remove() calls (see
+                        // syncMisspelledWordsModel() below) instead lets the
+                        // Repeater reuse each delegate whose entry merely
+                        // shifted position: only its bound start/end
+                        // properties change, so its Canvas node persists and
+                        // simply repositions, with nothing torn down.
+                        ListModel {
+                            id: misspelledWordsModel
+                        }
+
+                        // Diffs docHandler.misspelledWordRanges against the
+                        // model's current contents by index (misspelled
+                        // words don't reorder relative to each other, so
+                        // index-based matching is exactly right for a pure
+                        // shift; the rare case of a word being newly
+                        // inserted or removed from the middle of the list
+                        // just means everything after that point gets a
+                        // set() too, which is still a plain property update,
+                        // never a destroy/recreate).
+                        function syncMisspelledWordsModel() {
+                            const ranges = docHandler.misspelledWordRanges
+                            const n = Math.min(misspelledWordsModel.count, ranges.length)
+                            for (let i = 0; i < n; i++) {
+                                const existing = misspelledWordsModel.get(i)
+                                if (existing.start !== ranges[i].start || existing.end !== ranges[i].end)
+                                    misspelledWordsModel.set(i, ranges[i])
+                            }
+                            while (misspelledWordsModel.count < ranges.length)
+                                misspelledWordsModel.append(ranges[misspelledWordsModel.count])
+                            while (misspelledWordsModel.count > ranges.length)
+                                misspelledWordsModel.remove(misspelledWordsModel.count - 1)
+                        }
+
+                        Repeater {
+                            id: misspelledWordRepeater
+                            model: misspelledWordsModel
+
+                            delegate: Canvas {
+                                id: underlineCanvas
+                                required property int start
+                                required property int end
+
+                                // Feature request: a solid, straight,
+                                // configurable underline replacing the
+                                // previous fixed wavy red squiggle. Mirrored
+                                // into plain properties (rather than reading
+                                // settings.* directly inside onPaint) purely
+                                // so their own onChanged handlers can force
+                                // a repaint — Canvas only repaints reactively
+                                // when something IT explicitly triggers
+                                // (onWordRectChanged below) changes; a
+                                // Settings change on its own wouldn't
+                                // otherwise be noticed.
+                                property color underlineColor: settings.spellcheckUnderlineColor
+                                property real underlineWidth: settings.spellcheckUnderlineWidth
+                                onUnderlineColorChanged: requestPaint()
+                                onUnderlineWidthChanged: requestPaint()
+
+                                // Explicitly reads editor.width (not just
+                                // start/end) so a window resize — which
+                                // rewraps text and shifts word positions
+                                // within editor's local space without
+                                // changing misspelledWordRanges itself —
+                                // still forces a recompute.
+                                property rect wordRect: {
+                                    void editor.width
+                                    if (!editor.ready)
+                                        return Qt.rect(0, 0, 0, 0)
+                                    const startRect = editor.positionToRectangle(start)
+                                    const endRect = editor.positionToRectangle(end)
+                                    // Multi-line misspelled words shouldn't
+                                    // happen in practice (words don't wrap
+                                    // mid-word) — if one somehow does, skip
+                                    // drawing it rather than draw a garbled
+                                    // cross-line shape.
+                                    if (startRect.y !== endRect.y)
+                                        return Qt.rect(0, 0, 0, 0)
+                                    return Qt.rect(startRect.x, startRect.y,
+                                                    Math.max(1, endRect.x - startRect.x), startRect.height)
+                                }
+
+                                x: wordRect.x
+                                y: wordRect.y
+                                width: wordRect.width
+                                height: wordRect.height
+                                visible: width > 1 && height > 0
+
+                                onWordRectChanged: requestPaint()
+                                onPaint: {
+                                    const ctx = getContext("2d")
+                                    ctx.reset()
+                                    if (width <= 1 || height <= 0)
+                                        return
+                                    ctx.strokeStyle = underlineColor
+                                    ctx.lineWidth = underlineWidth
+                                    ctx.beginPath()
+                                    // lineWidth / 2 keeps the stroke's own
+                                    // rendered pixels inside the delegate's
+                                    // bounds rather than being centered
+                                    // right on its bottom edge and half
+                                    // clipped — matters more now that the
+                                    // width is user-configurable (up to 8px)
+                                    // instead of a fixed ~1px hairline.
+                                    const baseline = height - underlineWidth / 2
+                                    ctx.moveTo(0, baseline)
+                                    ctx.lineTo(width, baseline)
+                                    ctx.stroke()
+                                }
+                            }
+                        }
                     }
 
                     Component.onCompleted: {
@@ -622,12 +896,43 @@ Window {
                     onSelectionStartChanged: noteWindow.refreshFormatState()
                     onSelectionEndChanged: noteWindow.refreshFormatState()
 
+                    // Guards onTextChanged below against no-op re-fires — see
+                    // that handler's own comment for why this exists (bug
+                    // found live: SpellCheckHighlighter's setFormat() calls
+                    // during a rehighlight pass, e.g. right after
+                    // editor.select() from the tap-to-suggest TapHandler
+                    // above, spuriously re-trigger TextArea's own
+                    // onTextChanged even though the actual text value never
+                    // changed — a QtQuick TextArea/MarkdownText quirk, not
+                    // something this app's own code does deliberately).
+                    property string _lastKnownText: ""
+
                     // Debounced + atomic on NoteStore's side (~300ms after the
                     // last keystroke) — instant-feeling without a disk write per
                     // keystroke.
                     onTextChanged: {
                         if (!ready)
                             return
+                        // Bug found live: this handler used to run
+                        // unconditionally on every onTextChanged notification,
+                        // but SpellCheckHighlighter's own formatting passes
+                        // (setFormat() on misspelled words) spuriously
+                        // re-trigger this signal with the text value totally
+                        // unchanged — e.g. right after the tap-to-suggest
+                        // TapHandler calls editor.select(), a rehighlight pass
+                        // fires, re-triggers onTextChanged, and immediately
+                        // clears currentMisspelledWord again, closing the
+                        // suggestion popup the instant it opened. It also
+                        // meant every highlighter pass queued a redundant
+                        // noteStore.saveNoteContent() disk write. Comparing
+                        // against the last known real text value filters out
+                        // these no-op re-fires while still catching every
+                        // genuine edit (a real edit always changes the text).
+                        if (text === _lastKnownText)
+                            return
+                        _lastKnownText = text
+
+                        noteWindow.currentMisspelledWord = ""
                         // Auto-list shorthand (feature request): typing
                         // "- "/"* "/"1. " at the start of an otherwise-plain
                         // line converts it into a real list, consuming the

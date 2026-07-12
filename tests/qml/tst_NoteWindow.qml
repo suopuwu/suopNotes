@@ -1725,5 +1725,590 @@ Item {
             verify(md.indexOf("Header 1") === -1, "the table should be gone")
             verify(md.indexOf("intro") !== -1, "surrounding text should survive")
         }
+
+        // docHandler.spellcheckEnabled is bound live to settings.spellcheckEnabled
+        // (NoteWindow.qml's DocumentHandler block: "spellcheckEnabled:
+        // settings.spellcheckEnabled") — toggling the global setting should
+        // be reflected on the per-note document handler without any other
+        // action. This is a genuine, dictionary-independent assertion about
+        // the binding itself, unlike the tap-to-suggest tests below.
+        function test_docHandler_spellcheckEnabled_tracks_the_global_setting() {
+            const win = instantiator.objectAt(0)
+            const original = settings.spellcheckEnabled
+
+            settings.spellcheckEnabled = !original
+            compare(win.docHandler.spellcheckEnabled, !original,
+                    "docHandler.spellcheckEnabled should follow settings.spellcheckEnabled")
+
+            settings.spellcheckEnabled = original
+            compare(win.docHandler.spellcheckEnabled, original,
+                    "docHandler.spellcheckEnabled should follow settings.spellcheckEnabled back")
+        }
+
+        function test_docHandler_spellcheckLanguage_and_userDictionaryWords_track_the_global_settings() {
+            const win = instantiator.objectAt(0)
+            const originalLanguage = settings.spellcheckLanguage
+
+            settings.spellcheckLanguage = "en_GB"
+            compare(win.docHandler.spellcheckLanguage, "en_GB",
+                    "docHandler.spellcheckLanguage should follow settings.spellcheckLanguage")
+
+            settings.spellcheckLanguage = originalLanguage
+            compare(win.docHandler.spellcheckLanguage, originalLanguage,
+                    "docHandler.spellcheckLanguage should follow settings.spellcheckLanguage back")
+
+            verify(!settings.userDictionaryWords.includes("testword12345"),
+                   "precondition: testword12345 should not already be in the user dictionary")
+
+            settings.addUserDictionaryWord("testword12345")
+            verify(win.docHandler.userDictionaryWords.includes("testword12345"),
+                   "docHandler.userDictionaryWords should follow settings.userDictionaryWords after adding a word")
+
+            settings.removeUserDictionaryWord("testword12345")
+            verify(!settings.userDictionaryWords.includes("testword12345"),
+                   "settings.userDictionaryWords should no longer contain testword12345 after removing it")
+            verify(!win.docHandler.userDictionaryWords.includes("testword12345"),
+                   "docHandler.userDictionaryWords should follow settings.userDictionaryWords after removing a word")
+        }
+
+        // Tap-to-suggest (feature request): tapping a misspelled word should
+        // populate noteWindow.currentMisspelledWord/currentSpellingSuggestions/
+        // misspelledWordStart/misspelledWordEnd, which SelectionToolbar's own
+        // popup then reads. Tapping ordinary correctly-spelled text must leave
+        // them empty. This dev/CI machine now has a REAL working dictionary
+        // (Phase 2's bundled en_US fallback, fetched at CMake configure time),
+        // so both the negative and positive cases can be genuinely exercised
+        // end-to-end through the real TapHandler + DocumentHandler + backend
+        // chain, via real mouseClicks — not just direct invokable calls.
+        function test_tapping_ordinary_text_does_not_populate_suggestion_properties() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+
+            // Starts empty/default before any tap has happened.
+            compare(win.currentMisspelledWord, "", "no word should be selected via tap yet")
+            compare(win.currentSpellingSuggestions.length, 0, "no suggestions should be pending yet")
+            compare(win.misspelledWordStart, -1)
+            compare(win.misspelledWordEnd, -1)
+
+            win.docHandler.setMarkdown("hello world\n")
+            wait(50)
+
+            const rect = editor.positionToRectangle(2)
+            mouseClick(editor, rect.x, rect.y + rect.height / 2, Qt.LeftButton)
+
+            compare(win.currentMisspelledWord, "",
+                    "tapping correctly-spelled text must not populate a suggestion")
+            compare(win.currentSpellingSuggestions.length, 0)
+        }
+
+        function test_tapping_a_misspelled_word_selects_it_and_populates_suggestion_properties() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+
+            win.docHandler.setMarkdown("teh normal\n")
+            wait(50)
+
+            // Tap into the middle of "teh" (position 1). try/finally so a
+            // failed assertion still resets this shared window's state for
+            // later tests (see test_editing_the_document_clears_any_pending_
+            // spelling_suggestion's own comment for why that matters here).
+            try {
+                const rect = editor.positionToRectangle(1)
+                mouseClick(editor, rect.x, rect.y + rect.height / 2, Qt.LeftButton)
+
+                compare(win.currentMisspelledWord, "teh", "tapping a real misspelled word must select it")
+                verify(win.currentSpellingSuggestions.indexOf("the") !== -1,
+                       "\"the\" should be among the surfaced suggestions, got: " + JSON.stringify(win.currentSpellingSuggestions))
+                // These two (not the editor's own live selection highlight,
+                // see below) are what actually drives the popup: its position
+                // (positionToRectangle(misspelledWordStart)) and its replace
+                // action (replaceRange(misspelledWordStart, misspelledWordEnd,
+                // ...)) both read these tracked offsets, not editor.selectedText.
+                compare(win.misspelledWordStart, 0)
+                compare(win.misspelledWordEnd, 3)
+                // NOT asserted: editor.selectedText staying "teh" after the
+                // click. editor.select(word.start, word.end) inside the
+                // TapHandler does set it momentarily, but TextArea's own
+                // default click-to-place-cursor handling for the SAME click
+                // collapses it back to a plain cursor position immediately
+                // after — a real, observed ordering quirk between the two
+                // handlers sharing one click, but a cosmetic one: it doesn't
+                // affect the popup's position or replace action above, which
+                // is why it isn't asserted here.
+            } finally {
+                win.currentMisspelledWord = ""
+                win.currentSpellingSuggestions = []
+                win.misspelledWordStart = -1
+                win.misspelledWordEnd = -1
+            }
+        }
+
+        // Feature request: the spelling-suggestion popup is anchored to
+        // one specific word's on-screen rect (see SelectionToolbar.qml's
+        // own repositionSpellingSuggestionsPopup) — scrolling the note
+        // enough that the flagged word itself scrolls out of the visible
+        // viewport leaves that anchor pointing at text the user can no
+        // longer see, so currentMisspelledWord should clear itself (same
+        // property a normal click already uses to close the popup)
+        // instead of leaving the popup pinned there.
+        function test_scrolling_the_flagged_word_out_of_view_clears_the_misspelled_word() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+
+            // "teh" at the very top, then enough filler lines below to
+            // make the note's own content genuinely taller than its
+            // fixture noteHeight (260px), so there's real scroll range.
+            let markdown = "teh normal\n"
+            for (let i = 0; i < 40; i++)
+                markdown += "filler line " + i + "\n"
+            win.docHandler.setMarkdown(markdown)
+            // Reset defensively, not just in the finally block below: a
+            // prior test in this shared window could have left contentY
+            // non-zero, which would scroll "teh" itself out of view before
+            // this test ever taps it.
+            win.editorFlick.contentY = 0
+            // Longer than the other tap-to-suggest tests' own wait(50):
+            // the spellcheck highlighter's first pass takes longer over
+            // this much more text, and isWordMisspelledAt() (which the
+            // TapHandler checks) needs that pass to have actually reached
+            // "teh" already.
+            wait(200)
+
+            try {
+                const rect = editor.positionToRectangle(1)
+                mouseClick(editor, rect.x, rect.y + rect.height / 2, Qt.LeftButton)
+                compare(win.currentMisspelledWord, "teh", "precondition: tapping the word flags it")
+
+                const scrollRange = win.editorFlick.contentHeight - win.editorFlick.height
+                verify(scrollRange > 0, "precondition: the filler content is tall enough to actually scroll")
+                win.editorFlick.contentY = scrollRange
+
+                compare(win.currentMisspelledWord, "",
+                        "scrolling the flagged word out of view should clear currentMisspelledWord")
+            } finally {
+                win.editorFlick.contentY = 0
+                win.currentMisspelledWord = ""
+                win.currentSpellingSuggestions = []
+                win.misspelledWordStart = -1
+                win.misspelledWordEnd = -1
+                win.docHandler.setMarkdown("")
+                wait(50)
+            }
+        }
+
+        // Bug found live: SelectionToolbar's spellingSuggestionsPopup.
+        // wantsVisible depends only on currentMisspelledWord, so the
+        // TapHandler above used to assign it FIRST — synchronously firing
+        // that popup's reposition-and-show logic immediately, while
+        // misspelledWordStart/End and currentSpellingSuggestions still held
+        // stale values (or -1, on the very first tap of a session, which
+        // also logged a live "QTextCursor::setPosition: Position '-1' out
+        // of range" warning). The popup positioned itself from that
+        // garbage data — often well outside the note's visible area — with
+        // nothing left afterward to correct it once the real values landed
+        // a few lines later, so it flashed briefly then immediately
+        // "disappeared" to the wrong spot. currentMisspelledWord is now
+        // assigned LAST specifically so every property a listener might
+        // read alongside it is already correct by the time its own change
+        // notification fires — verified directly here, not just via the
+        // end state the test above already covers.
+        function test_currentMisspelledWord_changes_last_after_its_own_dependencies_are_already_set() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+
+            win.docHandler.setMarkdown("teh normal\n")
+            wait(50)
+
+            let capturedStart = null
+            let capturedEnd = null
+            let capturedSuggestions = null
+            const onChanged = () => {
+                capturedStart = win.misspelledWordStart
+                capturedEnd = win.misspelledWordEnd
+                capturedSuggestions = win.currentSpellingSuggestions
+            }
+            win.currentMisspelledWordChanged.connect(onChanged)
+
+            try {
+                const rect = editor.positionToRectangle(1)
+                mouseClick(editor, rect.x, rect.y + rect.height / 2, Qt.LeftButton)
+
+                compare(capturedStart, 0,
+                        "misspelledWordStart must already be correct by the time currentMisspelledWord's own change notification fires")
+                compare(capturedEnd, 3,
+                        "misspelledWordEnd must already be correct by the time currentMisspelledWord's own change notification fires")
+                verify(capturedSuggestions && capturedSuggestions.length > 0,
+                       "currentSpellingSuggestions must already be populated by the time currentMisspelledWord's own change notification fires")
+            } finally {
+                win.currentMisspelledWordChanged.disconnect(onChanged)
+                win.currentMisspelledWord = ""
+                win.currentSpellingSuggestions = []
+                win.misspelledWordStart = -1
+                win.misspelledWordEnd = -1
+            }
+        }
+
+        // Bug found live: the popup was unbounded — "teh" alone returns 10+
+        // real dictionary suggestions, making the popup far taller than
+        // useful. Tapping now truncates to settings.spellcheckMaxSuggestions
+        // (default 3).
+        function test_tapping_a_misspelled_word_truncates_suggestions_to_the_configured_max() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+            const originalMax = settings.spellcheckMaxSuggestions
+
+            try {
+                win.docHandler.setMarkdown("teh normal\n")
+                wait(50)
+                verify(win.docHandler.suggestionsForWordAt(1).length > 3,
+                       "this test only proves anything if the real dictionary returns MORE than 3 raw suggestions for \"teh\", got: "
+                       + JSON.stringify(win.docHandler.suggestionsForWordAt(1)))
+
+                settings.spellcheckMaxSuggestions = 2
+                const rect = editor.positionToRectangle(1)
+                mouseClick(editor, rect.x, rect.y + rect.height / 2, Qt.LeftButton)
+                compare(win.currentSpellingSuggestions.length, 2,
+                        "expected exactly 2 (the configured max), got: " + JSON.stringify(win.currentSpellingSuggestions))
+            } finally {
+                settings.spellcheckMaxSuggestions = originalMax
+                win.currentMisspelledWord = ""
+                win.currentSpellingSuggestions = []
+                win.misspelledWordStart = -1
+                win.misspelledWordEnd = -1
+            }
+        }
+
+        // Defensive clear (feature request): any document edit invalidates a
+        // previously-selected misspelled word's start/end offsets, so
+        // onTextChanged unconditionally dismisses a shown suggestion the
+        // instant the user keeps typing, regardless of whether the edit
+        // actually touched the selected word.
+        function test_editing_the_document_clears_any_pending_spelling_suggestion() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+
+            win.docHandler.setMarkdown("hello world\n")
+            wait(50)
+
+            // Simulate a suggestion already being shown (as tap-to-suggest
+            // would populate it, were a real misspelling flagged) without
+            // depending on a real dictionary to get there. `win` is a
+            // shared, reused window instance (instantiator.objectAt(0)) —
+            // if the activation/focus dance below hits this sandbox's known
+            // pre-existing window-activation flakiness (see other
+            // tryCompare(..., "active", true) failures throughout this
+            // file) and aborts the test early, these fields must still be
+            // reset so the dirtied state doesn't leak into later tests that
+            // also use objectAt(0) (e.g. the tapping test above expects
+            // these to start empty). try/finally guarantees the reset runs
+            // either way.
+            win.currentMisspelledWord = "hello"
+            win.currentSpellingSuggestions = ["hullo", "hallo"]
+            win.misspelledWordStart = 0
+            win.misspelledWordEnd = 5
+
+            try {
+                editor.cursorPosition = editor.length
+                win.requestActivate()
+                tryCompare(win, "active", true)
+                editor.forceActiveFocus()
+                tryCompare(editor, "activeFocus", true)
+                typeText("!")
+
+                compare(win.currentMisspelledWord, "",
+                        "any text edit should dismiss a previously-shown suggestion")
+            } finally {
+                win.currentMisspelledWord = ""
+                win.currentSpellingSuggestions = []
+                win.misspelledWordStart = -1
+                win.misspelledWordEnd = -1
+            }
+        }
+
+        // Bug found live (2026-07-11): a genuinely misspelled word that
+        // happens to have zero suggestions (too garbled for the dictionary
+        // to find any close match) was indistinguishable from a correctly-
+        // spelled word to the old suggestionsForWordAt()-only check in
+        // NoteWindow.qml's TapHandler, so tapping it silently showed no
+        // popup at all even though the word was still correctly
+        // wavy-underlined. Fixed by adding DocumentHandler::
+        // isWordMisspelledAt() and having the TapHandler check that instead
+        // of suggestions.length. This dev environment now has a REAL working
+        // spellcheck dictionary (the Phase 2 bundled en_US fallback, fetched
+        // at CMake configure time), so this test uses genuine words rather
+        // than a fake backend.
+        function test_a_misspelled_word_with_no_suggestions_still_reports_misspelled() {
+            const win = instantiator.objectAt(0)
+            win.docHandler.setMarkdown("thisisdefinitelymisspelledxyz normal\n")
+            wait(50)
+
+            verify(win.docHandler.isWordMisspelledAt(5),
+                   "a garbled non-word must be reported as misspelled")
+            compare(win.docHandler.suggestionsForWordAt(5).length, 0,
+                    "this specific garbled word is expected to have zero real suggestions")
+        }
+
+        function test_a_misspelled_word_with_real_suggestions_reports_them() {
+            const win = instantiator.objectAt(0)
+            win.docHandler.setMarkdown("teh normal\n")
+            wait(50)
+
+            verify(win.docHandler.isWordMisspelledAt(1), "\"teh\" must be reported as misspelled")
+            const suggestions = win.docHandler.suggestionsForWordAt(1)
+            verify(suggestions.indexOf("the") !== -1,
+                   "\"the\" should be among the real dictionary's suggestions for \"teh\", got: " + JSON.stringify(suggestions))
+        }
+
+        function test_a_correctly_spelled_word_is_not_misspelled() {
+            const win = instantiator.objectAt(0)
+            win.docHandler.setMarkdown("hello world\n")
+            wait(50)
+
+            verify(!win.docHandler.isWordMisspelledAt(1), "\"hello\" must not be reported as misspelled")
+            compare(win.docHandler.suggestionsForWordAt(1).length, 0)
+        }
+
+        // Bug found live ("with the specific string 'x selected', selecting
+        // the right side of the letter x doesn't trigger the spellchecker"):
+        // NoteWindow.qml's tap-to-suggest TapHandler resolves a click to a
+        // cursor position via editor.positionAt(), which for a click on the
+        // RIGHT half of a glyph lands on the position immediately AFTER
+        // that character. For a one-character word like "x" (range [0, 1)),
+        // that's position 1 — DocumentHandler::wordAt() used to require
+        // `position < end` (strictly less than), so position 1 fell just
+        // outside its own word's range and wordAt() found nothing at all.
+        // Reproduced here with "teh" instead of a bare single letter — this
+        // dev/CI machine's bundled dictionary (see makeSpellCheckerBackend's
+        // own comment on the Sonnet/Hunspell fallback) lists every single
+        // letter as a valid word on its own (grep the fetched .dic file:
+        // "x" is a real, unabbreviated entry), so it wouldn't actually
+        // reproduce the live report here — but the underlying boundary
+        // condition is identical: "teh"'s own right edge is position 3
+        // (immediately after its last letter), the exact same kind of
+        // dead zone every word has at the right half of its LAST
+        // character; a one-letter word just means the dead zone covers
+        // half of the entire word instead of a sliver of its last letter,
+        // which is why that specific case is what got noticed live.
+        function test_isWordMisspelledAt_detects_a_misspelled_word_at_its_own_right_edge() {
+            const win = instantiator.objectAt(0)
+            win.docHandler.setMarkdown("teh normal\n")
+            wait(50)
+
+            try {
+                verify(win.docHandler.isWordMisspelledAt(0),
+                       "\"teh\" must be reported as misspelled at its own start position")
+                verify(win.docHandler.isWordMisspelledAt(3),
+                       "\"teh\" must ALSO be reported as misspelled at position 3 (its own right edge, immediately " +
+                       "after the last letter) — this is exactly where a click on the right half of a word's " +
+                       "LAST character resolves to via editor.positionAt()")
+                compare(win.docHandler.wordAt(3).text, "teh",
+                        "wordAt(3) should still resolve to \"teh\" itself, not fail to find any word there")
+            } finally {
+                win.docHandler.setMarkdown("")
+                wait(50)
+            }
+        }
+
+        // The visible red wavy underline itself is drawn by NoteWindow.qml's
+        // misspelledWordOverlay (a Canvas-based decorative layer), not by
+        // SpellCheckHighlighter's QTextCharFormat (QtQuick's TextArea does
+        // not render underline decorations from highlighter-applied formats
+        // at all — verified empirically via grabToImage + pixel inspection
+        // during implementation, see DocumentHandler::misspelledWordRanges'
+        // doc comment). What's verifiable here at the data level is that
+        // misspelledWordRanges reports exactly the misspelled word's range —
+        // the overlay's own Canvas painting isn't something worth asserting
+        // pixel-for-pixel in an automated test (fragile, and this codebase
+        // has no precedent for pixel-comparison tests elsewhere).
+        function test_misspelledWordRanges_reports_exactly_the_misspelled_words_range() {
+            const win = instantiator.objectAt(0)
+            win.docHandler.setMarkdown("teh normal\n")
+            wait(50)
+
+            const ranges = win.docHandler.misspelledWordRanges
+            compare(ranges.length, 1, "only \"teh\" should be flagged, not \"normal\": " + JSON.stringify(ranges))
+            compare(ranges[0].start, 0)
+            compare(ranges[0].end, 3)
+        }
+
+        // Bug found live ("spellcheck checks as you type, including the
+        // word you're working on... partial in-progress words are flagged
+        // as misspelled"): a word still being typed is, by definition, an
+        // incomplete token — flagging it mid-keystroke made the underline
+        // flicker on and off with every letter. docHandler.cursorPosition
+        // (bound from editor.cursorPosition in NoteWindow.qml) excludes
+        // whatever word the cursor currently sits inside from
+        // misspelledWordRanges, then re-includes it the moment the cursor
+        // moves elsewhere.
+        function test_misspelledWordRanges_excludes_the_word_the_cursor_is_currently_inside() {
+            const win = instantiator.objectAt(0)
+            win.docHandler.setMarkdown("teh normal\n")
+            wait(50)
+
+            try {
+                win.editor.cursorPosition = 2 // inside "teh" (range [0, 3))
+                compare(win.docHandler.misspelledWordRanges.length, 0,
+                        "the word the cursor is sitting inside should not be flagged while it's still being edited")
+
+                win.editor.cursorPosition = 10 // past "normal", away from "teh"
+                const ranges = win.docHandler.misspelledWordRanges
+                compare(ranges.length, 1,
+                        "moving the cursor away from \"teh\" should re-flag it: " + JSON.stringify(ranges))
+                compare(ranges[0].start, 0)
+                compare(ranges[0].end, 3)
+            } finally {
+                win.docHandler.setMarkdown("")
+                wait(50)
+            }
+        }
+
+        // Bug found live ("the current word that has a popup currently
+        // loses the underline when the popup is on. It shouldn't"): tapping
+        // a misspelled word calls editor.select(word.start, word.end),
+        // which — same as mid-typing — lands editor.cursorPosition at the
+        // word's own end. Without distinguishing "cursor there because of a
+        // held selection" from "cursor there because it's still being
+        // typed", the exact cursor-in-word exclusion the test above relies
+        // on would ALSO hide a word's underline for as long as its
+        // suggestion popup stayed open. NoteWindow.qml only forwards a real
+        // cursor position to docHandler when there's no selection
+        // (editor.selectionStart === editor.selectionEnd); with one held,
+        // -1 is forwarded instead, so this exclusion never applies to a
+        // selected word.
+        function test_misspelledWordRanges_still_includes_a_selected_word_even_though_the_cursor_sits_at_its_end() {
+            const win = instantiator.objectAt(0)
+            win.docHandler.setMarkdown("teh normal\n")
+            wait(50)
+
+            try {
+                win.editor.select(0, 3) // selects "teh"
+                compare(win.editor.cursorPosition, 3,
+                        "precondition: a forward selection should land the cursor at its own end")
+
+                const ranges = win.docHandler.misspelledWordRanges
+                compare(ranges.length, 1,
+                        "\"teh\" should stay flagged while it's selected (i.e. while its suggestion popup is " +
+                        "open), not be excluded the same way an in-progress word would be: " + JSON.stringify(ranges))
+                compare(ranges[0].start, 0)
+                compare(ranges[0].end, 3)
+            } finally {
+                win.editor.select(0, 0)
+                win.docHandler.setMarkdown("")
+                wait(50)
+            }
+        }
+
+        // Guards the per-block cache DocumentHandler::computeMisspelledWordRanges()
+        // now keeps (bug found live: "every letter typed seems to
+        // recalculate the spellcheck... performance intensive" — fixed by
+        // only re-running isMisspelled() against a block whose own TEXT
+        // actually changed, via QTextBlock::revision()). Adding a word to
+        // the user dictionary changes what isMisspelled() answers WITHOUT
+        // touching the block's text at all, so its revision never moves —
+        // this exercises the separate, explicit cache-invalidation path
+        // (DocumentHandler::invalidateAllMisspelledBlockCaches(), called
+        // from rehighlightSpellcheck()) that has to catch exactly this case.
+        function test_misspelledWordRanges_recomputes_after_a_word_is_added_to_the_user_dictionary() {
+            const win = instantiator.objectAt(0)
+            win.docHandler.setMarkdown("someuniquetestword normal\n")
+            wait(50)
+
+            try {
+                let ranges = win.docHandler.misspelledWordRanges
+                compare(ranges.length, 1,
+                        "precondition: the made-up word should be flagged misspelled: " + JSON.stringify(ranges))
+
+                settings.addUserDictionaryWord("someuniquetestword")
+                win.docHandler.rehighlightSpellcheck()
+
+                ranges = win.docHandler.misspelledWordRanges
+                compare(ranges.length, 0,
+                        "adding the word to the user dictionary and rehighlighting should immediately clear its " +
+                        "flagged range, even though the block's own text never changed: " + JSON.stringify(ranges))
+            } finally {
+                settings.removeUserDictionaryWord("someuniquetestword")
+                win.docHandler.setMarkdown("")
+                wait(50)
+            }
+        }
+
+        // Bug found live ("every letter typed seems to recalculate the
+        // spellcheck, causing the underline to flicker" — reported again
+        // even after excluding the in-progress word and caching per-block
+        // dictionary lookups): docHandler.misspelledWordRanges reports
+        // ABSOLUTE document positions, so editing anywhere before a
+        // misspelled word genuinely shifts that word's own start/end —
+        // correct, and true for every misspelled word after the edit
+        // point, not just the one being typed. The underline overlay used
+        // to feed that plain list straight to a Repeater's `model`, which
+        // destroys and recreates EVERY delegate on any change at all —
+        // so one keystroke near the top of a note with several typos
+        // further down tore down and rebuilt all of their underlines at
+        // once. misspelledWordOverlay now syncs a ListModel via targeted
+        // set()/append()/remove() calls instead, so a delegate whose entry
+        // only shifted position gets its properties updated in place and
+        // is never destroyed — verified here directly via Repeater.itemAt()
+        // returning the SAME object across the edit.
+        function test_editing_earlier_text_shifts_underline_delegates_without_recreating_them() {
+            const win = instantiator.objectAt(0)
+            win.docHandler.setMarkdown("teh two normal words thisisdefinitelymisspelledxyz\n")
+            wait(50)
+            // setMarkdown() leaves editor.cursorPosition at the very end of
+            // the freshly-inserted text (see NoteWindow.qml's own
+            // Component.onCompleted comment on this exact Qt cursor
+            // behavior) — which happens to sit right on top of the LAST
+            // flagged word here, spuriously excluding it via
+            // cursorPosition's own cursor-in-word check. Real NoteWindow
+            // instances always reset cursorPosition back to 0 immediately
+            // after their own (one and only) setMarkdown() call for this
+            // reason; parking it inside "two" (a real, correctly-spelled
+            // word, safely away from both flagged words) here reproduces
+            // that same safety for a direct setMarkdown() call in a test.
+            win.editor.cursorPosition = 6
+
+            try {
+                // Deep-copied, not a plain reference assignment: QML's
+                // QVariantList-to-JS conversion for this property returned
+                // a live view rather than a frozen snapshot in practice
+                // (confirmed live: reading rangesBefore's own contents
+                // AFTER the edit below showed the post-edit values) — this
+                // captures the actual pre-edit values for later comparison.
+                const rangesBefore = JSON.parse(JSON.stringify(win.docHandler.misspelledWordRanges))
+                compare(rangesBefore.length, 2,
+                        "precondition: \"teh\" and the garbled word should both be flagged, not the real words " +
+                        "between them: " + JSON.stringify(rangesBefore))
+
+                tryCompare(win.misspelledWordRepeater, "count", 2)
+                const secondDelegateBefore = win.misspelledWordRepeater.itemAt(1)
+                verify(secondDelegateBefore, "precondition: the second flagged word has its own delegate")
+
+                // Inserting a character at the very start of the document
+                // shifts every misspelled word's absolute start/end after
+                // it — including the garbled word's — without changing how
+                // many misspelled words there are. Cursor is parked back
+                // in "two" again afterward for the same reason as above —
+                // insert() moves it to just past the inserted text, which
+                // would otherwise sit right at "Xteh"'s own start.
+                win.editor.insert(0, "X")
+                win.editor.cursorPosition = 7
+                wait(50)
+
+                const rangesAfter = win.docHandler.misspelledWordRanges
+                compare(rangesAfter.length, 2,
+                        "the count of misspelled words should be unchanged by a shift-only edit: " +
+                        JSON.stringify(rangesAfter))
+                verify(rangesAfter[1].start > rangesBefore[1].start,
+                       "precondition: the second word's own absolute position should have genuinely shifted")
+
+                compare(win.misspelledWordRepeater.count, 2,
+                        "the delegate count should stay the same after a shift-only edit")
+                compare(win.misspelledWordRepeater.itemAt(1), secondDelegateBefore,
+                        "the delegate for the second word should be REUSED (its properties updated in place), " +
+                        "not destroyed and recreated, since only its position changed")
+            } finally {
+                win.docHandler.setMarkdown("")
+                wait(50)
+            }
+        }
     }
 }

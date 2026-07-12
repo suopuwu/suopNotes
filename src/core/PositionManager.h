@@ -43,6 +43,16 @@ public:
     bool suppressCleanupOnQuit() const;
     void setSuppressCleanupOnQuit(bool suppress);
 
+signals:
+    // Emitted once moveWindow()'s background thread has actually finished
+    // running the KWin script — lets a QML caller wait for a specific move
+    // to really land (e.g. before revealing a freshly-repositioned popup)
+    // instead of guessing at a fixed delay. Fires exactly once per
+    // moveWindow() call, in COMPLETION order, which is not necessarily the
+    // same as call order (see moveWindow's own comment: each call is an
+    // independent, unsynchronized background thread).
+    void windowMoved(const QString &windowTitle);
+
 private:
     bool m_suppressCleanupOnQuit = false;
 };

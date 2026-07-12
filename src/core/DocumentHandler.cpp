@@ -1,5 +1,7 @@
 #include "DocumentHandler.h"
 #include "MarkdownSerialization.h"
+#include "SpellCheckHighlighter.h"
+#include "SpellChecker.h"
 #include "TextFormatting.h"
 
 #include <QAbstractTextDocumentLayout>
@@ -60,12 +62,48 @@ private:
     // this cursor exists purely to call them, never to edit through.
     QTextCursor m_editBlockCursor;
 };
+
+// Per-block cache backing computeMisspelledWordRanges() (bug found live:
+// "every letter typed seems to recalculate the spellcheck... performance
+// intensive"). Without this, every keystroke re-ran isMisspelled() against
+// EVERY word in the ENTIRE document, not just the block that actually
+// changed — fine for a short note, wasteful (and, per that report, visibly
+// costly) for a long one. Attached to each QTextBlock via setUserData(),
+// which is exactly what block-level caches like this are for (Qt deletes it
+// automatically when the block itself is removed/merged away).
+//
+// block.revision() (confirmed empirically, not just assumed: see the
+// verification this comment refers to in the PR/commit history) only
+// increments when a block's own TEXT actually changes — not on
+// formatting-only operations (e.g. QSyntaxHighlighter::setFormat) — so
+// comparing it against the revision cached here is a reliable, cheap
+// (single int compare) way to know "has this specific block's text changed
+// since I last checked its words against the dictionary" without needing to
+// track edit positions/deltas ourselves.
+class MisspelledBlockCache : public QTextBlockUserData
+{
+public:
+    int revision = -1;
+    // Word ranges (relative to the block's own start) that are genuinely
+    // misspelled — a subset of SpellCheckHighlighter::wordRangesInBlock's
+    // full token list, already filtered through isMisspelled() so rebuilding
+    // the absolute-position result list below is just pointer/int
+    // arithmetic, no further dictionary lookups.
+    QList<QPair<int, int>> misspelledRanges;
+};
 }
 
 DocumentHandler::DocumentHandler(QObject *parent)
     : QObject(parent)
 {
+    m_spellCheckerBackend = std::make_unique<UserDictionaryFilteringBackend>(makeSpellCheckerBackend(QString()));
 }
+
+// Defined here (not defaulted inline in the header) because
+// std::unique_ptr<SpellCheckerBackend>/<SpellCheckHighlighter> only need
+// complete types at the point the destructor's generated code actually runs
+// — which is here, where both real headers are included.
+DocumentHandler::~DocumentHandler() = default;
 
 QQuickTextDocument *DocumentHandler::document() const
 {
@@ -78,6 +116,299 @@ void DocumentHandler::setDocument(QQuickTextDocument *document)
         return;
     m_document = document;
     emit documentChanged();
+
+    if (document && document->textDocument()) {
+        m_highlighter = std::make_unique<SpellCheckHighlighter>(document->textDocument(), m_spellCheckerBackend.get());
+        m_highlighter->setActive(m_spellcheckEnabled);
+        // Real text edits are the one trigger for misspelledWordRangesChanged
+        // that isn't already covered by an explicit setter/invokable below —
+        // connect once per document so the underline overlay knows to
+        // recompute after every edit, not just after settings changes. Routed
+        // through the change-detecting helper (not a direct emit) — see its
+        // own comment for why.
+        connect(document->textDocument(), &QTextDocument::contentsChanged, this,
+                &DocumentHandler::emitMisspelledWordRangesChangedIfNeeded);
+    } else {
+        m_highlighter.reset();
+    }
+    m_lastMisspelledWordRanges = computeMisspelledWordRanges();
+    emit misspelledWordRangesChanged();
+}
+
+bool DocumentHandler::spellcheckEnabled() const
+{
+    return m_spellcheckEnabled;
+}
+
+void DocumentHandler::setSpellcheckEnabled(bool enabled)
+{
+    if (m_spellcheckEnabled == enabled)
+        return;
+    m_spellcheckEnabled = enabled;
+    if (m_highlighter)
+        m_highlighter->setActive(enabled);
+    emit spellcheckEnabledChanged();
+    emitMisspelledWordRangesChangedIfNeeded();
+}
+
+QString DocumentHandler::spellcheckLanguage() const
+{
+    return m_spellcheckLanguage;
+}
+
+void DocumentHandler::setSpellcheckLanguage(const QString &language)
+{
+    if (m_spellcheckLanguage == language)
+        return;
+    m_spellcheckLanguage = language;
+    if (m_spellCheckerBackend)
+        m_spellCheckerBackend->setInner(makeSpellCheckerBackend(language));
+    if (m_highlighter)
+        m_highlighter->rehighlight();
+    // The per-block cache in computeMisspelledWordRanges() keys staleness
+    // off block.revision(), which only moves on a real text edit — a
+    // language swap changes what isMisspelled() itself returns for the
+    // SAME unchanged text, so every cached block must be forced to
+    // recompute even though none of them actually changed.
+    invalidateAllMisspelledBlockCaches();
+    emit spellcheckLanguageChanged();
+    emitMisspelledWordRangesChangedIfNeeded();
+}
+
+QStringList DocumentHandler::userDictionaryWords() const
+{
+    return m_userDictionaryWords;
+}
+
+void DocumentHandler::setUserDictionaryWords(const QStringList &words)
+{
+    if (m_userDictionaryWords == words)
+        return;
+    m_userDictionaryWords = words;
+    if (m_spellCheckerBackend)
+        m_spellCheckerBackend->setUserWords(words);
+    if (m_highlighter)
+        m_highlighter->rehighlight();
+    // Same reasoning as setSpellcheckLanguage's own invalidation call above:
+    // adding/removing a personal-dictionary word changes isMisspelled() for
+    // unchanged text.
+    invalidateAllMisspelledBlockCaches();
+    emit userDictionaryWordsChanged();
+    emitMisspelledWordRangesChangedIfNeeded();
+}
+
+int DocumentHandler::cursorPosition() const
+{
+    return m_cursorPosition;
+}
+
+void DocumentHandler::setCursorPosition(int position)
+{
+    if (m_cursorPosition == position)
+        return;
+    m_cursorPosition = position;
+    emit cursorPositionChanged();
+    // A cursor move can change which word is excluded from checking (see
+    // this property's own header comment) without any text actually having
+    // changed — e.g. clicking out of the word just typed, or arrowing into
+    // a different one. Routed through the change-detecting helper so
+    // ordinary cursor movement that doesn't cross into/out of any word
+    // (the common case: moving within already-checked text) doesn't force
+    // a needless Repeater rebuild.
+    emitMisspelledWordRangesChangedIfNeeded();
+}
+
+QVariantList DocumentHandler::misspelledWordRanges() const
+{
+    return computeMisspelledWordRanges();
+}
+
+QVariantList DocumentHandler::computeMisspelledWordRanges() const
+{
+    QVariantList result;
+    if (!m_document || !m_document->textDocument() || !m_spellCheckerBackend || !m_spellCheckerBackend->isValid())
+        return result;
+
+    QTextDocument *doc = m_document->textDocument();
+    for (QTextBlock block = doc->begin(); block.isValid(); block = block.next()) {
+        // Reuses the previous pass's dictionary lookups for this block if
+        // its text hasn't changed since (see MisspelledBlockCache's own
+        // comment) — only blocks actually touched by the most recent edit
+        // ever call isMisspelled() again. A cache miss (nullptr, or a stale
+        // revision) means this exact block's own words, not the whole
+        // document.
+        auto *cache = static_cast<MisspelledBlockCache *>(block.userData());
+        if (!cache || cache->revision != block.revision()) {
+            const bool isNewCache = !cache;
+            if (isNewCache)
+                cache = new MisspelledBlockCache();
+
+            const QString blockText = block.text();
+            const QList<QPair<int, int>> ranges = SpellCheckHighlighter::wordRangesInBlock(block);
+            cache->misspelledRanges.clear();
+            for (const auto &range : ranges) {
+                const QString word = blockText.mid(range.first, range.second);
+                if (m_spellCheckerBackend->isMisspelled(word))
+                    cache->misspelledRanges.append(range);
+            }
+            cache->revision = block.revision();
+
+            if (isNewCache)
+                block.setUserData(cache); // transfers ownership to the block
+        }
+
+        for (const auto &range : cache->misspelledRanges) {
+            const int start = block.position() + range.first;
+            const int end = start + range.second;
+            // Skip whatever word the cursor is currently sitting inside —
+            // see cursorPosition's own header comment for why: it's the
+            // word actively being typed/edited, so a partial token
+            // shouldn't be flagged as a misspelling-in-progress. Checked
+            // here (against the cache's raw result), not baked into the
+            // cache itself, since the cursor moving in and out of a word
+            // must not require re-running isMisspelled() against it.
+            if (m_cursorPosition >= start && m_cursorPosition <= end)
+                continue;
+            QVariantMap entry;
+            entry.insert(QStringLiteral("start"), start);
+            entry.insert(QStringLiteral("end"), end);
+            result.append(entry);
+        }
+    }
+    return result;
+}
+
+void DocumentHandler::emitMisspelledWordRangesChangedIfNeeded()
+{
+    const QVariantList current = computeMisspelledWordRanges();
+    if (current == m_lastMisspelledWordRanges)
+        return;
+    m_lastMisspelledWordRanges = current;
+    emit misspelledWordRangesChanged();
+}
+
+void DocumentHandler::invalidateAllMisspelledBlockCaches()
+{
+    if (!m_document || !m_document->textDocument())
+        return;
+
+    // Simplest correct invalidation: bump every cache's stored revision
+    // to something block.revision() can never legitimately equal next,
+    // rather than deleting/reallocating each MisspelledBlockCache — the
+    // very next computeMisspelledWordRanges() call already treats a
+    // revision mismatch as "recompute this block", so this reuses that
+    // exact path instead of duplicating it.
+    QTextDocument *doc = m_document->textDocument();
+    for (QTextBlock block = doc->begin(); block.isValid(); block = block.next()) {
+        if (auto *cache = static_cast<MisspelledBlockCache *>(block.userData()))
+            cache->revision = -1;
+    }
+}
+
+void DocumentHandler::rehighlightSpellcheck()
+{
+    if (m_highlighter)
+        m_highlighter->rehighlight();
+    // Same reasoning as setSpellcheckLanguage's own invalidation call above
+    // — this is an explicit "the dictionary's answer for some word may have
+    // changed" signal (e.g. right after settings.addUserDictionaryWord()),
+    // not a text edit, so the per-block cache's revision-based staleness
+    // check alone wouldn't catch it.
+    invalidateAllMisspelledBlockCaches();
+    emitMisspelledWordRangesChangedIfNeeded();
+}
+
+std::unique_ptr<SpellCheckerBackend> DocumentHandler::makeSpellCheckerBackend(const QString &language) const
+{
+    std::unique_ptr<SpellCheckerBackend> bundled;
+#if defined(SUOPNOTES_HAVE_HUNSPELL) && defined(SUOPNOTES_HAVE_BUNDLED_DICTIONARY)
+    bundled = std::make_unique<HunspellSpellCheckerBackend>(
+        QStringLiteral(SUOPNOTES_BUNDLED_DICT_AFF_PATH), QStringLiteral(SUOPNOTES_BUNDLED_DICT_DIC_PATH));
+#endif
+
+    if (language == QStringLiteral("bundled:en_US"))
+        return bundled;
+
+#ifdef SUOPNOTES_HAVE_SONNET
+    auto sonnet = std::make_unique<SonnetSpellCheckerBackend>(language);
+    if (bundled)
+        return std::make_unique<FallbackSpellCheckerBackend>(std::move(sonnet), std::move(bundled));
+    return sonnet;
+#else
+    return bundled;
+#endif
+}
+
+QVariantMap DocumentHandler::wordAt(int position) const
+{
+    if (!m_document || !m_document->textDocument())
+        return QVariantMap();
+
+    const QTextBlock block = m_document->textDocument()->findBlock(position);
+    if (!block.isValid())
+        return QVariantMap();
+
+    const QList<QPair<int, int>> ranges = SpellCheckHighlighter::wordRangesInBlock(block);
+    for (const auto &range : ranges) {
+        const int start = block.position() + range.first;
+        const int end = start + range.second;
+        // Inclusive on `end` (bug found live: "with the specific string
+        // 'x selected', selecting the right side of the letter x doesn't
+        // trigger the spellchecker"): editor.positionAt() resolves a click
+        // on the right half of a glyph to the cursor position immediately
+        // AFTER that character. For a single-character word like "x"
+        // (range [0, 1)), that's position 1 — which satisfies neither half
+        // of an exclusive `position < end` check, since it's the word's own
+        // end boundary, not a genuinely different word. Every word (not
+        // just single-character ones) has this exact same dead zone at its
+        // last character's right half; a one-letter word just means the
+        // dead zone covers HALF of the entire word instead of a sliver of
+        // its last letter, which is why it was the one that got noticed.
+        // Two adjacent words can never collide over this shared boundary
+        // point — real tokenization always has at least one non-letter
+        // character (space/punctuation) between them, so word B's own
+        // start is never equal to word A's end.
+        if (position >= start && position <= end) {
+            QVariantMap result;
+            result.insert(QStringLiteral("start"), start);
+            result.insert(QStringLiteral("end"), end);
+            result.insert(QStringLiteral("text"), block.text().mid(range.first, range.second));
+            return result;
+        }
+    }
+    return QVariantMap();
+}
+
+bool DocumentHandler::isWordMisspelledAt(int position) const
+{
+    if (!m_spellCheckerBackend || !m_spellCheckerBackend->isValid())
+        return false;
+
+    const QVariantMap word = wordAt(position);
+    if (word.isEmpty())
+        return false;
+
+    return m_spellCheckerBackend->isMisspelled(word.value(QStringLiteral("text")).toString());
+}
+
+QStringList DocumentHandler::suggestionsForWordAt(int position) const
+{
+    if (!isWordMisspelledAt(position))
+        return QStringList();
+
+    const QString text = wordAt(position).value(QStringLiteral("text")).toString();
+    return m_spellCheckerBackend->suggestions(text);
+}
+
+void DocumentHandler::replaceRange(int start, int end, const QString &replacement)
+{
+    if (!m_document || !m_document->textDocument())
+        return;
+
+    QTextCursor cursor(m_document->textDocument());
+    cursor.setPosition(start);
+    cursor.setPosition(end, QTextCursor::KeepAnchor);
+    cursor.insertText(replacement);
 }
 
 QString DocumentHandler::toMarkdown() const

@@ -9,6 +9,13 @@ ApplicationWindow {
     id: root
 
     readonly property alias fontFamilyCombo: fontFamilyCombo
+    readonly property alias spellcheckLanguageCombo: spellcheckLanguageCombo
+    readonly property alias spellcheckMaxSuggestionsSpinBox: spellcheckMaxSuggestionsSpinBox
+    readonly property alias spellcheckUnderlineWidthSlider: spellcheckUnderlineWidthSlider
+    readonly property alias spellcheckUnderlineColorSwatch: spellcheckUnderlineColorSwatch
+    readonly property alias newUserDictionaryWordField: newUserDictionaryWordField
+    readonly property alias addUserDictionaryWordButton: addUserDictionaryWordButton
+    readonly property alias userDictionaryWordsRepeater: userDictionaryWordsRepeater
 
     title: "suopNotes Settings"
     width: 400
@@ -62,6 +69,12 @@ ApplicationWindow {
         onAccepted: settings.interactableHighlightColor = color
     }
 
+    Platform.ColorDialog {
+        id: spellcheckUnderlineColorDialog
+        currentColor: settings.spellcheckUnderlineColor
+        onAccepted: settings.spellcheckUnderlineColor = color
+    }
+
     ScrollView {
         anchors.fill: parent
         anchors.margins: 16
@@ -103,6 +116,119 @@ ApplicationWindow {
                 text: "Enable blur behind notes"
                 checked: settings.blurEnabled
                 onToggled: settings.blurEnabled = checked
+            }
+
+            CheckBox {
+                text: "Enable spellcheck"
+                checked: settings.spellcheckEnabled
+                onToggled: settings.spellcheckEnabled = checked
+            }
+
+            Row {
+                spacing: 8
+                Label { text: "Spellcheck language:"; anchors.verticalCenter: parent.verticalCenter }
+                ComboBox {
+                    id: spellcheckLanguageCombo
+                    model: settings.availableSpellcheckLanguages()
+                    textRole: "name"
+                    valueRole: "code"
+                    currentIndex: {
+                        var idx = -1
+                        for (var i = 0; i < model.length; ++i) {
+                            if (model[i].code === settings.spellcheckLanguage) { idx = i; break }
+                        }
+                        // Empty spellcheckLanguage ("") means "automatic" —
+                        // no entry literally has code "", so default to
+                        // index 0 (first Sonnet entry, or the bundled entry
+                        // if Sonnet found nothing) when nothing matches,
+                        // rather than showing a blank/invalid combo.
+                        return idx >= 0 ? idx : 0
+                    }
+                    onActivated: settings.spellcheckLanguage = model[currentIndex].code
+                }
+            }
+
+            Row {
+                spacing: 8
+                Label { text: "Max spelling suggestions shown:"; anchors.verticalCenter: parent.verticalCenter }
+                SpinBox {
+                    id: spellcheckMaxSuggestionsSpinBox
+                    from: 0
+                    to: 10
+                    value: settings.spellcheckMaxSuggestions
+                    onValueModified: settings.spellcheckMaxSuggestions = value
+                }
+            }
+
+            Column {
+                width: parent.width
+                spacing: 4
+                Label { text: "Underline width: " + Math.round(spellcheckUnderlineWidthSlider.value) }
+                Slider {
+                    id: spellcheckUnderlineWidthSlider
+                    width: parent.width
+                    from: 1
+                    to: 8
+                    value: settings.spellcheckUnderlineWidth
+                    onMoved: settings.spellcheckUnderlineWidth = Math.round(value)
+                }
+            }
+
+            Row {
+                spacing: 8
+                Label { text: "Underline color:"; anchors.verticalCenter: parent.verticalCenter }
+                Rectangle {
+                    id: spellcheckUnderlineColorSwatch
+                    width: 24
+                    height: 24
+                    color: settings.spellcheckUnderlineColor
+                    border.color: "gray"
+                    anchors.verticalCenter: parent.verticalCenter
+                    MouseArea { anchors.fill: parent; onClicked: spellcheckUnderlineColorDialog.open() }
+                }
+            }
+
+            Column {
+                width: parent.width
+                spacing: 4
+
+                Label { text: "User dictionary (words that are never flagged):" }
+
+                Row {
+                    width: parent.width
+                    spacing: 8
+                    TextField {
+                        id: newUserDictionaryWordField
+                        width: parent.width - addUserDictionaryWordButton.width - 8
+                        placeholderText: "Add a word…"
+                        onAccepted: {
+                            settings.addUserDictionaryWord(text)
+                            text = ""
+                        }
+                    }
+                    Button {
+                        id: addUserDictionaryWordButton
+                        text: "Add"
+                        onClicked: {
+                            settings.addUserDictionaryWord(newUserDictionaryWordField.text)
+                            newUserDictionaryWordField.text = ""
+                        }
+                    }
+                }
+
+                Repeater {
+                    id: userDictionaryWordsRepeater
+                    model: settings.userDictionaryWords
+                    Row {
+                        spacing: 8
+                        required property string modelData
+                        Label { text: modelData; anchors.verticalCenter: parent.verticalCenter }
+                        Button {
+                            text: "Remove"
+                            onClicked: settings.removeUserDictionaryWord(modelData)
+                        }
+                    }
+                }
             }
 
             CheckBox {

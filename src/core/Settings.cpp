@@ -1,14 +1,33 @@
 #include "Settings.h"
 
+#include <algorithm>
+
 #include <QDir>
 #include <QFileInfo>
 #include <QSettings>
 #include <QStandardPaths>
+#include <QVariantMap>
+
+// SUOPNOTES_HAVE_SONNET is defined (see src/CMakeLists.txt) — same convention
+// SpellChecker.h/.cpp already use. This is a new dependency direction for
+// this file (Settings had no Sonnet-related includes before), which is
+// intentional: Settings is the one object guaranteed to be globally
+// reachable from SettingsDialog.qml regardless of whether any note is
+// currently open, unlike DocumentHandler which is per-note.
+#ifdef SUOPNOTES_HAVE_SONNET
+#include <Sonnet/Speller>
+#endif
 
 namespace {
 constexpr int kDefaultWindowRadius = 9;
 constexpr qreal kDefaultWindowOpacity = 0.5;
 constexpr bool kDefaultBlurEnabled = true;
+constexpr bool kDefaultSpellcheckEnabled = true;
+constexpr int kDefaultSpellcheckMaxSuggestions = 3;
+// "Watermelon" (Crayola) — a bright pink-red, distinct from both the note's
+// own default font/highlight colors and a plain pure "#ff0000" alarm-red.
+const char *kDefaultSpellcheckUnderlineColor = "#fc6c85";
+constexpr qreal kDefaultSpellcheckUnderlineWidth = 3;
 constexpr bool kDefaultGlassEnabled = true;
 constexpr qreal kDefaultGlassSheenOpacity = 0.12;
 constexpr qreal kDefaultGlassSheenStrength = 10;
@@ -45,6 +64,11 @@ const char *kKeyWindowRadius = "windowRadius";
 const char *kKeyBackgroundColor = "backgroundColor";
 const char *kKeyWindowOpacity = "windowOpacity";
 const char *kKeyBlurEnabled = "blurEnabled";
+const char *kKeySpellcheckEnabled = "spellcheckEnabled";
+const char *kKeySpellcheckLanguage = "spellcheckLanguage";
+const char *kKeySpellcheckMaxSuggestions = "spellcheckMaxSuggestions";
+const char *kKeySpellcheckUnderlineColor = "spellcheckUnderlineColor";
+const char *kKeySpellcheckUnderlineWidth = "spellcheckUnderlineWidth";
 const char *kKeyGlassEnabled = "glassEnabled";
 const char *kKeyGlassSheenOpacity = "glassSheenOpacity";
 const char *kKeyGlassSheenStrength = "glassSheenStrength";
@@ -75,6 +99,13 @@ const char *kKeyShortcutParagraph = "paragraph";
 const char *kKeyShortcutBulletList = "bulletList";
 const char *kKeyShortcutNumberedList = "numberedList";
 const char *kKeyShortcutInsertTable = "insertTable";
+
+// A word list is conceptually distinct from either "Appearance" (a single
+// scalar/toggle) or "Shortcuts" (rebindable key sequences), so it gets its
+// own group rather than being shoehorned into kGroupAppearance the way
+// spellcheckLanguage above was.
+const char *kGroupSpellcheckUserDictionary = "SpellcheckUserDictionary";
+const char *kKeyUserDictionaryWords = "words";
 
 const char *kArrayOpenNotes = "OpenNotes";
 const char *kKeyNoteId = "noteId";
@@ -192,6 +223,144 @@ void Settings::setBlurEnabled(bool enabled)
     m_settings->setValue(QString("%1/%2").arg(kGroupAppearance, kKeyBlurEnabled), enabled);
     m_settings->sync();
     emit blurEnabledChanged();
+}
+
+bool Settings::spellcheckEnabled() const
+{
+    return m_settings->value(QString("%1/%2").arg(kGroupAppearance, kKeySpellcheckEnabled), kDefaultSpellcheckEnabled)
+        .toBool();
+}
+
+void Settings::setSpellcheckEnabled(bool enabled)
+{
+    m_settings->setValue(QString("%1/%2").arg(kGroupAppearance, kKeySpellcheckEnabled), enabled);
+    m_settings->sync();
+    emit spellcheckEnabledChanged();
+}
+
+QString Settings::spellcheckLanguage() const
+{
+    // Landed under kGroupAppearance, the same group spellcheckEnabled uses —
+    // it's another spellcheck-feature preference, so consistency with its
+    // nearest neighbor wins over carving out a dedicated group for a single
+    // string.
+    return m_settings->value(QString("%1/%2").arg(kGroupAppearance, kKeySpellcheckLanguage), QString()).toString();
+}
+
+void Settings::setSpellcheckLanguage(const QString &language)
+{
+    if (language == spellcheckLanguage())
+        return;
+
+    m_settings->setValue(QString("%1/%2").arg(kGroupAppearance, kKeySpellcheckLanguage), language);
+    m_settings->sync();
+    emit spellcheckLanguageChanged();
+}
+
+int Settings::spellcheckMaxSuggestions() const
+{
+    return m_settings
+        ->value(QString("%1/%2").arg(kGroupAppearance, kKeySpellcheckMaxSuggestions), kDefaultSpellcheckMaxSuggestions)
+        .toInt();
+}
+
+void Settings::setSpellcheckMaxSuggestions(int maxSuggestions)
+{
+    const int clamped = std::max(0, maxSuggestions);
+    if (clamped == spellcheckMaxSuggestions())
+        return;
+
+    m_settings->setValue(QString("%1/%2").arg(kGroupAppearance, kKeySpellcheckMaxSuggestions), clamped);
+    m_settings->sync();
+    emit spellcheckMaxSuggestionsChanged();
+}
+
+QColor Settings::spellcheckUnderlineColor() const
+{
+    const QString stored = m_settings->value(QString("%1/%2").arg(kGroupAppearance, kKeySpellcheckUnderlineColor)).toString();
+    return colorFromString(stored, QColor(kDefaultSpellcheckUnderlineColor));
+}
+
+void Settings::setSpellcheckUnderlineColor(const QColor &color)
+{
+    m_settings->setValue(QString("%1/%2").arg(kGroupAppearance, kKeySpellcheckUnderlineColor), color.name(QColor::HexArgb));
+    m_settings->sync();
+    emit spellcheckUnderlineColorChanged();
+}
+
+qreal Settings::spellcheckUnderlineWidth() const
+{
+    return m_settings
+        ->value(QString("%1/%2").arg(kGroupAppearance, kKeySpellcheckUnderlineWidth), kDefaultSpellcheckUnderlineWidth)
+        .toReal();
+}
+
+void Settings::setSpellcheckUnderlineWidth(qreal width)
+{
+    m_settings->setValue(QString("%1/%2").arg(kGroupAppearance, kKeySpellcheckUnderlineWidth), width);
+    m_settings->sync();
+    emit spellcheckUnderlineWidthChanged();
+}
+
+QStringList Settings::userDictionaryWords() const
+{
+    return m_settings->value(QString("%1/%2").arg(kGroupSpellcheckUserDictionary, kKeyUserDictionaryWords), QStringList())
+        .toStringList();
+}
+
+void Settings::addUserDictionaryWord(const QString &word)
+{
+    const QString trimmed = word.trimmed();
+    if (trimmed.isEmpty())
+        return;
+
+    QStringList words = userDictionaryWords();
+    for (const QString &existing : words) {
+        if (existing.compare(trimmed, Qt::CaseInsensitive) == 0)
+            return;
+    }
+
+    words.append(trimmed);
+    m_settings->setValue(QString("%1/%2").arg(kGroupSpellcheckUserDictionary, kKeyUserDictionaryWords), words);
+    m_settings->sync();
+    emit userDictionaryWordsChanged();
+}
+
+void Settings::removeUserDictionaryWord(const QString &word)
+{
+    QStringList words = userDictionaryWords();
+    const qsizetype removed = words.removeIf([&word](const QString &existing) {
+        return existing.compare(word, Qt::CaseInsensitive) == 0;
+    });
+    if (removed == 0)
+        return;
+
+    m_settings->setValue(QString("%1/%2").arg(kGroupSpellcheckUserDictionary, kKeyUserDictionaryWords), words);
+    m_settings->sync();
+    emit userDictionaryWordsChanged();
+}
+
+QVariantList Settings::availableSpellcheckLanguages() const
+{
+    QVariantList result;
+#ifdef SUOPNOTES_HAVE_SONNET
+    Sonnet::Speller speller;
+    // Speller::availableDictionaries()'s own doc comment: "the key is the
+    // description, the code the value" — verified against
+    // /usr/include/KF6/SonnetCore/sonnet/speller.h before relying on it.
+    const QMap<QString, QString> dictionaries = speller.availableDictionaries();
+    for (auto it = dictionaries.constBegin(); it != dictionaries.constEnd(); ++it) {
+        QVariantMap entry;
+        entry.insert(QStringLiteral("code"), it.value());
+        entry.insert(QStringLiteral("name"), it.key());
+        result.append(entry);
+    }
+#endif
+    QVariantMap bundled;
+    bundled.insert(QStringLiteral("code"), QStringLiteral("bundled:en_US"));
+    bundled.insert(QStringLiteral("name"), QStringLiteral("English (US) — Bundled"));
+    result.append(bundled);
+    return result;
 }
 
 bool Settings::glassEnabled() const

@@ -4,6 +4,15 @@
 #include <QPointer>
 #include <QQuickTextDocument>
 #include <QRectF>
+#include <QStringList>
+#include <QVariantList>
+#include <QVariantMap>
+
+#include <memory>
+
+class SpellCheckerBackend;
+class SpellCheckHighlighter;
+class UserDictionaryFilteringBackend;
 
 // Thin QML-facing wrapper: extracts a QTextCursor over the TextArea's
 // underlying QTextDocument and delegates to the pure, independently-tested
@@ -15,11 +24,90 @@ class DocumentHandler : public QObject
 {
     Q_OBJECT
     Q_PROPERTY(QQuickTextDocument *document READ document WRITE setDocument NOTIFY documentChanged)
+    Q_PROPERTY(bool spellcheckEnabled READ spellcheckEnabled WRITE setSpellcheckEnabled NOTIFY spellcheckEnabledChanged)
+    Q_PROPERTY(QString spellcheckLanguage READ spellcheckLanguage WRITE setSpellcheckLanguage NOTIFY spellcheckLanguageChanged)
+    Q_PROPERTY(QStringList userDictionaryWords READ userDictionaryWords WRITE setUserDictionaryWords NOTIFY userDictionaryWordsChanged)
+    // Every currently-misspelled word's range in the document, as a list of
+    // {"start": int, "end": int} maps. Exists because QtQuick's TextArea
+    // does NOT visually render underline decorations applied via
+    // QSyntaxHighlighter::setFormat() (confirmed empirically: background/
+    // foreground color from a highlighter format render fine, but
+    // SpellCheckUnderline — or even a plain SingleUnderline — never paints
+    // any pixels, with or without Text.NativeRendering) — a real QtQuick
+    // limitation, not a bug in SpellCheckHighlighter's own format-setting
+    // logic (unit-tested and confirmed correct at the QTextLayout data
+    // level). NoteWindow.qml draws the actual visible underline itself,
+    // as a decorative overlay positioned via editor.positionToRectangle()
+    // for each range this property reports, kept an ordinary read-only
+    // QML-reactive property (not the highlighter's own applied formats)
+    // specifically so that overlay can bind directly and redraw on change.
+    Q_PROPERTY(QVariantList misspelledWordRanges READ misspelledWordRanges NOTIFY misspelledWordRangesChanged)
+    // The editor's live cursor position (bound from NoteWindow.qml's
+    // editor.cursorPosition). Exists purely so misspelledWordRanges() can
+    // exclude whatever word the cursor currently sits inside — a word still
+    // being typed is, by definition, an incomplete/partial token that would
+    // otherwise flag as misspelled on every keystroke (e.g. "hel" while
+    // typing "hello"), underlining and un-underlining it letter by letter.
+    // Most spell checkers (LibreOffice, Word, browsers) hold off flagging
+    // the word the caret is currently inside for exactly this reason; it
+    // gets checked again, normally, the instant the cursor leaves it.
+    Q_PROPERTY(int cursorPosition READ cursorPosition WRITE setCursorPosition NOTIFY cursorPositionChanged)
 public:
     explicit DocumentHandler(QObject *parent = nullptr);
+    ~DocumentHandler();
 
     QQuickTextDocument *document() const;
     void setDocument(QQuickTextDocument *document);
+
+    bool spellcheckEnabled() const;
+    void setSpellcheckEnabled(bool enabled);
+
+    QString spellcheckLanguage() const;
+    void setSpellcheckLanguage(const QString &language);
+
+    QStringList userDictionaryWords() const;
+    void setUserDictionaryWords(const QStringList &words);
+
+    QVariantList misspelledWordRanges() const;
+
+    int cursorPosition() const;
+    void setCursorPosition(int position);
+
+    // Resolves `position` to the word range (start/end/text) it falls inside,
+    // using the exact same tokenization SpellCheckHighlighter uses to decide
+    // what gets underlined — so a tapped position always resolves to
+    // precisely the range that would/wouldn't be flagged, no drift between
+    // the two. Returns an empty map (no keys) if position isn't inside any
+    // word (whitespace, punctuation, or a hand-rolled list marker glyph).
+    Q_INVOKABLE QVariantMap wordAt(int position) const;
+    // Whether the word at `position` is actually misspelled — false if
+    // there's no word there, there's no working spellcheck backend, or the
+    // word is correctly spelled. Callers deciding whether to show a
+    // "misspelled" UI at all (e.g. the tap-to-suggest popup) should check
+    // THIS, not merely "did suggestionsForWordAt return something" — a
+    // genuinely misspelled word can still have zero suggestions (e.g. it's
+    // too garbled for the dictionary to find any close match), and treating
+    // that the same as "not misspelled" would silently hide it.
+    Q_INVOKABLE bool isWordMisspelledAt(int position) const;
+    // Spelling suggestions for the word at `position`, or an empty list if
+    // there's no word there, no working spellcheck backend, the word isn't
+    // actually misspelled, or it's misspelled but the backend found no
+    // close match. Use isWordMisspelledAt() above to tell "not misspelled"
+    // apart from "misspelled with no suggestions" — this method alone can't.
+    Q_INVOKABLE QStringList suggestionsForWordAt(int position) const;
+    // Replaces the exact [start, end) range (e.g. from wordAt()) with
+    // `replacement` — a single atomic cursor edit, same shape as the other
+    // simple mutators below.
+    Q_INVOKABLE void replaceRange(int start, int end, const QString &replacement);
+    // Forces an immediate re-check of the current document against the active
+    // spellcheck backend (e.g. right after the user adds a word to their
+    // personal dictionary from the suggestion popup, so the underline under
+    // THIS note's occurrence of that word disappears immediately rather than
+    // waiting for the next edit). Other already-open notes pick up the change
+    // on their own next edit/rehighlight — not propagated cross-document here,
+    // a deliberate scope cut to avoid a cross-window pub/sub mechanism nobody
+    // asked for.
+    Q_INVOKABLE void rehighlightSpellcheck();
 
     Q_INVOKABLE QString toMarkdown() const;
     Q_INVOKABLE void setMarkdown(const QString &markdown);
@@ -120,6 +208,18 @@ public:
 
 signals:
     void documentChanged();
+    void spellcheckEnabledChanged();
+    void spellcheckLanguageChanged();
+    void userDictionaryWordsChanged();
+    // Emitted whenever the set of misspelled words in the document may have
+    // changed — after every real text edit, and after anything that changes
+    // which words count as misspelled at all (spellcheckEnabled/Language/
+    // userDictionaryWords, or an explicit rehighlightSpellcheck() call).
+    // NoteWindow.qml's underline overlay listens to this to know when to
+    // recompute (see misspelledWordRanges' own doc comment for why this
+    // property exists at all).
+    void misspelledWordRangesChanged();
+    void cursorPositionChanged();
     // Emitted after any call above that can change the format active at the
     // cursor/selection (the toggles, setHeadingLevel, and the two list-aware
     // Enter/autoconvert helpers when they actually mutate something) — lets
@@ -131,7 +231,51 @@ signals:
 private:
     QTextCursor cursorFor(int selectionStart, int selectionEnd) const;
 
+    // Builds a fresh backend for `language` (empty = system default via Sonnet;
+    // the literal "bundled:en_US" explicitly forces the bundled dictionary,
+    // skipping Sonnet entirely — used by the language picker's own special
+    // "Bundled" entry). Sonnet (if available and not explicitly bypassed) is
+    // tried first via a FallbackSpellCheckerBackend, falling back to the
+    // bundled Hunspell dictionary (if the CMake fetch succeeded on this build)
+    // when Sonnet reports no working dictionary for that language. Returns a
+    // possibly-null unique_ptr if nothing is available at all (e.g. built
+    // without Sonnet AND without a fetched bundled dictionary) — callers must
+    // tolerate that; UserDictionaryFilteringBackend already does.
+    std::unique_ptr<SpellCheckerBackend> makeSpellCheckerBackend(const QString &language) const;
+
+    // Shared implementation behind the misspelledWordRanges Q_PROPERTY
+    // getter: pulled out so callers that mutate something which can affect
+    // the result (a real edit, a cursor move, a settings change) can also
+    // recompute it themselves and compare against m_lastMisspelledWordRanges
+    // — see emitMisspelledWordRangesChangedIfNeeded()'s own comment for why.
+    QVariantList computeMisspelledWordRanges() const;
+    // Recomputes misspelledWordRanges and only emits misspelledWordRangesChanged
+    // if the result actually differs from the last-emitted value. Every
+    // trigger that used to emit misspelledWordRangesChanged unconditionally
+    // (a keystroke, a cursor move, a settings change) now routes through
+    // this instead — bug found live: with an unconditional emit, EVERY
+    // keystroke re-triggered NoteWindow.qml's underline-overlay Repeater
+    // (whose model is this property), tearing down and rebuilding every
+    // Canvas delegate even for keystrokes that didn't change which words
+    // are misspelled at all (the common case: typing inside a word that's
+    // excluded from checking anyway — see cursorPosition's own comment —
+    // while every OTHER word's misspelled status is unchanged). That
+    // constant rebuild was both wasteful and the direct cause of the
+    // underline's visible flicker while typing.
+    void emitMisspelledWordRangesChangedIfNeeded();
+    // Forces every block's cached misspelled-word data (see the
+    // MisspelledBlockCache class in the .cpp) to be recomputed on the next
+    // computeMisspelledWordRanges() call, even though none of the blocks'
+    // own text actually changed — needed whenever what counts as
+    // "misspelled" itself changes instead (spellcheckLanguage,
+    // userDictionaryWords, rehighlightSpellcheck()), since the cache's
+    // normal staleness check (block.revision()) can't see that kind of
+    // change at all.
+    void invalidateAllMisspelledBlockCaches();
+
     QPointer<QQuickTextDocument> m_document;
+    QVariantList m_lastMisspelledWordRanges;
+    int m_cursorPosition = -1;
 
     // Reentrancy guard for the hand-rolled list machinery: inserting or
     // removing a list marker's TEXT synchronously re-enters QML's
@@ -146,4 +290,18 @@ private:
     // it's still in progress is guaranteed redundant (the outer call will
     // finish leaving everything consistent) and just no-ops instead.
     bool m_handlingListMutation = false;
+
+    // Constructed once in the constructor as a stable UserDictionaryFilteringBackend
+    // wrapper (its own inner backend may be null, degrading spellcheck to a
+    // clean no-op, if built without Sonnet and without a bundled dictionary).
+    // The wrapper itself never gets replaced — only its inner backend does,
+    // via setInner() — so m_highlighter's raw pointer into it stays valid
+    // across a spellcheckLanguage change.
+    std::unique_ptr<UserDictionaryFilteringBackend> m_spellCheckerBackend;
+    // (Re)constructed in setDocument() against the new document's
+    // textDocument() — does not own m_spellCheckerBackend, just borrows it.
+    std::unique_ptr<SpellCheckHighlighter> m_highlighter;
+    bool m_spellcheckEnabled = true;
+    QString m_spellcheckLanguage;
+    QStringList m_userDictionaryWords;
 };

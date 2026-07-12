@@ -3,7 +3,9 @@
 #include <QObject>
 #include <QColor>
 #include <QString>
+#include <QStringList>
 #include <QList>
+#include <QVariantList>
 
 class QSettings;
 
@@ -22,6 +24,12 @@ class Settings : public QObject
     Q_PROPERTY(QColor backgroundColor READ backgroundColor WRITE setBackgroundColor NOTIFY backgroundColorChanged)
     Q_PROPERTY(qreal windowOpacity READ windowOpacity WRITE setWindowOpacity NOTIFY windowOpacityChanged)
     Q_PROPERTY(bool blurEnabled READ blurEnabled WRITE setBlurEnabled NOTIFY blurEnabledChanged)
+    Q_PROPERTY(bool spellcheckEnabled READ spellcheckEnabled WRITE setSpellcheckEnabled NOTIFY spellcheckEnabledChanged)
+    Q_PROPERTY(QString spellcheckLanguage READ spellcheckLanguage WRITE setSpellcheckLanguage NOTIFY spellcheckLanguageChanged)
+    Q_PROPERTY(QStringList userDictionaryWords READ userDictionaryWords NOTIFY userDictionaryWordsChanged)
+    Q_PROPERTY(int spellcheckMaxSuggestions READ spellcheckMaxSuggestions WRITE setSpellcheckMaxSuggestions NOTIFY spellcheckMaxSuggestionsChanged)
+    Q_PROPERTY(QColor spellcheckUnderlineColor READ spellcheckUnderlineColor WRITE setSpellcheckUnderlineColor NOTIFY spellcheckUnderlineColorChanged)
+    Q_PROPERTY(qreal spellcheckUnderlineWidth READ spellcheckUnderlineWidth WRITE setSpellcheckUnderlineWidth NOTIFY spellcheckUnderlineWidthChanged)
     Q_PROPERTY(bool glassEnabled READ glassEnabled WRITE setGlassEnabled NOTIFY glassEnabledChanged)
     Q_PROPERTY(qreal glassSheenOpacity READ glassSheenOpacity WRITE setGlassSheenOpacity NOTIFY glassSheenOpacityChanged)
     Q_PROPERTY(qreal glassSheenStrength READ glassSheenStrength WRITE setGlassSheenStrength NOTIFY glassSheenStrengthChanged)
@@ -150,6 +158,64 @@ public:
 
     bool blurEnabled() const;
     void setBlurEnabled(bool enabled);
+
+    // Whether the editor's spellcheck highlighter is active. Gated further at
+    // runtime by whether a working dictionary is available (checked in the
+    // highlighter itself, not here) — this property only reflects the user's
+    // preference.
+    bool spellcheckEnabled() const;
+    void setSpellcheckEnabled(bool enabled);
+
+    // Spellcheck dictionary language. Only two shapes of value are
+    // meaningful here (Settings itself just stores whatever string it's
+    // given — validation/interpretation happens in a later step's
+    // language-picker UI and DocumentHandler wiring):
+    //   - "" (empty, the default): automatic — defer to the system/KDE-
+    //     configured default language, the same semantics
+    //     Sonnet::Speller(QString()) already uses.
+    //   - "bundled:en_US": explicitly use the bundled fallback dictionary
+    //     regardless of what the system has.
+    QString spellcheckLanguage() const;
+    void setSpellcheckLanguage(const QString &language);
+
+    // Personal/user spellcheck dictionary: words the user has explicitly
+    // accepted as correct, layered on top of whatever language dictionary
+    // is active. Read-only from Q_PROPERTY's perspective — mutated one
+    // word at a time via the invokables below, since "add one word" /
+    // "remove one word" are the only operations that make sense (unlike
+    // wholesale replacement, which would lose entries a caller doesn't
+    // know about).
+    QStringList userDictionaryWords() const;
+    Q_INVOKABLE void addUserDictionaryWord(const QString &word);
+    Q_INVOKABLE void removeUserDictionaryWord(const QString &word);
+
+    // How many spelling suggestions the tap-to-suggest popup shows at once
+    // (feature request: the popup was unbounded — some misspelled words
+    // return 10+ candidates, making it far taller than useful). Clamped to
+    // >= 0 in the setter; 0 means "no suggestion buttons at all, just the
+    // 'No suggestions'-style empty state and Add to dictionary" — a valid,
+    // if unusual, user choice, not an error.
+    int spellcheckMaxSuggestions() const;
+    void setSpellcheckMaxSuggestions(int maxSuggestions);
+
+    // Styling for the misspelled-word underline NoteWindow.qml's
+    // misspelledWordOverlay draws (feature request: a solid, straight line
+    // with a configurable color/width, replacing the previous fixed wavy
+    // red squiggle). Defaults to a 3px-wide "watermelon red" line.
+    QColor spellcheckUnderlineColor() const;
+    void setSpellcheckUnderlineColor(const QColor &color);
+    qreal spellcheckUnderlineWidth() const;
+    void setSpellcheckUnderlineWidth(qreal width);
+
+    // Returns the set of selectable spellcheck languages for a picker UI:
+    // every language Sonnet reports as available on this system (code ->
+    // display name, e.g. "en_US" -> "American English"), PLUS one synthetic
+    // entry for the app's own bundled fallback dictionary ("bundled:en_US").
+    // Returns a QVariantList of QVariantMaps (each {"code": ..., "name": ...})
+    // since QML consumes that shape naturally as a ListModel-compatible list.
+    // Always includes the bundled entry even if Sonnet isn't compiled in or
+    // finds nothing, so the picker is never empty.
+    Q_INVOKABLE QVariantList availableSpellcheckLanguages() const;
 
     // Rendered translucent sheen (req. 6, ported from suopPanel) — a
     // separate mechanism from blurEnabled's real compositor blur-behind,
@@ -292,6 +358,12 @@ signals:
     void backgroundColorChanged();
     void windowOpacityChanged();
     void blurEnabledChanged();
+    void spellcheckEnabledChanged();
+    void spellcheckLanguageChanged();
+    void userDictionaryWordsChanged();
+    void spellcheckMaxSuggestionsChanged();
+    void spellcheckUnderlineColorChanged();
+    void spellcheckUnderlineWidthChanged();
     void glassEnabledChanged();
     void glassSheenOpacityChanged();
     void glassSheenStrengthChanged();

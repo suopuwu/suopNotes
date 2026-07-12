@@ -62,6 +62,14 @@ Item {
             bar.noteWindow = null
             noteA.currentInTable = false
             noteB.currentInTable = false
+            noteA.currentMisspelledWord = ""
+            noteA.currentSpellingSuggestions = []
+            noteA.misspelledWordStart = -1
+            noteA.misspelledWordEnd = -1
+            noteB.currentMisspelledWord = ""
+            noteB.currentSpellingSuggestions = []
+            noteB.misspelledWordStart = -1
+            noteB.misspelledWordEnd = -1
             // Resets hover state left over from any mouseMove() a test made
             // (e.g. onto insertTableButton) — otherwise the pointer's last
             // synthetic position leaks into the next test, which could
@@ -153,6 +161,43 @@ Item {
             tryCompare(bar.tooltipWindow, "contentVisible", false)
         }
 
+        // Bug found live: tooltipWindow is a real top-level Window kept
+        // permanently mapped (never hidden again once shown — see its own
+        // Component.onCompleted comment), so only contentVisible used to
+        // change once a hover ended. Its own width/height stayed bound to
+        // the last tooltip text's size regardless, and its x/y stayed at
+        // the last-hovered button's position — the still-mapped,
+        // still-on-top tooltip kept sitting there, silently eating clicks
+        // meant for whatever was underneath even after visibly
+        // disappearing (same root cause as bar's/columnOptionsPopup's/
+        // spellingSuggestionsPopup's own, covered by their own tests).
+        // Verifies hideTip() moves the window off every screen entirely —
+        // NOT that it shrinks (a later bug found live: shrinking to 1x1 on
+        // every hide, then back to real size on every show, forced a real
+        // Wayland resize negotiation each cycle, and two close together
+        // could race and leave the window stuck at the wrong size — see
+        // width/height's own comment; off-screen position alone is what
+        // actually stops it from blocking clicks, regardless of size).
+        function test_tooltip_window_moves_offscreen_once_hover_ends() {
+            bar.noteWindow = noteA
+            wait(20)
+
+            mouseMove(bar.boldButton, bar.boldButton.width / 2, bar.boldButton.height / 2)
+            tryCompare(bar.tooltipWindow, "contentVisible", true, 2000)
+
+            verify(bar.tooltipWindow.width > 1, "precondition: the tooltip has real size while shown")
+            verify(bar.tooltipWindow.height > 1, "precondition: the tooltip has real size while shown")
+
+            const screen = noteA.screen
+            verify(screen, "precondition: the tracked note reports a real screen")
+
+            mouseMove(bar.boldButton, -50, -50)
+            tryCompare(bar.tooltipWindow, "contentVisible", false)
+
+            verify(bar.tooltipWindow.x > screen.virtualX + screen.width || bar.tooltipWindow.y > screen.virtualY + screen.height,
+                   "hover ending should move the still-mapped tooltip window off every screen so it stops blocking clicks")
+        }
+
         // Real hover, real delay, real (non-)oscillation — the actual
         // end-to-end behavior the fix above exists for, not just the
         // structural checks above it.
@@ -215,6 +260,39 @@ Item {
                     "leaving the table again should hide it")
         }
 
+        // Bug found live: columnOptionsPopup is a real top-level Window kept
+        // permanently mapped (never hidden again once shown, to avoid
+        // disrupting Wayland keyboard focus on the note — see its own
+        // Component.onCompleted comment), so only content.visible/enabled
+        // used to change when leaving a table. Its x/y stayed at its last
+        // anchored position — the still-mapped, still-on-top window kept
+        // sitting there, silently eating clicks meant for the note
+        // underneath even after the popup had visibly "closed". Verifies
+        // the window itself now moves off every screen — NOT that it
+        // shrinks (a later bug found live: shrinking to 1x1 on every hide,
+        // then back to real size on every show, forced a real Wayland
+        // resize negotiation each cycle, and two close together could race
+        // and leave the window stuck at the wrong size — see width/
+        // height's own comment; off-screen position alone is what
+        // actually stops it from blocking clicks, regardless of size).
+        function test_column_options_popup_moves_offscreen_when_leaving_a_table() {
+            bar.noteWindow = noteA
+            noteA.currentInTable = true
+            wait(20)
+
+            verify(bar.columnOptionsPopup.width > 1, "precondition: the popup has real size while in a table")
+            verify(bar.columnOptionsPopup.height > 1, "precondition: the popup has real size while in a table")
+
+            const screen = noteA.screen
+            verify(screen, "precondition: the tracked note reports a real screen")
+
+            noteA.currentInTable = false
+            wait(20)
+
+            verify(bar.columnOptionsPopup.x > screen.virtualX + screen.width || bar.columnOptionsPopup.y > screen.virtualY + screen.height,
+                   "leaving the table should move the still-mapped window off every screen so it stops blocking clicks")
+        }
+
         // Feature request: the popup anchors to the table's own position
         // (not the main bar's grid icon, which can be anywhere — the bar
         // itself doesn't relocate to the table anymore).
@@ -270,6 +348,39 @@ Item {
             compare(bar.background.visible, false)
             compare(bar.content.visible, false)
             compare(bar.boldButton.enabled, false)
+        }
+
+        // Bug found live: bar itself is a real top-level Window kept
+        // permanently mapped (never hidden again once shown, to avoid
+        // disrupting Wayland keyboard focus on the note — see its own
+        // Component.onCompleted comment), so only content/background
+        // visibility used to change once the tracked note cleared — the
+        // still-mapped, still-on-top toolbar kept sitting at its last
+        // position, silently eating clicks meant for the note underneath
+        // (or whatever was there) even after visibly "disappearing".
+        // Verifies the window now moves off every screen (parkOffscreen())
+        // — NOT that it shrinks (a later bug found live: shrinking to 1x1
+        // on every hide, then back to real size on every show, forced a
+        // real Wayland resize negotiation each cycle, and two close
+        // together could race and leave the window stuck at the wrong
+        // size — see width/height's own comment; off-screen position
+        // alone is what actually stops it from blocking clicks, regardless
+        // of size).
+        function test_bar_moves_offscreen_once_the_tracked_note_is_cleared() {
+            bar.noteWindow = noteA
+            wait(20)
+
+            verify(bar.width > 1, "precondition: the bar has real size while tracking a note")
+            verify(bar.height > 1, "precondition: the bar has real size while tracking a note")
+
+            const screen = noteA.screen
+            verify(screen, "precondition: the tracked note reports a real screen")
+
+            bar.noteWindow = null
+            wait(20)
+
+            verify(bar.x > screen.virtualX + screen.width || bar.y > screen.virtualY + screen.height,
+                   "clearing the tracked note should move the still-mapped bar off every screen so it stops blocking clicks")
         }
 
         // Main.qml's toolbar-persistence fix (feature request: the toolbar
@@ -752,6 +863,384 @@ Item {
             const occurrences = noteA.editor.text.split("copy me").length - 1
             compare(occurrences, 2,
                     "pasting after copy should reinsert the exact text that was selected, alongside the original")
+        }
+
+        // Bug found live ("becomes visible before the position changes,
+        // leading to bad UX"): the popup used to reveal its content the
+        // INSTANT wantsVisible went true, before positionManager.
+        // moveWindow()'s asynchronous KWin script call (~60-100ms observed
+        // live) had any chance to actually land the window at its real,
+        // computed position — so it visibly popped in wherever it happened
+        // to already be sitting (its off-screen park spot), then jumped.
+        // Content reveal now waits for actual CONFIRMATION via
+        // positionManager's own windowMoved signal (see
+        // spellingSuggestionsRevealIfReady's own comment) rather than a
+        // fixed delay — verified here with tryCompare's polling wait, not a
+        // fixed wait(), since the real completion time is genuinely
+        // variable (a live KWin round-trip), not a constant.
+        function test_spelling_suggestions_popup_content_stays_hidden_until_the_move_is_confirmed() {
+            noteA.currentMisspelledWord = "teh"
+            noteA.currentSpellingSuggestions = ["the", "ten"]
+            noteA.misspelledWordStart = 2
+            noteA.misspelledWordEnd = 5
+
+            bar.noteWindow = noteA
+            wait(20)
+
+            compare(bar.spellingSuggestionsPopup.wantsVisible, true,
+                    "precondition: the popup should want to be visible")
+            compare(bar.spellingSuggestionsPopup.background.visible, false,
+                    "content must stay hidden immediately after wantsVisible goes true, before the move is confirmed")
+
+            tryCompare(bar.spellingSuggestionsPopup.background, "visible", true, 2000)
+
+            noteA.currentMisspelledWord = ""
+        }
+
+        // Spelling-suggestion popup (feature request): tapping a misspelled
+        // word (NoteWindow's own TapHandler, not exercised here — see below)
+        // populates currentMisspelledWord/currentSpellingSuggestions/
+        // misspelledWordStart/misspelledWordEnd on the tracked note, which
+        // this popup reads to show a short list of replacement buttons.
+        //
+        // No real dictionary is installed on this dev machine, so a real
+        // misspelling can't actually get flagged here — this test instead
+        // sets the tracked note's fixture state directly, exactly the way
+        // the real TapHandler would have, and verifies only THIS popup's own
+        // wiring (does clicking a suggestion call replaceRange with the
+        // right args and close the popup) — not tap-detection itself, which
+        // is NoteWindow's own concern to test.
+        function test_clicking_a_spelling_suggestion_replaces_the_misspelled_word() {
+            noteA.docHandler.setMarkdown("I teh best\n")
+            wait(50)
+
+            // "teh" sits at offset 2..5 in "I teh best" (I=0, space=1,
+            // t=2, e=3, h=4, space=5).
+            noteA.currentMisspelledWord = "teh"
+            noteA.currentSpellingSuggestions = ["the", "ten"]
+            noteA.misspelledWordStart = 2
+            noteA.misspelledWordEnd = 5
+
+            bar.noteWindow = noteA
+
+            compare(bar.spellingSuggestionsPopup.wantsVisible, true,
+                    "the popup should want to be visible once currentMisspelledWord is non-empty")
+            // Content reveal waits for positionManager to confirm the move
+            // actually landed (see spellingSuggestionsRevealIfReady's own
+            // comment) — polled here, not a fixed wait(), since real
+            // completion time is genuinely variable.
+            tryCompare(bar.spellingSuggestionsPopup.background, "visible", true, 2000)
+
+            const firstSuggestion = bar.spellingSuggestionsPopup.repeater.itemAt(0)
+            verify(firstSuggestion !== null, "precondition: the first suggestion button must exist")
+            compare(firstSuggestion.text, "the")
+
+            mouseClick(firstSuggestion, firstSuggestion.width / 2, firstSuggestion.height / 2)
+
+            verify(noteA.docHandler.toMarkdown().indexOf("teh") === -1,
+                   "clicking the suggestion should remove the misspelled word")
+            verify(noteA.docHandler.toMarkdown().indexOf("the") !== -1,
+                   "clicking the suggestion should insert the replacement word")
+            compare(noteA.currentMisspelledWord, "",
+                    "the popup should close itself immediately after a replacement is applied")
+        }
+
+        // Bug found live: spellingSuggestionsPopup is a real top-level
+        // Window kept permanently mapped (never hidden again once shown,
+        // same "shown once, content-visibility toggled from then on"
+        // discipline as columnOptionsPopup's own — see its
+        // Component.onCompleted comment), so only content/background
+        // visibility used to change when currentMisspelledWord cleared —
+        // the still-mapped, still-on-top window kept sitting at its last
+        // anchored position, silently eating clicks meant for the note
+        // underneath even after the popup had visibly "closed" (this is
+        // the reported bug: the note behind the popup stayed unresponsive
+        // there after the popup disappeared). Verifies the window itself
+        // now moves off every screen — NOT that it shrinks (a later bug
+        // found live, confirmed via trace logging: shrinking to 1x1 on
+        // every hide, then back to real size on every show, forced a real
+        // Wayland resize negotiation each cycle, and two close together
+        // — e.g. hiding then immediately showing again for the next word —
+        // could race, leaving the window stuck at a stale size with no
+        // corresponding change to spellingSuggestionsBackground's own
+        // width; off-screen position alone is what actually stops it from
+        // blocking clicks, regardless of size).
+        function test_spelling_suggestions_popup_moves_offscreen_when_word_is_cleared() {
+            noteA.currentMisspelledWord = "teh"
+            noteA.currentSpellingSuggestions = ["the", "ten"]
+            noteA.misspelledWordStart = 2
+            noteA.misspelledWordEnd = 5
+
+            bar.noteWindow = noteA
+            wait(20)
+
+            verify(bar.spellingSuggestionsPopup.width > 1, "precondition: the popup has real size while a word is flagged")
+            verify(bar.spellingSuggestionsPopup.height > 1, "precondition: the popup has real size while a word is flagged")
+
+            const screen = noteA.screen
+            verify(screen, "precondition: the tracked note reports a real screen")
+
+            noteA.currentMisspelledWord = ""
+            wait(20)
+
+            verify(bar.spellingSuggestionsPopup.x > screen.virtualX + screen.width || bar.spellingSuggestionsPopup.y > screen.virtualY + screen.height,
+                   "clearing the misspelled word should move the still-mapped window off every screen so it stops blocking clicks")
+        }
+
+        // Bug found live ("doesn't transition position between two
+        // misspelled words" / "stuck at the prior word until the user
+        // clicks out"): wantsVisible only depends on currentMisspelledWord
+        // being empty vs non-empty, so tapping misspelled word A then
+        // DIRECTLY misspelled word B — both non-empty — never toggles it,
+        // and onWantsVisibleChanged (the only thing that used to trigger a
+        // reposition) never re-fired. Mirrors NoteWindow.qml's own
+        // TapHandler property-assignment order (suggestions/start/end,
+        // THEN currentMisspelledWord last) to exercise the same
+        // misspelledWordStart-changes-first sequence that actually
+        // happens live.
+        function test_spelling_suggestions_popup_repositions_when_jumping_directly_between_two_misspelled_words() {
+            noteA.docHandler.setMarkdown("teh gud\n")
+            wait(50)
+
+            noteA.currentSpellingSuggestions = ["the", "ten"]
+            noteA.misspelledWordStart = 0
+            noteA.misspelledWordEnd = 3
+            noteA.currentMisspelledWord = "teh"
+
+            bar.noteWindow = noteA
+            tryCompare(bar.spellingSuggestionsPopup.background, "visible", true, 2000)
+
+            const firstX = bar.spellingSuggestionsPopup.x
+            const firstY = bar.spellingSuggestionsPopup.y
+
+            // Jumps directly from "teh" to "gud" — currentMisspelledWord
+            // never passes through "" in between, same as a real tap on a
+            // second misspelled word right after the first.
+            noteA.currentSpellingSuggestions = ["good", "gum"]
+            noteA.misspelledWordStart = 4
+            noteA.misspelledWordEnd = 7
+            noteA.currentMisspelledWord = "gud"
+
+            const secondWordRect = noteA.editor.positionToRectangle(4)
+            const secondWordTopLeft = noteA.editor.mapToGlobal(secondWordRect.x, secondWordRect.y)
+
+            // Polled, not a single tryCompare: the popup's own window
+            // position snaps to whole pixels while the editor's own
+            // layout-derived rect can be fractional (same reasoning
+            // test_column_options_popup_is_anchored_below_the_table's own
+            // comment gives), so an exact-value tryCompare would be
+            // fragile — this waits for the real, async moveWindow
+            // confirmation to land within a couple of pixels instead.
+            let settled = false
+            for (let i = 0; i < 20 && !settled; i++) {
+                wait(100)
+                settled = Math.abs(bar.spellingSuggestionsPopup.x - secondWordTopLeft.x) < 2
+            }
+            verify(settled,
+                   "the popup should reposition to the second word's own anchor (" + secondWordTopLeft.x +
+                   "), not stay stuck at the first word's (" + firstX + "); ended at " + bar.spellingSuggestionsPopup.x)
+            verify(Math.abs(bar.spellingSuggestionsPopup.x - firstX) > 1 || Math.abs(bar.spellingSuggestionsPopup.y - firstY) > 1,
+                   "the popup must actually move for the second word, not stay stuck at the first word's position")
+
+            noteA.currentMisspelledWord = ""
+            noteA.docHandler.setMarkdown("")
+            wait(50)
+        }
+
+        // Bug found live ("sometimes the popup will be cut off — only 2
+        // options show up... sometimes cut off but the space is reserved
+        // [you can see the blur where the third option would be]...
+        // sometimes it works normally"): revealing the popup used to depend
+        // ONLY on positionManager confirming the move — nothing gated it on
+        // spellingSuggestionsContent's own size having actually finished
+        // settling (see spellingSuggestionsResettleDebounce's own comment
+        // on the Repeater-rebuild wobble every suggestion-list change goes
+        // through). A fast jump from a word with FEWER suggestions to one
+        // with MORE — mirroring a real click on a second misspelled word
+        // shortly after the first — is exactly the case where position can
+        // land before the longer list has finished laying out. Checks the
+        // FINAL revealed state has every one of the second word's
+        // suggestions, not a partial count caught mid-wobble.
+        function test_spelling_suggestions_popup_reveals_with_the_full_suggestion_list_after_a_fast_word_to_word_jump() {
+            noteA.docHandler.setMarkdown("teh gud\n")
+            wait(50)
+
+            noteA.currentSpellingSuggestions = ["a"]
+            noteA.misspelledWordStart = 0
+            noteA.misspelledWordEnd = 3
+            noteA.currentMisspelledWord = "teh"
+
+            bar.noteWindow = noteA
+            tryCompare(bar.spellingSuggestionsPopup.background, "visible", true, 2000)
+            compare(bar.spellingSuggestionsPopup.repeater.count, 1, "precondition: the first word's own single suggestion")
+
+            // Jumps directly to a word with a LONGER suggestion list —
+            // currentMisspelledWord never passes through "" in between,
+            // same as a real tap on a second misspelled word right after
+            // the first.
+            noteA.currentSpellingSuggestions = ["good", "gum", "gud2", "gudly"]
+            noteA.misspelledWordStart = 4
+            noteA.misspelledWordEnd = 7
+            noteA.currentMisspelledWord = "gud"
+
+            tryCompare(bar.spellingSuggestionsPopup.background, "visible", true, 2000)
+            compare(bar.spellingSuggestionsPopup.repeater.count, 4,
+                    "the popup should reveal with the second word's FULL suggestion count, not whatever partial " +
+                    "count the content happened to be at mid-wobble when position confirmed")
+
+            noteA.currentMisspelledWord = ""
+            noteA.docHandler.setMarkdown("")
+            wait(50)
+        }
+
+        // Bug found live ("switching between misspelled words that are on
+        // different notes causes the position to not update to the new
+        // note, though the suggestions do... inconsistent, rarely works but
+        // mostly doesn't"): spellingSuggestionsPopup.wantsVisible depends
+        // on bar.noteWindow.currentMisspelledWord, so it only reacts to a
+        // false->true (or true->false) EDGE. If the newly-focused note's
+        // own currentMisspelledWord is already non-empty by the time
+        // bar.noteWindow retargets to it — a real race between window
+        // activation and tap-handling order, reproduced here by flagging
+        // noteB's word BEFORE switching bar.noteWindow to it — wantsVisible
+        // reads true both immediately before and after the retarget (noteA's
+        // word, then noteB's), so it never toggles and
+        // onWantsVisibleChanged never re-fires. bar.onNoteWindowChanged now
+        // forces a reposition unconditionally whenever the newly-tracked
+        // note already has a word flagged, independent of that edge.
+        function test_spelling_suggestions_popup_repositions_when_the_tracked_note_itself_switches_while_a_word_is_already_flagged() {
+            noteA.docHandler.setMarkdown("teh\n")
+            wait(50)
+            noteA.currentSpellingSuggestions = ["the", "ten"]
+            noteA.misspelledWordStart = 0
+            noteA.misspelledWordEnd = 3
+            noteA.currentMisspelledWord = "teh"
+
+            bar.noteWindow = noteA
+            tryCompare(bar.spellingSuggestionsPopup.background, "visible", true, 2000)
+            const firstX = bar.spellingSuggestionsPopup.x
+            const firstY = bar.spellingSuggestionsPopup.y
+
+            noteB.docHandler.setMarkdown("gud\n")
+            wait(50)
+            // Simulates the race: noteB's own word is already flagged (as
+            // its own TapHandler would do) BEFORE bar.noteWindow ever
+            // retargets to it — the exact ordering that used to leave
+            // wantsVisible reading true throughout, with no edge to react to.
+            noteB.currentSpellingSuggestions = ["good", "gum"]
+            noteB.misspelledWordStart = 0
+            noteB.misspelledWordEnd = 3
+            noteB.currentMisspelledWord = "gud"
+
+            bar.noteWindow = noteB
+
+            // Polled, not a single tryCompare — see the jumping-between-
+            // words test's own comment above for why (fractional editor
+            // rect vs. whole-pixel window position). The target itself is
+            // recomputed on every poll (not captured once up front): this
+            // is noteB's very first real use of editor.mapToGlobal() in
+            // this file, so its own real window geometry may still be
+            // settling independently of anything under test here — polling
+            // a freshly-recomputed target keeps the check anchored to
+            // noteB's actual, current geometry either way. Mirrors
+            // repositionSpellingSuggestionsPopup()'s own X-axis screen
+            // clamp — noteB sits near the test screen's right edge, close
+            // enough that the popup's real target legitimately gets
+            // clamped to stay fully on-screen, same as it would live.
+            let settled = false
+            let lastTargetX = 0
+            for (let i = 0; i < 20 && !settled; i++) {
+                wait(100)
+                const rect = noteB.editor.positionToRectangle(0)
+                lastTargetX = noteB.editor.mapToGlobal(rect.x, rect.y).x
+                const screen = noteB.screen
+                if (screen) {
+                    lastTargetX = Math.max(screen.virtualX,
+                        Math.min(lastTargetX, screen.virtualX + screen.width - bar.spellingSuggestionsPopup.width))
+                }
+                settled = Math.abs(bar.spellingSuggestionsPopup.x - lastTargetX) < 2
+            }
+            verify(settled,
+                   "switching the tracked note to noteB (already flagging its own word) should reposition the popup to " +
+                   "noteB's word (" + lastTargetX + "), not leave it stuck at noteA's (" + firstX +
+                   "); ended at " + bar.spellingSuggestionsPopup.x)
+            verify(Math.abs(bar.spellingSuggestionsPopup.x - firstX) > 1 || Math.abs(bar.spellingSuggestionsPopup.y - firstY) > 1,
+                   "the popup must actually move to noteB's word, not stay stuck at noteA's position")
+
+            noteB.currentMisspelledWord = ""
+            noteB.docHandler.setMarkdown("")
+            noteA.currentMisspelledWord = ""
+            noteA.docHandler.setMarkdown("")
+            wait(50)
+        }
+
+        // Bug found live: a misspelled word can have zero suggestions (e.g.
+        // too garbled for the dictionary to find any close match) — the
+        // popup used to just show an empty Repeater in that case, reading as
+        // "nothing happened" even though it was genuinely open.
+        function test_popup_shows_a_no_suggestions_label_when_there_are_none() {
+            noteA.currentMisspelledWord = "zzznotarealwordzzz"
+            noteA.currentSpellingSuggestions = []
+            noteA.misspelledWordStart = 0
+            noteA.misspelledWordEnd = 18
+
+            bar.noteWindow = noteA
+
+            compare(bar.spellingSuggestionsPopup.wantsVisible, true,
+                    "the popup should still open even with zero suggestions, as long as a word is flagged")
+            // See test_clicking_a_spelling_suggestion_replaces_the_
+            // misspelled_word's own comment: content reveal (and the
+            // Repeater/layout settling it depends on) waits for
+            // positionManager to confirm the move actually landed.
+            tryCompare(bar.spellingSuggestionsPopup.background, "visible", true, 2000)
+            compare(bar.spellingSuggestionsPopup.repeater.count, 0)
+            compare(bar.noSuggestionsLabel.visible, true)
+
+            noteA.currentMisspelledWord = ""
+        }
+
+        // "Add to dictionary" (feature request): a static button below the
+        // suggestion list that permanently exempts the currently-flagged
+        // word from spellcheck (Settings::addUserDictionaryWord), then
+        // forces this note's highlighter to re-check immediately
+        // (DocumentHandler::rehighlightSpellcheck) and closes the popup —
+        // mirrors test_clicking_a_spelling_suggestion_replaces_the_
+        // misspelled_word's fixture-state setup, since no real dictionary
+        // is installed on this dev machine either.
+        function test_clicking_add_to_dictionary_adds_the_word_and_closes_the_popup() {
+            // Deliberately not a real word, and unlikely to already sit in
+            // the user dictionary from another test or a prior run on this
+            // machine.
+            noteA.currentMisspelledWord = "someuniquetestword"
+            noteA.currentSpellingSuggestions = []
+            noteA.misspelledWordStart = 0
+            noteA.misspelledWordEnd = 0
+
+            bar.noteWindow = noteA
+
+            compare(bar.spellingSuggestionsPopup.wantsVisible, true,
+                    "the popup should want to be visible once currentMisspelledWord is non-empty")
+            // See test_clicking_a_spelling_suggestion_replaces_the_
+            // misspelled_word's own comment: content reveal waits for
+            // positionManager to confirm the move actually landed, and
+            // addToDictionaryButton lives inside that content, so clicking
+            // it needs to wait for the same confirmation first.
+            tryCompare(bar.spellingSuggestionsPopup.background, "visible", true, 2000)
+
+            mouseClick(bar.addToDictionaryButton, bar.addToDictionaryButton.width / 2, bar.addToDictionaryButton.height / 2)
+
+            verify(settings.userDictionaryWords.indexOf("someuniquetestword") !== -1,
+                   "clicking 'Add to dictionary' should persist the word in the user dictionary")
+            compare(noteA.currentMisspelledWord, "",
+                    "the popup should close itself immediately after the word is added")
+
+            // Cleanup happens here rather than in cleanup() (which only
+            // resets the four per-note spellcheck properties, not
+            // Settings' own persisted, cross-test-surviving user
+            // dictionary) — otherwise this word would leak into other
+            // tests' dictionary state and into the real QSettings file
+            // across separate test runs.
+            settings.removeUserDictionaryWord("someuniquetestword")
         }
     }
 }

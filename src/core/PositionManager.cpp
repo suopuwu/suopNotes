@@ -49,6 +49,14 @@ void PositionManager::moveWindow(const QString &windowTitle, int x, int y)
 {
     QThread *worker = QThread::create([windowTitle, x, y]() { KWinRuleApplier::moveWindow(windowTitle, x, y); });
     QObject::connect(worker, &QThread::finished, worker, &QObject::deleteLater);
+    // Connected with `this` as context (not `worker`): finished() fires on
+    // the worker thread, but Qt's auto connection type queues delivery to
+    // whichever thread the RECEIVER lives on — `this` lives on the main/QML
+    // thread, so windowMoved() ends up emitted there, safe for QML to react
+    // to directly. Also means this connection (and the emit) auto-cancels
+    // if `this` is destroyed before the thread finishes, unlike binding the
+    // lambda to `worker` alone.
+    QObject::connect(worker, &QThread::finished, this, [this, windowTitle]() { emit windowMoved(windowTitle); });
     worker->start();
 }
 

@@ -17,6 +17,20 @@ Item {
 
         function init() {
             settings.fontFamily = ""
+            settings.spellcheckLanguage = ""
+            settings.spellcheckMaxSuggestions = 3
+        }
+
+        // Some tests below add words to settings.userDictionaryWords (a
+        // real, shared Settings instance backed by a temp file — see
+        // tst_qml_main.cpp's Setup). Wipe them after every test so nothing
+        // leaks into a later test in this file, or into a different qml
+        // test file sharing the same Settings instance.
+        function cleanup() {
+            var words = settings.userDictionaryWords
+            for (var i = 0; i < words.length; ++i) {
+                settings.removeUserDictionaryWord(words[i])
+            }
         }
 
         function test_font_family_combo_lists_every_installed_system_font() {
@@ -54,6 +68,138 @@ Item {
             })
             compare(item.font.family, families[3])
             item.destroy()
+        }
+
+        // availableSpellcheckLanguages() always returns at least the
+        // bundled fallback entry (Settings.cpp guarantees this even when
+        // Sonnet isn't compiled in or finds nothing), so the combo's model
+        // is never empty.
+        function test_spellcheck_language_combo_is_never_empty() {
+            verify(dialog.spellcheckLanguageCombo.model.length > 0)
+        }
+
+        function test_spellcheck_language_combo_defaults_to_the_first_entry_when_language_is_automatic() {
+            compare(settings.spellcheckLanguage, "")
+            compare(dialog.spellcheckLanguageCombo.currentIndex, 0)
+        }
+
+        function test_selecting_a_language_updates_the_global_setting_immediately() {
+            var model = dialog.spellcheckLanguageCombo.model
+            verify(model.length > 0)
+
+            dialog.spellcheckLanguageCombo.currentIndex = 0
+            dialog.spellcheckLanguageCombo.activated(0)
+
+            compare(settings.spellcheckLanguage, model[0].code)
+        }
+
+        function test_combo_reflects_a_language_already_set_elsewhere() {
+            settings.spellcheckLanguage = "bundled:en_US"
+            var model = dialog.spellcheckLanguageCombo.model
+            var expectedIndex = -1
+            for (var i = 0; i < model.length; ++i) {
+                if (model[i].code === "bundled:en_US") {
+                    expectedIndex = i
+                    break
+                }
+            }
+            verify(expectedIndex >= 0)
+            compare(dialog.spellcheckLanguageCombo.currentIndex, expectedIndex)
+        }
+
+        // One test, not two: writing to a bound QML property (whether from
+        // test code or a real click) permanently severs that binding for
+        // the rest of a shared control's lifetime — the exact same
+        // `value: settings.X` / `onValueModified: settings.X = value`
+        // pattern this SpinBox mirrors from fontSize's own SpinBox elsewhere
+        // in this file already has this property, and it's harmless in the
+        // real app (nothing else ever changes spellcheckMaxSuggestions
+        // except this one control) — but splitting "reflects the default"
+        // and "changing it updates the setting" into separate test
+        // functions would make the FIRST one fail whenever it happens to
+        // run after the second (alphabetical QtQuickTest ordering isn't
+        // declaration order), since by then the binding is gone. Keeping
+        // both assertions in one function sidesteps that ordering hazard
+        // entirely.
+        function test_max_suggestions_spinbox_reflects_and_updates_the_global_setting() {
+            compare(dialog.spellcheckMaxSuggestionsSpinBox.value, 3, "should reflect the default before any interaction")
+
+            dialog.spellcheckMaxSuggestionsSpinBox.value = 5
+            dialog.spellcheckMaxSuggestionsSpinBox.valueModified()
+            compare(settings.spellcheckMaxSuggestions, 5, "changing the spinbox should update the global setting immediately")
+        }
+
+        // Feature request: the misspelled-word underline is now a solid,
+        // straight line with a configurable color/width (replacing the
+        // previous fixed wavy red squiggle) — see NoteWindow.qml's own
+        // misspelledWordOverlay for where these settings are actually
+        // drawn from.
+        function test_underline_color_swatch_reflects_the_global_setting() {
+            const original = settings.spellcheckUnderlineColor
+            try {
+                settings.spellcheckUnderlineColor = "#123456"
+                compare(dialog.spellcheckUnderlineColorSwatch.color, "#123456")
+            } finally {
+                settings.spellcheckUnderlineColor = original
+            }
+        }
+
+        // One test, not two — same ordering-hazard reasoning as
+        // test_max_suggestions_spinbox_reflects_and_updates_the_global_
+        // setting's own comment above: writing to
+        // spellcheckUnderlineWidthSlider.value permanently severs its
+        // `value: settings.spellcheckUnderlineWidth` binding.
+        function test_underline_width_slider_reflects_and_updates_the_global_setting() {
+            compare(dialog.spellcheckUnderlineWidthSlider.value, 3, "should reflect the default before any interaction")
+
+            dialog.spellcheckUnderlineWidthSlider.value = 6
+            dialog.spellcheckUnderlineWidthSlider.moved()
+            compare(settings.spellcheckUnderlineWidth, 6, "moving the slider should update the global setting immediately")
+        }
+
+        function test_clicking_add_appends_a_new_word_to_the_user_dictionary_and_grows_the_repeater() {
+            compare(settings.userDictionaryWords, [])
+            var countBefore = dialog.userDictionaryWordsRepeater.count
+
+            dialog.newUserDictionaryWordField.text = "wobble"
+            dialog.addUserDictionaryWordButton.clicked()
+
+            compare(settings.userDictionaryWords, ["wobble"])
+            compare(dialog.userDictionaryWordsRepeater.count, countBefore + 1)
+            compare(dialog.newUserDictionaryWordField.text, "",
+                    "the field should clear itself once the word is added")
+        }
+
+        function test_pressing_enter_in_the_word_field_also_adds_the_word() {
+            compare(settings.userDictionaryWords, [])
+            var countBefore = dialog.userDictionaryWordsRepeater.count
+
+            dialog.newUserDictionaryWordField.text = "gronk"
+            dialog.newUserDictionaryWordField.accepted()
+
+            compare(settings.userDictionaryWords, ["gronk"])
+            compare(dialog.userDictionaryWordsRepeater.count, countBefore + 1)
+            compare(dialog.newUserDictionaryWordField.text, "",
+                    "the field should clear itself once the word is added")
+        }
+
+        function test_clicking_remove_on_a_words_row_removes_it_from_the_setting_and_shrinks_the_repeater() {
+            settings.addUserDictionaryWord("zaphod")
+            var countBefore = dialog.userDictionaryWordsRepeater.count
+            verify(countBefore > 0)
+
+            var index = settings.userDictionaryWords.indexOf("zaphod")
+            verify(index >= 0)
+
+            // Each Repeater delegate is a Row { Label; Button }, in that
+            // declaration order — see SettingsDialog.qml's
+            // userDictionaryWordsRepeater delegate — so children[1] is
+            // always that row's "Remove" button.
+            var removeButton = dialog.userDictionaryWordsRepeater.itemAt(index).children[1]
+            removeButton.clicked()
+
+            compare(settings.userDictionaryWords.indexOf("zaphod"), -1)
+            compare(dialog.userDictionaryWordsRepeater.count, countBefore - 1)
         }
     }
 }

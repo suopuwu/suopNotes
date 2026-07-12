@@ -8,6 +8,8 @@
 #include <QTemporaryFile>
 #include <QThread>
 
+#include <atomic>
+
 QMap<QString, QString> buildKWinRuleKeys(const KWinRuleSpec &spec)
 {
     QMap<QString, QString> keys;
@@ -302,7 +304,25 @@ void KWinRuleApplier::moveWindow(const QString &windowTitle, int x, int y)
     scriptFile.write(script.toUtf8());
     scriptFile.close();
 
-    const QString pluginName = QStringLiteral("suopNotesMoveWindow");
+    // Unique per call, not a shared constant (bug found live): this
+    // function runs on its own dedicated background thread per call (see
+    // PositionManager::moveWindow), and callers now routinely issue two
+    // calls for the same popup close together — a hide's park-off-screen
+    // move immediately followed by a show's real reposition, or a
+    // fast-settling resettle debounce piling a second move on top of the
+    // first. A shared plugin name meant concurrent loadScript/start/
+    // unloadScript calls collided on KWin's side: either the second
+    // loadScript was rejected outright, or KWin silently reused the
+    // already-loaded script under that name — either way, one call's own
+    // intended position change could be skipped entirely while its
+    // unloadScript later tore down whatever the OTHER call had just
+    // loaded. Live symptom: a popup that never visibly appeared anywhere
+    // at all (not even at the wrong spot), because neither call's actual
+    // frameGeometry write survived the collision. A monotonic per-call
+    // suffix gives every call's script its own KWin-side identity, so
+    // concurrent calls can no longer step on each other.
+    static std::atomic<quint64> callCounter{ 0 };
+    const QString pluginName = QStringLiteral("suopNotesMoveWindow_%1").arg(callCounter.fetch_add(1));
     if (!runProcess(QStringLiteral("qdbus6"),
                      { "org.kde.KWin", "/Scripting", "loadScript", scriptFile.fileName(), pluginName }))
         return;

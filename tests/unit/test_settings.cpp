@@ -3,6 +3,8 @@
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QTemporaryDir>
+#include <QVariantList>
+#include <QVariantMap>
 
 #include "core/Settings.h"
 
@@ -46,6 +48,36 @@ SCENARIO("A fresh Settings instance reports documented defaults", "[settings]")
         THEN("blurEnabled defaults to true")
         {
             REQUIRE(settings.blurEnabled());
+        }
+
+        THEN("spellcheckEnabled defaults to true")
+        {
+            REQUIRE(settings.spellcheckEnabled());
+        }
+
+        THEN("spellcheckLanguage defaults to empty, meaning automatic/system-default")
+        {
+            REQUIRE(settings.spellcheckLanguage().isEmpty());
+        }
+
+        THEN("userDictionaryWords defaults to an empty list")
+        {
+            REQUIRE(settings.userDictionaryWords().isEmpty());
+        }
+
+        THEN("spellcheckMaxSuggestions defaults to 3")
+        {
+            REQUIRE(settings.spellcheckMaxSuggestions() == 3);
+        }
+
+        THEN("spellcheckUnderlineColor defaults to watermelon red (#fc6c85)")
+        {
+            REQUIRE(settings.spellcheckUnderlineColor() == QColor("#fc6c85"));
+        }
+
+        THEN("spellcheckUnderlineWidth defaults to 3")
+        {
+            REQUIRE(settings.spellcheckUnderlineWidth() == 3);
         }
 
         THEN("glassEnabled defaults to true")
@@ -233,6 +265,11 @@ SCENARIO("Appearance properties persist to disk across instances", "[settings]")
             settings.setBackgroundColor(QColor("#112233"));
             settings.setWindowOpacity(0.5);
             settings.setBlurEnabled(true);
+            settings.setSpellcheckEnabled(true);
+            settings.setSpellcheckLanguage("bundled:en_US");
+            settings.setSpellcheckMaxSuggestions(5);
+            settings.setSpellcheckUnderlineColor(QColor("#33cc99"));
+            settings.setSpellcheckUnderlineWidth(5);
             settings.setGlassEnabled(true);
             settings.setGlassSheenOpacity(0.25);
             settings.setGlassSheenStrength(40);
@@ -270,6 +307,11 @@ SCENARIO("Appearance properties persist to disk across instances", "[settings]")
                 REQUIRE(reloaded.backgroundColor() == QColor("#112233"));
                 REQUIRE(reloaded.windowOpacity() == 0.5);
                 REQUIRE(reloaded.blurEnabled() == true);
+                REQUIRE(reloaded.spellcheckEnabled() == true);
+                REQUIRE(reloaded.spellcheckLanguage() == "bundled:en_US");
+                REQUIRE(reloaded.spellcheckMaxSuggestions() == 5);
+                REQUIRE(reloaded.spellcheckUnderlineColor() == QColor("#33cc99"));
+                REQUIRE(reloaded.spellcheckUnderlineWidth() == 5);
                 REQUIRE(reloaded.glassEnabled() == true);
                 REQUIRE(reloaded.glassSheenOpacity() == 0.25);
                 REQUIRE(reloaded.glassSheenStrength() == 40);
@@ -344,6 +386,63 @@ SCENARIO("Changing a property emits its NOTIFY signal", "[settings]")
             QSignalSpy spy(&settings, &Settings::blurEnabledChanged);
             settings.setBlurEnabled(true);
             THEN("blurEnabledChanged fires once") { REQUIRE(spy.count() == 1); }
+        }
+
+        WHEN("spellcheckEnabled is changed")
+        {
+            QSignalSpy spy(&settings, &Settings::spellcheckEnabledChanged);
+            settings.setSpellcheckEnabled(false);
+            THEN("spellcheckEnabledChanged fires once") { REQUIRE(spy.count() == 1); }
+        }
+
+        WHEN("spellcheckLanguage is changed to a different value")
+        {
+            QSignalSpy spy(&settings, &Settings::spellcheckLanguageChanged);
+            settings.setSpellcheckLanguage("bundled:en_US");
+            THEN("spellcheckLanguageChanged fires exactly once") { REQUIRE(spy.count() == 1); }
+        }
+
+        WHEN("spellcheckLanguage is set to its current value again")
+        {
+            settings.setSpellcheckLanguage("bundled:en_US");
+            QSignalSpy spy(&settings, &Settings::spellcheckLanguageChanged);
+            settings.setSpellcheckLanguage("bundled:en_US");
+            THEN("spellcheckLanguageChanged does not fire") { REQUIRE(spy.count() == 0); }
+        }
+
+        WHEN("spellcheckMaxSuggestions is changed to a different value")
+        {
+            QSignalSpy spy(&settings, &Settings::spellcheckMaxSuggestionsChanged);
+            settings.setSpellcheckMaxSuggestions(5);
+            THEN("spellcheckMaxSuggestionsChanged fires exactly once") { REQUIRE(spy.count() == 1); }
+        }
+
+        WHEN("spellcheckMaxSuggestions is set to its current value again")
+        {
+            settings.setSpellcheckMaxSuggestions(5);
+            QSignalSpy spy(&settings, &Settings::spellcheckMaxSuggestionsChanged);
+            settings.setSpellcheckMaxSuggestions(5);
+            THEN("spellcheckMaxSuggestionsChanged does not fire") { REQUIRE(spy.count() == 0); }
+        }
+
+        WHEN("spellcheckMaxSuggestions is set to a negative value")
+        {
+            settings.setSpellcheckMaxSuggestions(-5);
+            THEN("it is clamped to 0, not stored as negative") { REQUIRE(settings.spellcheckMaxSuggestions() == 0); }
+        }
+
+        WHEN("spellcheckUnderlineColor is changed")
+        {
+            QSignalSpy spy(&settings, &Settings::spellcheckUnderlineColorChanged);
+            settings.setSpellcheckUnderlineColor(QColor("#00ff00"));
+            THEN("spellcheckUnderlineColorChanged fires once") { REQUIRE(spy.count() == 1); }
+        }
+
+        WHEN("spellcheckUnderlineWidth is changed")
+        {
+            QSignalSpy spy(&settings, &Settings::spellcheckUnderlineWidthChanged);
+            settings.setSpellcheckUnderlineWidth(5);
+            THEN("spellcheckUnderlineWidthChanged fires once") { REQUIRE(spy.count() == 1); }
         }
 
         WHEN("fontSize is changed")
@@ -740,6 +839,196 @@ SCENARIO("highlightColor is independent of backgroundColor/fontColor", "[setting
             THEN("it persists as set, regardless of backgroundColor/fontColor")
             {
                 REQUIRE(settings.highlightColor() == QColor("#ff00ff"));
+            }
+        }
+    }
+}
+
+SCENARIO("addUserDictionaryWord adds a word, rejecting duplicates and blanks", "[settings]")
+{
+    GIVEN("a Settings instance with an empty user dictionary")
+    {
+        QTemporaryDir dir;
+        REQUIRE(dir.isValid());
+        Settings settings(tempConfigPath(dir));
+        REQUIRE(settings.userDictionaryWords().isEmpty());
+
+        WHEN("a new word is added")
+        {
+            QSignalSpy spy(&settings, &Settings::userDictionaryWordsChanged);
+            settings.addUserDictionaryWord("Hello");
+
+            THEN("it appears in userDictionaryWords, stored with its original casing")
+            {
+                REQUIRE(settings.userDictionaryWords() == QStringList{"Hello"});
+            }
+
+            THEN("userDictionaryWordsChanged fires exactly once")
+            {
+                REQUIRE(spy.count() == 1);
+            }
+
+            AND_WHEN("the exact same word is added again")
+            {
+                settings.addUserDictionaryWord("Hello");
+
+                THEN("no duplicate entry is added")
+                {
+                    REQUIRE(settings.userDictionaryWords() == QStringList{"Hello"});
+                }
+
+                THEN("userDictionaryWordsChanged does not fire again")
+                {
+                    REQUIRE(spy.count() == 1);
+                }
+            }
+
+            AND_WHEN("the same word is added again in a different case")
+            {
+                settings.addUserDictionaryWord("hello");
+
+                THEN("it is treated as the same entry (case-insensitive), no duplicate added")
+                {
+                    REQUIRE(settings.userDictionaryWords() == QStringList{"Hello"});
+                }
+
+                THEN("userDictionaryWordsChanged does not fire again")
+                {
+                    REQUIRE(spy.count() == 1);
+                }
+            }
+        }
+
+        WHEN("an empty string is added")
+        {
+            QSignalSpy spy(&settings, &Settings::userDictionaryWordsChanged);
+            settings.addUserDictionaryWord("");
+
+            THEN("nothing is added and the signal does not fire")
+            {
+                REQUIRE(settings.userDictionaryWords().isEmpty());
+                REQUIRE(spy.count() == 0);
+            }
+        }
+
+        WHEN("a whitespace-only string is added")
+        {
+            QSignalSpy spy(&settings, &Settings::userDictionaryWordsChanged);
+            settings.addUserDictionaryWord("   ");
+
+            THEN("nothing is added and the signal does not fire")
+            {
+                REQUIRE(settings.userDictionaryWords().isEmpty());
+                REQUIRE(spy.count() == 0);
+            }
+        }
+    }
+}
+
+SCENARIO("removeUserDictionaryWord removes a word case-insensitively", "[settings]")
+{
+    GIVEN("a Settings instance with \"Hello\" already in the user dictionary")
+    {
+        QTemporaryDir dir;
+        REQUIRE(dir.isValid());
+        Settings settings(tempConfigPath(dir));
+        settings.addUserDictionaryWord("Hello");
+        REQUIRE(settings.userDictionaryWords() == QStringList{"Hello"});
+
+        WHEN("the word is removed using a different case than it was stored with")
+        {
+            QSignalSpy spy(&settings, &Settings::userDictionaryWordsChanged);
+            settings.removeUserDictionaryWord("hello");
+
+            THEN("it is removed from userDictionaryWords")
+            {
+                REQUIRE(settings.userDictionaryWords().isEmpty());
+            }
+
+            THEN("userDictionaryWordsChanged fires exactly once")
+            {
+                REQUIRE(spy.count() == 1);
+            }
+        }
+
+        WHEN("a word that isn't present is removed")
+        {
+            QSignalSpy spy(&settings, &Settings::userDictionaryWordsChanged);
+            settings.removeUserDictionaryWord("goodbye");
+
+            THEN("the dictionary is unchanged")
+            {
+                REQUIRE(settings.userDictionaryWords() == QStringList{"Hello"});
+            }
+
+            THEN("userDictionaryWordsChanged does not fire")
+            {
+                REQUIRE(spy.count() == 0);
+            }
+        }
+    }
+}
+
+SCENARIO("userDictionaryWords persists to disk across instances", "[settings]")
+{
+    GIVEN("a Settings instance with two words added to the user dictionary")
+    {
+        QTemporaryDir dir;
+        REQUIRE(dir.isValid());
+        const QString path = tempConfigPath(dir);
+        Settings settings(path);
+        settings.addUserDictionaryWord("Suop");
+        settings.addUserDictionaryWord("Qml");
+
+        WHEN("a second Settings instance is constructed against the same file")
+        {
+            Settings reloaded(path);
+
+            THEN("both words are present, regardless of order")
+            {
+                const auto words = reloaded.userDictionaryWords();
+                REQUIRE(words.size() == 2);
+                REQUIRE(words.contains("Suop"));
+                REQUIRE(words.contains("Qml"));
+            }
+        }
+    }
+}
+
+SCENARIO("availableSpellcheckLanguages always includes the bundled fallback entry", "[settings]")
+{
+    GIVEN("a fresh Settings instance backed by a brand-new, empty config file")
+    {
+        QTemporaryDir dir;
+        REQUIRE(dir.isValid());
+        Settings settings(tempConfigPath(dir));
+
+        WHEN("availableSpellcheckLanguages is queried")
+        {
+            const QVariantList languages = settings.availableSpellcheckLanguages();
+
+            THEN("the list is never empty")
+            {
+                // Regardless of whether Sonnet is compiled in or finds any
+                // dictionaries on this machine, the bundled fallback entry
+                // below guarantees the picker UI never sees an empty list.
+                REQUIRE_FALSE(languages.isEmpty());
+            }
+
+            THEN("exactly one entry has code \"bundled:en_US\", the app's own bundled fallback dictionary")
+            {
+                // Deliberately not asserting anything about Sonnet's own
+                // real system entries (count/content) here — that's
+                // environment-dependent, not something to pin down in a
+                // test (same reasoning as the Sonnet-gated smoke test in
+                // test_spell_checker.cpp).
+                int bundledCount = 0;
+                for (const QVariant &entry : languages) {
+                    const QVariantMap map = entry.toMap();
+                    if (map.value("code").toString() == "bundled:en_US")
+                        ++bundledCount;
+                }
+                REQUIRE(bundledCount == 1);
             }
         }
     }
