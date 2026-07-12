@@ -690,23 +690,21 @@ Window {
                         spellcheckEnabled: settings.spellcheckEnabled
                         spellcheckLanguage: settings.spellcheckLanguage
                         userDictionaryWords: settings.userDictionaryWords
-                        // Excludes the word the cursor is currently inside
-                        // from misspelled-word flagging (see DocumentHandler
-                        // ::cursorPosition's own comment) — but only while
-                        // there's no active selection. Bug found live ("the
-                        // current word that has a popup currently loses the
-                        // underline when the popup is on"): tapping a
-                        // misspelled word calls editor.select(word.start,
-                        // word.end) below, which lands editor.cursorPosition
-                        // at the word's own end — indistinguishable, by
-                        // position alone, from someone still mid-typing that
-                        // exact word. -1 (a position no word can ever
-                        // contain) is passed instead whenever a real
-                        // selection is held, so a tapped/selected word keeps
-                        // its underline for as long as its suggestion popup
-                        // stays open, and only a genuine, zero-length caret
-                        // can exclude a word.
-                        cursorPosition: editor.selectionStart === editor.selectionEnd ? editor.cursorPosition : -1
+                        // Controls how long a word must sit unedited before
+                        // it's flagged as misspelled — see DocumentHandler
+                        // ::spellcheckDebounceMs's own comment for the
+                        // pending-edit mechanism this drives. Replaced an
+                        // earlier cursor/selection-position-based exclusion
+                        // attempt (bug found live: "the current word that
+                        // has a popup currently loses the underline when the
+                        // popup is on" — tapping a word to open its
+                        // suggestion popup calls editor.select(), landing
+                        // the cursor at the word's own end, indistinguishable
+                        // by POSITION alone from still mid-typing it); this
+                        // tracks the actual edit instead, so a tapped/
+                        // selected word — no text changed — is simply never
+                        // excluded in the first place.
+                        spellcheckDebounceMs: settings.spellcheckDebounceMs
                         // Catches formatting changes that don't move the
                         // selection at all — e.g. clicking Bold on a held
                         // selection (persistentSelection keeps selectionStart/
@@ -811,7 +809,8 @@ Window {
                                 // so their own onChanged handlers can force
                                 // a repaint — Canvas only repaints reactively
                                 // when something IT explicitly triggers
-                                // (onWordRectChanged below) changes; a
+                                // (onWidthChanged/onHeightChanged below, or
+                                // these two handlers directly) changes; a
                                 // Settings change on its own wouldn't
                                 // otherwise be noticed.
                                 property color underlineColor: settings.spellcheckUnderlineColor
@@ -819,36 +818,146 @@ Window {
                                 onUnderlineColorChanged: requestPaint()
                                 onUnderlineWidthChanged: requestPaint()
 
-                                // Explicitly reads editor.width (not just
-                                // start/end) so a window resize — which
-                                // rewraps text and shifts word positions
-                                // within editor's local space without
-                                // changing misspelledWordRanges itself —
-                                // still forces a recompute.
-                                property rect wordRect: {
-                                    void editor.width
+                                // Bug found live ("deleting text before a
+                                // misspelled word leaves its underline
+                                // drawn in the wrong place", then again as
+                                // "adding text before an underline breaks
+                                // it... inconsistent", reproduced in a
+                                // multi-paragraph note): positionToRectangle()
+                                // depends on the editor's actual rendered
+                                // TEXT LAYOUT, which settles ASYNCHRONOUSLY
+                                // — a frame or more after start/end update —
+                                // so recomputing the instant start/end (or
+                                // editor.width/contentWidth/contentHeight)
+                                // change, via a plain reactive binding, can
+                                // observe layout mid-settle and capture a
+                                // transiently wrong (sometimes degenerate,
+                                // zero-size) rect.
+                                //
+                                // recomputeWordRect() below is called
+                                // IMPERATIVELY instead of being a binding —
+                                // x/y/width/height are only ever ASSIGNED,
+                                // never bound to a live expression — so a
+                                // start/end change on its own does nothing
+                                // to them until settleDebounce below
+                                // actually fires and confirms layout has
+                                // caught up. That's what fixes a second bug
+                                // found live once the FIRST fix above
+                                // landed ("a flash — the line disappears
+                                // for a tiny bit before reappearing"): the
+                                // old plain-binding version recomputed
+                                // TWICE per edit (once immediately, reading
+                                // stale layout and briefly going invisible;
+                                // once more when settleDebounce's
+                                // recomputeGeneration bump forced a second
+                                // pass) — every edit visibly flickered the
+                                // underline off and back on. Never
+                                // recomputing until settleDebounce fires
+                                // means the delegate just stays at its
+                                // LAST KNOWN GOOD position/size the whole
+                                // time in between: no intermediate state is
+                                // ever painted, so nothing flashes.
+                                function recomputeWordRect() {
                                     if (!editor.ready)
-                                        return Qt.rect(0, 0, 0, 0)
+                                        return
                                     const startRect = editor.positionToRectangle(start)
                                     const endRect = editor.positionToRectangle(end)
                                     // Multi-line misspelled words shouldn't
                                     // happen in practice (words don't wrap
-                                    // mid-word) — if one somehow does, skip
-                                    // drawing it rather than draw a garbled
-                                    // cross-line shape.
+                                    // mid-word) — if one somehow does,
+                                    // leave the last good rect in place
+                                    // rather than draw a garbled cross-line
+                                    // shape.
                                     if (startRect.y !== endRect.y)
-                                        return Qt.rect(0, 0, 0, 0)
-                                    return Qt.rect(startRect.x, startRect.y,
-                                                    Math.max(1, endRect.x - startRect.x), startRect.height)
+                                        return
+                                    // Qualified with the item's own id
+                                    // (underlineCanvas.x, not a bare x)
+                                    // deliberately — bug found live
+                                    // (delegate.x read back as JS
+                                    // `undefined` after an edit, in the
+                                    // real AOT-compiled build only): the
+                                    // qmlsc/qmlcachegen AOT compiler this
+                                    // project's build already uses for
+                                    // every .qml file (see the build's own
+                                    // "Generating .rcc/qmlcache/..." step)
+                                    // apparently resolves an unqualified
+                                    // `x = ...` assignment inside a named
+                                    // JS function differently than the
+                                    // interpreted engine would — qualifying
+                                    // every one of these against
+                                    // underlineCanvas explicitly removes
+                                    // any ambiguity for it to get wrong.
+                                    underlineCanvas.x = startRect.x
+                                    underlineCanvas.y = startRect.y
+                                    underlineCanvas.width = Math.max(1, endRect.x - startRect.x)
+                                    underlineCanvas.height = startRect.height
                                 }
 
-                                x: wordRect.x
-                                y: wordRect.y
-                                width: wordRect.width
-                                height: wordRect.height
+                                // EVERY trigger below — a fresh delegate's
+                                // own creation, start/end changing, a
+                                // resize, or any reflow that changes the
+                                // document's own rendered bounds — routes
+                                // through this ONE debounce, never calling
+                                // recomputeWordRect() directly. Bug found
+                                // live even after the imperative rewrite
+                                // above: an EARLIER version of this file
+                                // called recomputeWordRect() eagerly,
+                                // straight from editor's
+                                // onWidthChanged/onContentWidthChanged/
+                                // onContentHeightChanged (reasoning: a
+                                // resize's own contentWidth/contentHeight
+                                // signal fires only once its layout is
+                                // already final, so there's nothing to wait
+                                // for) — but a REGULAR EDIT can ALSO change
+                                // contentWidth/contentHeight as a side
+                                // effect (e.g. the edited line becoming the
+                                // document's new widest line), and THAT
+                                // path has no such guarantee: it's racing
+                                // the exact same not-yet-settled
+                                // positionToRectangle() this whole redesign
+                                // exists to wait out. Confirmed live: that
+                                // eager path could read a stale rect and
+                                // assign it immediately, reintroducing the
+                                // "sometimes correct, sometimes not"
+                                // flash/wrong-position bug from a second
+                                // angle. Funneling every trigger through
+                                // the same 32ms debounce costs nothing
+                                // perceptible (resize responsiveness is
+                                // still effectively instant to a human) and
+                                // removes every remaining race — there is
+                                // now exactly one code path that ever
+                                // assigns x/y/width/height.
+                                Timer {
+                                    id: settleDebounce
+                                    // A couple of frames' worth — comfortably
+                                    // past Qt Quick's own async text-layout
+                                    // catch-up for a single edit, confirmed
+                                    // live against the multi-paragraph repro
+                                    // referenced above.
+                                    interval: 32
+                                    onTriggered: underlineCanvas.recomputeWordRect()
+                                }
+                                onStartChanged: settleDebounce.restart()
+                                onEndChanged: settleDebounce.restart()
+                                Component.onCompleted: settleDebounce.restart()
+
+                                Connections {
+                                    target: editor
+                                    function onWidthChanged() { settleDebounce.restart() }
+                                    function onContentWidthChanged() { settleDebounce.restart() }
+                                    function onContentHeightChanged() { settleDebounce.restart() }
+                                }
+
                                 visible: width > 1 && height > 0
 
-                                onWordRectChanged: requestPaint()
+                                // x/y alone don't need a repaint — onPaint
+                                // draws in this Canvas's own LOCAL
+                                // coordinate space (0,0 to width,height);
+                                // a pure position change just moves the
+                                // already-painted bitmap via the scene
+                                // graph, same as any other Item.
+                                onWidthChanged: requestPaint()
+                                onHeightChanged: requestPaint()
                                 onPaint: {
                                     const ctx = getContext("2d")
                                     ctx.reset()

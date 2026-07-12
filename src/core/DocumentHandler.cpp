@@ -97,6 +97,18 @@ DocumentHandler::DocumentHandler(QObject *parent)
     : QObject(parent)
 {
     m_spellCheckerBackend = std::make_unique<UserDictionaryFilteringBackend>(makeSpellCheckerBackend(QString()));
+
+    // One-shot, restarted by every real edit (see onContentsChange) — not a
+    // recurring poll, costs nothing while the document sits idle. Owned by
+    // `this` (parented), not a stack/value member, purely so it can be
+    // constructed here alongside the connect() call below rather than
+    // needing a separate out-of-line definition.
+    m_pendingEditDebounce = new QTimer(this);
+    m_pendingEditDebounce->setSingleShot(true);
+    connect(m_pendingEditDebounce, &QTimer::timeout, this, [this]() {
+        m_pendingEditActive = false;
+        emitMisspelledWordRangesChangedIfNeeded();
+    });
 }
 
 // Defined here (not defaulted inline in the header) because
@@ -123,11 +135,20 @@ void DocumentHandler::setDocument(QQuickTextDocument *document)
         // Real text edits are the one trigger for misspelledWordRangesChanged
         // that isn't already covered by an explicit setter/invokable below —
         // connect once per document so the underline overlay knows to
-        // recompute after every edit, not just after settings changes. Routed
-        // through the change-detecting helper (not a direct emit) — see its
-        // own comment for why.
-        connect(document->textDocument(), &QTextDocument::contentsChanged, this,
-                &DocumentHandler::emitMisspelledWordRangesChangedIfNeeded);
+        // recompute after every edit, not just after settings changes.
+        // contentsChange (not the simpler, argument-less contentsChanged())
+        // is what drives this: it fires for the exact same edits
+        // contentsChanged does, but also carries the edit's own position,
+        // which onContentsChange needs to update the pending-edit debounce
+        // (see m_pendingEditActive's own comment) BEFORE recomputing —
+        // routing both through one handler, in this order, is what
+        // guarantees the just-typed word's own exclusion is already in
+        // effect the very first time misspelledWordRangesChanged fires for
+        // this edit. Two separate connections (one for the recompute, one
+        // for the debounce) would leave their relative firing order
+        // unspecified, risking exactly the one-frame "flagged, then
+        // immediately un-flagged" flash this debounce exists to prevent.
+        connect(document->textDocument(), &QTextDocument::contentsChange, this, &DocumentHandler::onContentsChange);
     } else {
         m_highlighter.reset();
     }
@@ -197,24 +218,38 @@ void DocumentHandler::setUserDictionaryWords(const QStringList &words)
     emitMisspelledWordRangesChangedIfNeeded();
 }
 
-int DocumentHandler::cursorPosition() const
+int DocumentHandler::spellcheckDebounceMs() const
 {
-    return m_cursorPosition;
+    return m_spellcheckDebounceMs;
 }
 
-void DocumentHandler::setCursorPosition(int position)
+void DocumentHandler::setSpellcheckDebounceMs(int ms)
 {
-    if (m_cursorPosition == position)
+    if (m_spellcheckDebounceMs == ms)
         return;
-    m_cursorPosition = position;
-    emit cursorPositionChanged();
-    // A cursor move can change which word is excluded from checking (see
-    // this property's own header comment) without any text actually having
-    // changed — e.g. clicking out of the word just typed, or arrowing into
-    // a different one. Routed through the change-detecting helper so
-    // ordinary cursor movement that doesn't cross into/out of any word
-    // (the common case: moving within already-checked text) doesn't force
-    // a needless Repeater rebuild.
+    m_spellcheckDebounceMs = ms;
+    emit spellcheckDebounceMsChanged();
+    // Deliberately NOT restarting/adjusting an already-running
+    // m_pendingEditDebounce here: this only takes effect for the NEXT edit
+    // onward, same "settings change infrequently, no need to reach into
+    // in-flight state" reasoning as the rest of this class.
+}
+
+void DocumentHandler::onContentsChange(int from, int charsRemoved, int charsAdded)
+{
+    // A pure formatting change (e.g. SpellCheckHighlighter's own
+    // setFormat() calls during a rehighlight pass) reports charsRemoved ==
+    // charsAdded == 0 — not a real edit. Nothing about which words are
+    // misspelled can have changed either, so there's nothing to recompute
+    // or debounce here.
+    if (charsRemoved != 0 || charsAdded != 0) {
+        // Position right after the edit — the same place a cursor would
+        // land immediately after typing that character, or after a
+        // deletion.
+        m_pendingEditPosition = from + charsAdded;
+        m_pendingEditActive = true;
+        m_pendingEditDebounce->start(m_spellcheckDebounceMs);
+    }
     emitMisspelledWordRangesChangedIfNeeded();
 }
 
@@ -231,6 +266,8 @@ QVariantList DocumentHandler::computeMisspelledWordRanges() const
 
     QTextDocument *doc = m_document->textDocument();
     for (QTextBlock block = doc->begin(); block.isValid(); block = block.next()) {
+        const QString blockText = block.text();
+
         // Reuses the previous pass's dictionary lookups for this block if
         // its text hasn't changed since (see MisspelledBlockCache's own
         // comment) — only blocks actually touched by the most recent edit
@@ -243,7 +280,6 @@ QVariantList DocumentHandler::computeMisspelledWordRanges() const
             if (isNewCache)
                 cache = new MisspelledBlockCache();
 
-            const QString blockText = block.text();
             const QList<QPair<int, int>> ranges = SpellCheckHighlighter::wordRangesInBlock(block);
             cache->misspelledRanges.clear();
             for (const auto &range : ranges) {
@@ -260,19 +296,55 @@ QVariantList DocumentHandler::computeMisspelledWordRanges() const
         for (const auto &range : cache->misspelledRanges) {
             const int start = block.position() + range.first;
             const int end = start + range.second;
-            // Skip whatever word the cursor is currently sitting inside —
-            // see cursorPosition's own header comment for why: it's the
-            // word actively being typed/edited, so a partial token
-            // shouldn't be flagged as a misspelling-in-progress. Checked
-            // here (against the cache's raw result), not baked into the
-            // cache itself, since the cursor moving in and out of a word
-            // must not require re-running isMisspelled() against it.
-            if (m_cursorPosition >= start && m_cursorPosition <= end)
+            // Skip the word sitting at the most recent real edit position,
+            // for as long as that edit is still "fresh" (see
+            // m_pendingEditActive's own comment) — it's the word actively
+            // being typed, so a partial token shouldn't be flagged as a
+            // misspelling-in-progress. Checked here (against the cache's
+            // raw result), not baked into the cache itself, since the
+            // debounce expiring must not require re-running isMisspelled()
+            // against it.
+            //
+            // Bug found live ("deleting text before a misspelled word
+            // makes the word lose its underline"): pendingEditPosition ==
+            // start (the lower bound used to be inclusive, >=) does NOT
+            // mean this word is being edited — it means the edit's
+            // position merely collapsed to sit exactly at this word's own
+            // left edge, which happens whenever a pure deletion (charsAdded
+            // == 0, so pendingEditPosition == from, the deletion's own
+            // start position) removes text immediately BEFORE this word
+            // without touching any of its own characters at all — e.g.
+            // deleting a preceding filler word, shifting a genuinely
+            // untouched typo into that exact spot. An insertion can never
+            // trigger this false match: pendingEditPosition is
+            // from + charsAdded, so typing so much as one character always
+            // pushes it strictly past any word starting at `from`, landing
+            // inside/at-the-end of whatever was just typed instead —
+            // meaning the lower bound only needs loosening for deletions,
+            // and only at this single boundary value. Excluding start
+            // itself (now a strict >) still catches every case pendingEdit
+            // exists for — typing forward inside/to-the-end of a word
+            // (position lands strictly after its start every time, per the
+            // above) — and merely stops ALSO catching a deletion that
+            // deleted a word's own leading character(s) (position lands
+            // back at start, same as the untouched-neighbor case above);
+            // that word's spelling is a complete, unambiguous fact the
+            // instant the deletion lands, not a partial token still being
+            // formed, so flagging it immediately is correct too.
+            if (m_pendingEditActive && m_pendingEditPosition > start && m_pendingEditPosition <= end)
                 continue;
             QVariantMap entry;
             entry.insert(QStringLiteral("start"), start);
             entry.insert(QStringLiteral("end"), end);
             result.append(entry);
+            // Feature request: precache this word's suggestions the moment
+            // it settles into being genuinely reported as misspelled
+            // (rather than only computing them the instant the user taps
+            // it) — see cachedSuggestionsFor's own comment. A cache hit for
+            // an already-seen word is just a hash lookup, so this costs
+            // nothing on the (common) keystrokes where nothing new
+            // actually settled.
+            cachedSuggestionsFor(blockText.mid(range.first, range.second));
         }
     }
     return result;
@@ -303,6 +375,10 @@ void DocumentHandler::invalidateAllMisspelledBlockCaches()
         if (auto *cache = static_cast<MisspelledBlockCache *>(block.userData()))
             cache->revision = -1;
     }
+    // A word's suggestions can go stale for the exact same reasons its
+    // cached misspelled/not verdict can (a language swap, or a user-
+    // dictionary change) — see cachedSuggestionsFor's own comment.
+    m_suggestionsCache.clear();
 }
 
 void DocumentHandler::rehighlightSpellcheck()
@@ -397,7 +473,18 @@ QStringList DocumentHandler::suggestionsForWordAt(int position) const
         return QStringList();
 
     const QString text = wordAt(position).value(QStringLiteral("text")).toString();
-    return m_spellCheckerBackend->suggestions(text);
+    return cachedSuggestionsFor(text);
+}
+
+QStringList DocumentHandler::cachedSuggestionsFor(const QString &word) const
+{
+    auto cached = m_suggestionsCache.find(word);
+    if (cached != m_suggestionsCache.end())
+        return cached.value();
+
+    const QStringList suggestions = m_spellCheckerBackend->suggestions(word);
+    m_suggestionsCache.insert(word, suggestions);
+    return suggestions;
 }
 
 void DocumentHandler::replaceRange(int start, int end, const QString &replacement)

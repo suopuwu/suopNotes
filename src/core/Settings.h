@@ -30,6 +30,7 @@ class Settings : public QObject
     Q_PROPERTY(int spellcheckMaxSuggestions READ spellcheckMaxSuggestions WRITE setSpellcheckMaxSuggestions NOTIFY spellcheckMaxSuggestionsChanged)
     Q_PROPERTY(QColor spellcheckUnderlineColor READ spellcheckUnderlineColor WRITE setSpellcheckUnderlineColor NOTIFY spellcheckUnderlineColorChanged)
     Q_PROPERTY(qreal spellcheckUnderlineWidth READ spellcheckUnderlineWidth WRITE setSpellcheckUnderlineWidth NOTIFY spellcheckUnderlineWidthChanged)
+    Q_PROPERTY(int spellcheckDebounceMs READ spellcheckDebounceMs WRITE setSpellcheckDebounceMs NOTIFY spellcheckDebounceMsChanged)
     Q_PROPERTY(bool glassEnabled READ glassEnabled WRITE setGlassEnabled NOTIFY glassEnabledChanged)
     Q_PROPERTY(qreal glassSheenOpacity READ glassSheenOpacity WRITE setGlassSheenOpacity NOTIFY glassSheenOpacityChanged)
     Q_PROPERTY(qreal glassSheenStrength READ glassSheenStrength WRITE setGlassSheenStrength NOTIFY glassSheenStrengthChanged)
@@ -207,6 +208,15 @@ public:
     qreal spellcheckUnderlineWidth() const;
     void setSpellcheckUnderlineWidth(qreal width);
 
+    // How long (in ms) a word must sit unedited before it's flagged as
+    // misspelled (feature request: debounce the in-progress word instead of
+    // excluding it by cursor/selection position — see DocumentHandler's own
+    // pending-edit tracking for where this is actually applied). Defaults
+    // to 500ms, the same rough grace period most word processors give you
+    // before flagging what you're still actively typing.
+    int spellcheckDebounceMs() const;
+    void setSpellcheckDebounceMs(int ms);
+
     // Returns the set of selectable spellcheck languages for a picker UI:
     // every language Sonnet reports as available on this system (code ->
     // display name, e.g. "en_US" -> "American English"), PLUS one synthetic
@@ -364,6 +374,7 @@ signals:
     void spellcheckMaxSuggestionsChanged();
     void spellcheckUnderlineColorChanged();
     void spellcheckUnderlineWidthChanged();
+    void spellcheckDebounceMsChanged();
     void glassEnabledChanged();
     void glassSheenOpacityChanged();
     void glassSheenStrengthChanged();

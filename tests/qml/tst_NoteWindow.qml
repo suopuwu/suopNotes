@@ -2059,6 +2059,65 @@ Item {
                    "\"the\" should be among the real dictionary's suggestions for \"teh\", got: " + JSON.stringify(suggestions))
         }
 
+        // Feature request: precache each misspelled word's suggestions as
+        // it settles (DocumentHandler::cachedSuggestionsFor, called from
+        // computeMisspelledWordRanges()) rather than only computing them
+        // the instant the user taps a word — so the suggestion popup
+        // doesn't have to wait on a real dictionary lookup before it can
+        // even start opening. Calling suggestionsForWordAt() twice exercises
+        // both the precached (from the ambient misspelledWordRanges
+        // recompute above) and the on-demand path, which must agree.
+        function test_suggestionsForWordAt_matches_the_precached_suggestions_for_the_same_word() {
+            const win = instantiator.objectAt(0)
+            win.docHandler.setMarkdown("teh normal\n")
+            wait(50)
+
+            try {
+                // Forces the precaching pass: reading misspelledWordRanges
+                // walks every settled misspelled word and caches its
+                // suggestions (see computeMisspelledWordRanges()'s own
+                // comment).
+                win.docHandler.misspelledWordRanges
+
+                const suggestions = win.docHandler.suggestionsForWordAt(1)
+                verify(suggestions.indexOf("the") !== -1,
+                       "the on-demand lookup should return the same real suggestions the precaching pass already " +
+                       "computed, got: " + JSON.stringify(suggestions))
+            } finally {
+                win.docHandler.setMarkdown("")
+                wait(50)
+            }
+        }
+
+        // Guards cachedSuggestionsFor's own cache against going stale:
+        // rehighlightSpellcheck() is the same explicit "what counts as
+        // misspelled may have changed" signal that already forces the
+        // per-block misspelled-word cache to recompute (see
+        // invalidateAllMisspelledBlockCaches's own comment) — the
+        // suggestions cache must be cleared alongside it, not just the
+        // block cache, or a stale suggestion list could survive a
+        // language/dictionary change.
+        function test_suggestionsForWordAt_still_returns_correct_suggestions_after_rehighlightSpellcheck() {
+            const win = instantiator.objectAt(0)
+            win.docHandler.setMarkdown("teh normal\n")
+            wait(50)
+
+            try {
+                const before = win.docHandler.suggestionsForWordAt(1)
+                verify(before.indexOf("the") !== -1, "precondition: real suggestions before rehighlighting")
+
+                win.docHandler.rehighlightSpellcheck()
+
+                const after = win.docHandler.suggestionsForWordAt(1)
+                verify(after.indexOf("the") !== -1,
+                       "suggestions should still be correct after rehighlightSpellcheck — cache invalidation must " +
+                       "not corrupt or lose them: " + JSON.stringify(after))
+            } finally {
+                win.docHandler.setMarkdown("")
+                wait(50)
+            }
+        }
+
         function test_a_correctly_spelled_word_is_not_misspelled() {
             const win = instantiator.objectAt(0)
             win.docHandler.setMarkdown("hello world\n")
@@ -2135,60 +2194,73 @@ Item {
         // word you're working on... partial in-progress words are flagged
         // as misspelled"): a word still being typed is, by definition, an
         // incomplete token — flagging it mid-keystroke made the underline
-        // flicker on and off with every letter. docHandler.cursorPosition
-        // (bound from editor.cursorPosition in NoteWindow.qml) excludes
-        // whatever word the cursor currently sits inside from
-        // misspelledWordRanges, then re-includes it the moment the cursor
-        // moves elsewhere.
-        function test_misspelledWordRanges_excludes_the_word_the_cursor_is_currently_inside() {
+        // flicker on and off with every letter. An earlier attempt at this
+        // excluded whatever word the CURSOR happened to be positioned
+        // inside, but that reintroduced its own bug (see the next test's
+        // own comment) — DocumentHandler now debounces by actual EDITS
+        // instead: the word at the position of the most recent real text
+        // edit is excluded from misspelledWordRanges until
+        // spellcheckDebounceMs has passed with no further edit there (see
+        // DocumentHandler::onContentsChange).
+        function test_misspelledWordRanges_excludes_a_word_until_its_edit_debounce_expires() {
             const win = instantiator.objectAt(0)
-            win.docHandler.setMarkdown("teh normal\n")
+            const originalDebounce = settings.spellcheckDebounceMs
+            settings.spellcheckDebounceMs = 100 // short, so this test doesn't need to wait long
+            // "normal x here": "x" is a one-character placeholder already
+            // flanked by real spaces on both sides, so replacing JUST it
+            // (not inserting fresh whitespace of its own) sidesteps a
+            // confirmed-live TextArea/MarkdownText quirk where an insert()
+            // call's own leading/trailing whitespace gets silently
+            // stripped during markdown reserialization (the same class of
+            // issue TextFormatting::insertTabSpaces' own comment documents
+            // elsewhere).
+            win.docHandler.setMarkdown("normal x here\n")
             wait(50)
 
             try {
-                win.editor.cursorPosition = 2 // inside "teh" (range [0, 3))
+                win.docHandler.replaceRange(7, 8, "teh") // replaces "x" with "teh"
                 compare(win.docHandler.misspelledWordRanges.length, 0,
-                        "the word the cursor is sitting inside should not be flagged while it's still being edited")
+                        "a word within its debounce window (just edited) should not be flagged yet")
 
-                win.editor.cursorPosition = 10 // past "normal", away from "teh"
+                wait(200) // past the 100ms debounce
                 const ranges = win.docHandler.misspelledWordRanges
                 compare(ranges.length, 1,
-                        "moving the cursor away from \"teh\" should re-flag it: " + JSON.stringify(ranges))
-                compare(ranges[0].start, 0)
-                compare(ranges[0].end, 3)
+                        "once the debounce expires, the now-settled word should be flagged: " + JSON.stringify(ranges))
+                compare(ranges[0].start, 7)
+                compare(ranges[0].end, 10)
             } finally {
+                settings.spellcheckDebounceMs = originalDebounce
                 win.docHandler.setMarkdown("")
                 wait(50)
             }
         }
 
         // Bug found live ("the current word that has a popup currently
-        // loses the underline when the popup is on. It shouldn't"): tapping
-        // a misspelled word calls editor.select(word.start, word.end),
-        // which — same as mid-typing — lands editor.cursorPosition at the
-        // word's own end. Without distinguishing "cursor there because of a
-        // held selection" from "cursor there because it's still being
-        // typed", the exact cursor-in-word exclusion the test above relies
-        // on would ALSO hide a word's underline for as long as its
-        // suggestion popup stayed open. NoteWindow.qml only forwards a real
-        // cursor position to docHandler when there's no selection
-        // (editor.selectionStart === editor.selectionEnd); with one held,
-        // -1 is forwarded instead, so this exclusion never applies to a
-        // selected word.
-        function test_misspelledWordRanges_still_includes_a_selected_word_even_though_the_cursor_sits_at_its_end() {
+        // loses the underline when the popup is on. It shouldn't"): the
+        // cursor/selection-position-based exclusion this replaced excluded
+        // whatever word the cursor sat inside — tapping a misspelled word
+        // calls editor.select(word.start, word.end), which lands the cursor
+        // at the word's own end, indistinguishable BY POSITION ALONE from
+        // still mid-typing it, so a tapped word's underline disappeared for
+        // as long as its suggestion popup stayed open. Debouncing by actual
+        // EDITS instead sidesteps this entirely: select() doesn't edit
+        // anything, so it never starts (or extends) the debounce — a
+        // selected word is simply never a candidate for exclusion.
+        function test_misspelledWordRanges_never_excludes_a_merely_selected_word() {
             const win = instantiator.objectAt(0)
             win.docHandler.setMarkdown("teh normal\n")
             wait(50)
 
             try {
-                win.editor.select(0, 3) // selects "teh"
+                win.editor.select(0, 3) // selects "teh" — no text edited
                 compare(win.editor.cursorPosition, 3,
                         "precondition: a forward selection should land the cursor at its own end")
 
                 const ranges = win.docHandler.misspelledWordRanges
                 compare(ranges.length, 1,
                         "\"teh\" should stay flagged while it's selected (i.e. while its suggestion popup is " +
-                        "open), not be excluded the same way an in-progress word would be: " + JSON.stringify(ranges))
+                        "open) — selecting it is not an edit, so it should never enter the debounce at all: " +
+                        JSON.stringify(ranges))
                 compare(ranges[0].start, 0)
                 compare(ranges[0].end, 3)
             } finally {
@@ -2305,6 +2377,416 @@ Item {
                 compare(win.misspelledWordRepeater.itemAt(1), secondDelegateBefore,
                         "the delegate for the second word should be REUSED (its properties updated in place), " +
                         "not destroyed and recreated, since only its position changed")
+            } finally {
+                win.docHandler.setMarkdown("")
+                wait(50)
+            }
+        }
+
+        // Bug found live ("deleting text before a misspelled word makes
+        // future misspelled words have an incorrect underline"): a pure
+        // deletion (replaceRange(start, end, "") with nothing typed in its
+        // place) whose removed range sits immediately before a misspelled
+        // word collapses DocumentHandler's pendingEditPosition to land
+        // exactly on that word's own (new, shifted) start — which used to
+        // be treated as "the word is still being typed" (see
+        // DocumentHandler::computeMisspelledWordRanges' pendingEdit
+        // exclusion check), silently dropping the word from
+        // misspelledWordRanges even though the deletion never touched any
+        // of its own characters. "teh" here is deliberately short (any
+        // real x position, never line-wrapped in this narrow test window,
+        // unlike a long word that can wrap to a fresh line and paint at
+        // x == 0 regardless of its document position — which would make an
+        // x-position assertion meaningless).
+        function test_deleting_earlier_text_moves_the_underline_delegate_to_its_new_position() {
+            const win = instantiator.objectAt(0)
+            win.docHandler.setMarkdown("hello teh normal words here\n")
+            wait(50)
+            // Parked in "normal", safely away from "teh".
+            win.editor.cursorPosition = 12
+
+            try {
+                const rangesBefore = JSON.parse(JSON.stringify(win.docHandler.misspelledWordRanges))
+                compare(rangesBefore.length, 1,
+                        "precondition: only \"teh\" should be flagged, not \"hello\" or the real words " +
+                        "around it: " + JSON.stringify(rangesBefore))
+                compare(rangesBefore[0].start, 6)
+                compare(rangesBefore[0].end, 9)
+
+                tryCompare(win.misspelledWordRepeater, "count", 1)
+                const delegate = win.misspelledWordRepeater.itemAt(0)
+                verify(delegate, "precondition: the flagged word has its own delegate")
+                const rectBefore = win.editor.positionToRectangle(6)
+                tryCompare(delegate, "x", rectBefore.x)
+                verify(rectBefore.x > 0, "precondition: \"teh\" doesn't start at the editor's own left edge")
+
+                // Deletes "hello " (the first 6 characters), shifting "teh"
+                // 6 positions earlier — a real "delete text before a
+                // misspelled word" edit, going through the same
+                // replaceRange() path the tap-to-suggest popup itself uses
+                // to apply a replacement.
+                win.docHandler.replaceRange(0, 6, "")
+                win.editor.cursorPosition = 3
+                wait(50)
+
+                const rangesAfter = win.docHandler.misspelledWordRanges
+                compare(rangesAfter.length, 1,
+                        "\"teh\" must still be flagged after a deletion that never touched its own characters " +
+                        "— it must not be mistaken for the word still being typed: " + JSON.stringify(rangesAfter))
+                compare(rangesAfter[0].start, 0)
+                compare(rangesAfter[0].end, 3)
+
+                compare(win.misspelledWordRepeater.count, 1,
+                        "the delegate count should stay the same after a shift-only deletion")
+                compare(win.misspelledWordRepeater.itemAt(0), delegate,
+                        "the delegate for \"teh\" should be REUSED, not destroyed and recreated")
+
+                const rectAfter = win.editor.positionToRectangle(0)
+                compare(rectAfter.x, 0, "precondition: \"teh\" now sits at the very start of the document")
+                tryCompare(delegate, "x", rectAfter.x)
+                verify(delegate.x < rectBefore.x,
+                       "the reused delegate's own painted x position must move left to follow \"teh\", not " +
+                       "stay stuck at its pre-deletion spot (got " + delegate.x + ", was " + rectBefore.x + ")")
+            } finally {
+                win.docHandler.setMarkdown("")
+                wait(50)
+            }
+        }
+
+        // Bug found live ("adding text before a misspelled word breaks its
+        // underline — oddly, underlines added after that break too"): the
+        // mirror-image of the deletion bug above, but for INSERTION. Checks
+        // both halves of the report by asserting every delegate paints at
+        // its OWN currently-bound range's real position, regardless of
+        // which physical delegate object ends up bound to which word —
+        // syncMisspelledWordsModel() reuses delegates by INDEX, not by
+        // word identity (see its own comment), so inserting a NEW
+        // misspelled word ahead of "teh" actually repurposes what used to
+        // be "teh"'s own delegate (now index 0) to display the new word
+        // instead, and appends a FRESH delegate for "teh" at index 1 — the
+        // reverse of what a naive reading of "teh's delegate should be
+        // reused" would expect. What must hold regardless of that reuse
+        // bookkeeping: whichever delegate ends up bound to which range,
+        // its painted x must match that range's real on-screen position.
+        function test_inserting_earlier_text_moves_the_underline_delegate_to_its_new_position() {
+            const win = instantiator.objectAt(0)
+            // "hi" is a deliberate placeholder, not the word under test: a
+            // real, correctly-spelled word (not flagged itself) that sits
+            // in the exact spot the new misspelled word will occupy, ALREADY
+            // flanked by a real, pre-existing space before "teh" — see
+            // test_misspelledWordRanges_excludes_a_word_until_its_edit_
+            // debounce_expires' own comment for why this sidesteps a
+            // confirmed-live TextArea/MarkdownText quirk where an insert()
+            // call's own leading/trailing whitespace gets silently stripped
+            // during markdown reserialization: replaceRange() below only
+            // ever inserts "xyznotaword" itself (no whitespace of its own
+            // at either end), never touching the separating space.
+            win.docHandler.setMarkdown("hi teh normal words here\n")
+            wait(50)
+            // Parked in "normal", safely away from both "hi" and "teh".
+            win.editor.cursorPosition = 9
+
+            try {
+                const rangesBefore = JSON.parse(JSON.stringify(win.docHandler.misspelledWordRanges))
+                compare(rangesBefore.length, 1,
+                        "precondition: only \"teh\" should be flagged, not the \"hi\" placeholder: " +
+                        JSON.stringify(rangesBefore))
+                compare(rangesBefore[0].start, 3)
+                compare(rangesBefore[0].end, 6)
+
+                tryCompare(win.misspelledWordRepeater, "count", 1)
+                const rectBefore = win.editor.positionToRectangle(3)
+                tryCompare(win.misspelledWordRepeater.itemAt(0), "x", rectBefore.x)
+
+                // Replaces "hi" (positions 0-2) with "xyznotaword" (11
+                // characters) — both a real "add text before a misspelled
+                // word" edit (shifting "teh" 9 positions right) AND, since
+                // "xyznotaword" is itself gibberish, a fresh word becoming
+                // misspelled for the first time as a direct result of that
+                // same edit — going through the same replaceRange() path
+                // the tap-to-suggest popup itself uses.
+                win.docHandler.replaceRange(0, 2, "xyznotaword")
+                win.editor.cursorPosition = 20 // parked back in "normal"
+                wait(600) // past the default 500ms edit-exclusion debounce for BOTH words
+
+                const rangesAfter = win.docHandler.misspelledWordRanges
+                compare(rangesAfter.length, 2,
+                        "\"teh\" must still be flagged (shifted, not dropped) and \"xyznotaword\" must now " +
+                        "ALSO be flagged: " + JSON.stringify(rangesAfter))
+                tryCompare(win.misspelledWordRepeater, "count", 2)
+
+                const tehRangeAfter = rangesAfter.find(r => r.start === rangesBefore[0].start + 9)
+                verify(tehRangeAfter, "\"teh\" should have shifted right by exactly the 9-character difference " +
+                       "between \"hi\" and \"xyznotaword\": " + JSON.stringify(rangesAfter))
+                const xyzRange = rangesAfter.find(r => r.start !== tehRangeAfter.start)
+                verify(xyzRange, "precondition: the other range belongs to the newly-flagged word")
+                verify(xyzRange.start < tehRangeAfter.start,
+                       "precondition: \"xyznotaword\" sorts before \"teh\" in document order")
+
+                // Every currently-bound delegate, regardless of index, must
+                // paint at ITS OWN range's real position — the actual claim
+                // in the bug report ("underlines added after that break
+                // too"), not just that some specific object got reused.
+                for (let i = 0; i < win.misspelledWordRepeater.count; i++) {
+                    const item = win.misspelledWordRepeater.itemAt(i)
+                    const expectedRect = win.editor.positionToRectangle(item.start)
+                    tryCompare(item, "x", expectedRect.x)
+                }
+
+                const tehDelegate = win.misspelledWordRepeater.itemAt(
+                    win.misspelledWordRepeater.itemAt(0).start === xyzRange.start ? 1 : 0)
+                verify(tehDelegate.x > rectBefore.x,
+                       "\"teh\"'s own delegate must paint to the right of where \"teh\" used to sit, not stay " +
+                       "stuck at its pre-insertion spot (got " + tehDelegate.x + ", was " + rectBefore.x + ")")
+            } finally {
+                win.docHandler.setMarkdown("")
+                wait(50)
+            }
+        }
+
+        // Same bug report as the test above, but via REAL character-by-
+        // character typing (keyClick(), through typeText() — the actual
+        // Qt Quick TextEdit input pipeline) immediately in front of an
+        // already-underlined word, rather than one bulk replaceRange()
+        // call. Exercises the exact live sequence the report describes:
+        // each keystroke fires its own onContentsChange/pendingEdit cycle
+        // and its own wordRect-dependency changes, one at a time, rather
+        // than a single settle-and-done edit.
+        function test_typing_text_one_keystroke_at_a_time_before_a_misspelled_word_keeps_its_underline_correct() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+            win.docHandler.setMarkdown("teh normal words here\n")
+            wait(50)
+
+            win.requestActivate()
+            tryCompare(win, "active", true)
+            editor.forceActiveFocus()
+            tryCompare(editor, "activeFocus", true)
+            editor.cursorPosition = 0
+
+            try {
+                const rangesBefore = win.docHandler.misspelledWordRanges
+                compare(rangesBefore.length, 1, "precondition: \"teh\" should be flagged: " + JSON.stringify(rangesBefore))
+                tryCompare(win.misspelledWordRepeater, "count", 1)
+                tryCompare(win.misspelledWordRepeater.itemAt(0), "x", win.editor.positionToRectangle(0).x)
+
+                // Types "dog " one keystroke at a time, right in front of
+                // "teh" — a real, correctly-spelled word (so it never gets
+                // flagged itself) — the cursor stays glued to "teh"'s own
+                // left edge throughout, exactly like a user typing a new
+                // word right before an existing typo.
+                typeText("dog ")
+                wait(600) // past the default 500ms edit-exclusion debounce
+
+                const rangesAfter = win.docHandler.misspelledWordRanges
+                compare(rangesAfter.length, 1,
+                        "\"teh\" should still be the only flagged word (\"xyz\" is a real word): " +
+                        JSON.stringify(rangesAfter))
+                compare(rangesAfter[0].start, 4, "\"teh\" should have shifted right by exactly the 4 typed characters")
+
+                tryCompare(win.misspelledWordRepeater, "count", 1)
+                const delegate = win.misspelledWordRepeater.itemAt(0)
+                const expectedRect = win.editor.positionToRectangle(4)
+                tryCompare(delegate, "x", expectedRect.x)
+                verify(expectedRect.x > 0, "precondition: \"teh\" no longer sits at the document's own left edge")
+            } finally {
+                win.docHandler.setMarkdown("")
+                wait(50)
+            }
+        }
+
+        // Every currently-flagged word (matched by TEXT, not by array
+        // index — a word can freely change which index it sits at as
+        // others are added/removed earlier in the document, see
+        // syncMisspelledWordsModel's own comment) must have a delegate
+        // painted at exactly its own real on-screen position. Shared by
+        // the stress test below, run after every edit in its sequence.
+        function verifyEveryMisspelledWordHasACorrectlyPositionedUnderline(win, expectedWords) {
+            const text = win.editor.text
+            const ranges = win.docHandler.misspelledWordRanges
+            compare(ranges.length, expectedWords.length,
+                    "expected exactly " + JSON.stringify(expectedWords) + " to be flagged, got: " +
+                    JSON.stringify(ranges) + " (text: " + JSON.stringify(text) + ")")
+
+            for (const word of expectedWords) {
+                const idx = text.indexOf(word)
+                verify(idx !== -1, "\"" + word + "\" should still be present in the text: " + JSON.stringify(text))
+                const range = ranges.find(r => r.start === idx && r.end === idx + word.length)
+                verify(range, "\"" + word + "\" (at " + idx + ") should be in misspelledWordRanges: " +
+                       JSON.stringify(ranges))
+            }
+
+            tryCompare(win.misspelledWordRepeater, "count", ranges.length)
+            for (let i = 0; i < win.misspelledWordRepeater.count; i++) {
+                const item = win.misspelledWordRepeater.itemAt(i)
+                const expectedRect = win.editor.positionToRectangle(item.start)
+                tryCompare(item, "x", expectedRect.x, 2000)
+                tryCompare(item, "y", expectedRect.y, 2000)
+            }
+        }
+
+        // Bug reported live ("inconsistent — sometimes adding text fixes
+        // missing underlines, sometimes it removes them, sometimes
+        // deleting text still removes underlines... tested in large notes,
+        // edits close or far from underlines"): a single two-word,
+        // single-block edit (the tests above) isn't enough to catch this —
+        // it needs multiple misspelled words scattered across SEVERAL
+        // blocks, with a SEQUENCE of edits landing at varying distances
+        // from each one, checking every underline's correctness after
+        // EVERY edit (not just the last one), the same way a real editing
+        // session would surface an intermittent failure.
+        function test_a_sequence_of_edits_scattered_through_a_multiparagraph_note_never_breaks_an_underline() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+            win.docHandler.setMarkdown(
+                "teh first block here\n" +
+                "a normal correct paragraph\n" +
+                "and yett another paragraph\n" +
+                "plus one moar here\n" +
+                "final linne done\n")
+            wait(50)
+            win.requestActivate()
+            tryCompare(win, "active", true)
+            editor.forceActiveFocus()
+            tryCompare(editor, "activeFocus", true)
+
+            const words = ["teh", "yett", "moar", "linne"]
+
+            try {
+                wait(600) // clear the initial edit-exclusion debounce from setMarkdown() itself
+                verifyEveryMisspelledWordHasACorrectlyPositionedUnderline(win, words)
+
+                // 1) Edit directly adjacent to "teh" (the very start of the
+                // document) — the closest possible edit to an underline.
+                editor.cursorPosition = 0
+                typeText("hi ")
+                wait(600)
+                verifyEveryMisspelledWordHasACorrectlyPositionedUnderline(win, words)
+
+                // 2) Edit inside the untouched, all-correct second
+                // paragraph — far from every misspelled word, and not
+                // itself adjacent to any of them.
+                const correctParaPos = win.editor.text.indexOf("a normal") + 2
+                editor.cursorPosition = correctParaPos
+                typeText("plain ")
+                wait(600)
+                verifyEveryMisspelledWordHasACorrectlyPositionedUnderline(win, words)
+
+                // 3) Delete text immediately before "yett" (third
+                // paragraph) — the deletion-before-a-misspelled-word case,
+                // now inside a multi-paragraph document instead of a
+                // single line.
+                const andPos = win.editor.text.indexOf("and yett")
+                win.docHandler.replaceRange(andPos, andPos + 4, "")
+                wait(600)
+                verifyEveryMisspelledWordHasACorrectlyPositionedUnderline(win, words)
+
+                // 4) Edit directly adjacent to "moar" (fourth paragraph),
+                // right after the previous paragraph's own edit — back-to-
+                // back edits in different paragraphs, close together in
+                // time.
+                const moarPos = win.editor.text.indexOf("moar")
+                editor.cursorPosition = moarPos
+                typeText("x")
+                wait(600)
+                const shiftedWords = ["teh", "yett", "xmoar", "linne"]
+                verifyEveryMisspelledWordHasACorrectlyPositionedUnderline(win, shiftedWords)
+
+                // 5) Finally, an edit far from everything again (end of
+                // the document, well past "linne") — the underlines from
+                // every earlier step must all still be correct, not just
+                // the most recently touched one.
+                editor.cursorPosition = editor.length
+                typeText(" done")
+                wait(600)
+                verifyEveryMisspelledWordHasACorrectlyPositionedUnderline(win, shiftedWords)
+            } finally {
+                win.docHandler.setMarkdown("")
+                wait(50)
+            }
+        }
+
+        // Bug found live ("a flash — the line disappears for a tiny bit
+        // before reappearing"): recomputing a delegate's x/y/width/height
+        // the INSTANT start/end changes (the previous fix's own approach)
+        // can observe Qt Quick's still-settling text layout and briefly
+        // collapse to an invisible (width <= 1) state before a later,
+        // debounce-triggered recompute corrects it — a real, visible
+        // flicker even though the FINAL position always ends up right
+        // (which is why the position-correctness tests above didn't catch
+        // it: tryCompare only observes the eventual, settled value). This
+        // asserts the delegate NEVER goes invisible mid-transition: right
+        // after an edit, before the settle debounce has had any chance to
+        // fire, it must still be showing its OLD (pre-edit) rect — not a
+        // degenerate one — and only jump to the new, correct rect once
+        // settled, never passing through "nothing visible" in between.
+        function test_editing_before_a_misspelled_word_never_makes_its_underline_flash_invisible() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+            // "hi" is a real, correctly-spelled placeholder — see
+            // test_inserting_earlier_text_moves_the_underline_delegate_to_
+            // its_new_position's own comment for why a placeholder that's
+            // NOT the word under test, already separated from "teh" by a
+            // real space, is used here rather than typing characters
+            // directly adjacent to "teh" itself: doing THAT merges the
+            // in-progress typed text and "teh" into one growing token
+            // until the next space splits them apart again — correctly
+            // excluding (and destroying/recreating the delegate for) that
+            // MERGED word while it's still being typed, which is
+            // intentional, unrelated behavior this test isn't about. The
+            // edit below targets "xx " being inserted before "hi" instead
+            // — nowhere near "teh" — so "teh" itself is never excluded,
+            // never destroyed, just shifted: the exact scenario the flash
+            // bug actually happened in.
+            win.docHandler.setMarkdown("hi teh normal words here\n")
+            wait(50)
+            win.requestActivate()
+            tryCompare(win, "active", true)
+            editor.forceActiveFocus()
+            tryCompare(editor, "activeFocus", true)
+
+            try {
+                tryCompare(win.misspelledWordRepeater, "count", 1)
+                const delegate = win.misspelledWordRepeater.itemAt(0)
+                const rectBefore = win.editor.positionToRectangle(3)
+                tryCompare(delegate, "x", rectBefore.x)
+                verify(delegate.visible, "precondition: \"teh\"'s underline is visible before any edit")
+                const widthBefore = delegate.width
+                const heightBefore = delegate.height
+
+                // A single atomic edit — not typed keystroke by keystroke
+                // — inserting "xx " right before "hi", shifting "teh" 3
+                // positions right without ever exciting the pendingEdit
+                // exclusion for "teh" itself (the edit lands nowhere near
+                // it) and without merging into any other token. Right
+                // after this, settleDebounce (32ms) hasn't fired yet, so
+                // the delegate's x/width/height/visible must still reflect
+                // "teh"'s OLD, pre-edit rect — not a stale-layout guess,
+                // and not collapsed to invisible.
+                win.docHandler.replaceRange(0, 0, "xx ")
+
+                compare(win.misspelledWordRepeater.itemAt(0), delegate,
+                        "the SAME delegate must still be bound to \"teh\" immediately after the edit — this " +
+                        "edit never excludes or merges \"teh\", so nothing should have destroyed/recreated it")
+                compare(delegate.x, rectBefore.x,
+                        "the delegate must stay at its OLD position immediately after the edit, not jump to " +
+                        "a wrong intermediate value before settling")
+                compare(delegate.width, widthBefore,
+                        "the delegate's width must stay unchanged immediately after the edit")
+                compare(delegate.height, heightBefore,
+                        "the delegate's height must stay unchanged immediately after the edit")
+                verify(delegate.visible,
+                       "the underline must stay visible through the entire transition — it must never " +
+                       "flash invisible while waiting for the new position to settle")
+
+                // Once settleDebounce fires (32ms), it should land at
+                // "teh"'s real, new, shifted position — same final-state
+                // check as the other tests above.
+                wait(100)
+                const rectAfter = win.editor.positionToRectangle(6)
+                tryCompare(delegate, "x", rectAfter.x)
+                verify(delegate.visible, "the underline should still be visible once settled")
+                verify(delegate.x > rectBefore.x, "precondition: \"teh\" actually shifted right")
             } finally {
                 win.docHandler.setMarkdown("")
                 wait(50)

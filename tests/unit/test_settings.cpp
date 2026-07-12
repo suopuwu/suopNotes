@@ -80,6 +80,11 @@ SCENARIO("A fresh Settings instance reports documented defaults", "[settings]")
             REQUIRE(settings.spellcheckUnderlineWidth() == 3);
         }
 
+        THEN("spellcheckDebounceMs defaults to 500")
+        {
+            REQUIRE(settings.spellcheckDebounceMs() == 500);
+        }
+
         THEN("glassEnabled defaults to true")
         {
             REQUIRE(settings.glassEnabled());
@@ -270,6 +275,7 @@ SCENARIO("Appearance properties persist to disk across instances", "[settings]")
             settings.setSpellcheckMaxSuggestions(5);
             settings.setSpellcheckUnderlineColor(QColor("#33cc99"));
             settings.setSpellcheckUnderlineWidth(5);
+            settings.setSpellcheckDebounceMs(750);
             settings.setGlassEnabled(true);
             settings.setGlassSheenOpacity(0.25);
             settings.setGlassSheenStrength(40);
@@ -312,6 +318,7 @@ SCENARIO("Appearance properties persist to disk across instances", "[settings]")
                 REQUIRE(reloaded.spellcheckMaxSuggestions() == 5);
                 REQUIRE(reloaded.spellcheckUnderlineColor() == QColor("#33cc99"));
                 REQUIRE(reloaded.spellcheckUnderlineWidth() == 5);
+                REQUIRE(reloaded.spellcheckDebounceMs() == 750);
                 REQUIRE(reloaded.glassEnabled() == true);
                 REQUIRE(reloaded.glassSheenOpacity() == 0.25);
                 REQUIRE(reloaded.glassSheenStrength() == 40);
@@ -443,6 +450,13 @@ SCENARIO("Changing a property emits its NOTIFY signal", "[settings]")
             QSignalSpy spy(&settings, &Settings::spellcheckUnderlineWidthChanged);
             settings.setSpellcheckUnderlineWidth(5);
             THEN("spellcheckUnderlineWidthChanged fires once") { REQUIRE(spy.count() == 1); }
+        }
+
+        WHEN("spellcheckDebounceMs is changed")
+        {
+            QSignalSpy spy(&settings, &Settings::spellcheckDebounceMsChanged);
+            settings.setSpellcheckDebounceMs(750);
+            THEN("spellcheckDebounceMsChanged fires once") { REQUIRE(spy.count() == 1); }
         }
 
         WHEN("fontSize is changed")

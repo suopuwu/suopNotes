@@ -28,6 +28,7 @@ constexpr int kDefaultSpellcheckMaxSuggestions = 3;
 // own default font/highlight colors and a plain pure "#ff0000" alarm-red.
 const char *kDefaultSpellcheckUnderlineColor = "#fc6c85";
 constexpr qreal kDefaultSpellcheckUnderlineWidth = 3;
+constexpr int kDefaultSpellcheckDebounceMs = 500;
 constexpr bool kDefaultGlassEnabled = true;
 constexpr qreal kDefaultGlassSheenOpacity = 0.12;
 constexpr qreal kDefaultGlassSheenStrength = 10;
@@ -69,6 +70,7 @@ const char *kKeySpellcheckLanguage = "spellcheckLanguage";
 const char *kKeySpellcheckMaxSuggestions = "spellcheckMaxSuggestions";
 const char *kKeySpellcheckUnderlineColor = "spellcheckUnderlineColor";
 const char *kKeySpellcheckUnderlineWidth = "spellcheckUnderlineWidth";
+const char *kKeySpellcheckDebounceMs = "spellcheckDebounceMs";
 const char *kKeyGlassEnabled = "glassEnabled";
 const char *kKeyGlassSheenOpacity = "glassSheenOpacity";
 const char *kKeyGlassSheenStrength = "glassSheenStrength";
@@ -300,6 +302,20 @@ void Settings::setSpellcheckUnderlineWidth(qreal width)
     m_settings->setValue(QString("%1/%2").arg(kGroupAppearance, kKeySpellcheckUnderlineWidth), width);
     m_settings->sync();
     emit spellcheckUnderlineWidthChanged();
+}
+
+int Settings::spellcheckDebounceMs() const
+{
+    return m_settings
+        ->value(QString("%1/%2").arg(kGroupAppearance, kKeySpellcheckDebounceMs), kDefaultSpellcheckDebounceMs)
+        .toInt();
+}
+
+void Settings::setSpellcheckDebounceMs(int ms)
+{
+    m_settings->setValue(QString("%1/%2").arg(kGroupAppearance, kKeySpellcheckDebounceMs), ms);
+    m_settings->sync();
+    emit spellcheckDebounceMsChanged();
 }
 
 QStringList Settings::userDictionaryWords() const

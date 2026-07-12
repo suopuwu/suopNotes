@@ -718,6 +718,15 @@ Window {
         updateBlur()
         columnOptionsPopup.updateBlur()
         spellingSuggestionsPopup.updateBlur()
+        // Precaches every ALREADY-misspelled word's popup size for the
+        // newly-tracked note too — see spellingSuggestionsPopup's own
+        // precacheAllCurrentSuggestionSizes() comment. Without this, a note
+        // focused for the first time this session would only start
+        // precaching from its NEXT edit onward (misspelledWordRangesChanged
+        // firing), leaving whatever was already misspelled when the note
+        // opened stuck on the slow, uncached path for its first tap.
+        if (tracking)
+            spellingSuggestionsPopup.precacheAllCurrentSuggestionSizes()
         // Bug found live ("switching between misspelled words that are on
         // different notes causes the position to not update to the new
         // note, though the suggestions do... inconsistent, rarely works"):
@@ -1681,6 +1690,205 @@ Window {
         // trigger below.
         property bool spellingSuggestionsSizeSettled: false
 
+        // Feature request ("the popup takes a bit of time to show up —
+        // precache its position and size"): the suggestion STRINGS are
+        // already precached the instant a word settles as misspelled (see
+        // DocumentHandler::cachedSuggestionsFor's own comment), but the
+        // popup's own on-screen SIZE isn't something C++ can compute at
+        // all — it depends on QML/Qt Quick Controls font metrics for each
+        // suggestion button's text plus this file's own padding/spacing.
+        // Precaching that too, ahead of any tap, means
+        // repositionSpellingSuggestionsPopup() can target the popup's real
+        // final width/height on its very FIRST move request instead of
+        // whatever size the popup happened to be at already (leftover from
+        // the previous word, or a bare placeholder) — closing the gap that
+        // used to need a SECOND, sequential KWin round-trip (first
+        // confirming a wrong-size position, then correcting it once
+        // spellingSuggestionsResettleDebounce caught up) down to just the
+        // one round-trip most word-processors' spellcheck popups manage.
+        //
+        // Keyed by the suggestion list itself (joined into one string), not
+        // the misspelled word — the popup's size depends only on what it
+        // ends up DISPLAYING (each suggestion button's text, plus the
+        // always-present "Add to dictionary" button), so two different
+        // misspelled words that happen to produce the same suggestion list
+        // share one cache entry. Plain JS object, not a QML property with
+        // real change notification: nothing needs to react to a cache
+        // entry appearing, only to READ it synchronously at the moment a
+        // transition begins (see beginSpellingSuggestionsTransition below).
+        property var suggestionsSizeCache: ({})
+
+        // Bug found live ("TypeError: Cannot call method 'join' of
+        // undefined"): `|| []`, not a bare suggestions.join(...) —
+        // bar.noteWindow.currentSpellingSuggestions (predictedPopupSize's
+        // own call below) can read back undefined rather than its declared
+        // `property var currentSpellingSuggestions: []` default if the
+        // tracked NoteWindow's underlying QObject is mid-destruction (the
+        // note was just closed) when this runs — Qt Quick hands back
+        // undefined for property access on a since-deleted QObject rather
+        // than throwing. sizeMeasureQueue.shift() (see
+        // sizeMeasureSettleDebounce's own onTriggered below) can likewise
+        // hand back undefined if ever called against an empty queue.
+        // Treating either as "no suggestions" is correct regardless of
+        // which one actually happened here — there's nothing meaningful
+        // left to key a popup size cache entry off of.
+        function suggestionsSizeCacheKey(suggestions) {
+            return (suggestions || []).join("\u0001")
+        }
+
+        // Returns the precached {width, height} for the CURRENTLY tracked
+        // note's current suggestion list, or null if nothing's cached for
+        // it yet (a brand new suggestion list this session hasn't seen
+        // before — falls back to the normal live-measurement wait).
+        function predictedPopupSize() {
+            if (!bar.noteWindow)
+                return null
+            const key = suggestionsSizeCacheKey(bar.noteWindow.currentSpellingSuggestions)
+            return key in suggestionsSizeCache ? suggestionsSizeCache[key] : null
+        }
+
+        // FIFO queue of suggestion lists still waiting to be measured.
+        // Processed one at a time (see measureNextInQueue below) since
+        // there's only one hidden measuring pass in flight at once — it
+        // reuses a single shared Item (sizeMeasureContent below), the same
+        // way spellingSuggestionsContent itself is a single shared Item for
+        // the currently-displayed word.
+        property var sizeMeasureQueue: []
+        property bool sizeMeasureInProgress: false
+
+        // Queues `suggestions` for background size measurement if (and
+        // only if) it isn't already cached and isn't already queued — safe
+        // to call for every currently-misspelled word on every
+        // misspelledWordRangesChanged (see the Connections below): the
+        // common case, nothing new having settled since last time, is just
+        // a couple of cheap lookups.
+        function precacheSuggestionsPopupSize(suggestions) {
+            const key = suggestionsSizeCacheKey(suggestions)
+            if (key in suggestionsSizeCache)
+                return
+            if (sizeMeasureQueue.some(queued => suggestionsSizeCacheKey(queued) === key))
+                return
+            sizeMeasureQueue.push(suggestions)
+            measureNextInQueue()
+        }
+
+        function measureNextInQueue() {
+            if (sizeMeasureInProgress || sizeMeasureQueue.length === 0)
+                return
+            sizeMeasureInProgress = true
+            sizeMeasureRepeater.model = sizeMeasureQueue[0]
+            sizeMeasureSettleDebounce.restart()
+        }
+
+        // Walks every currently-misspelled word in the tracked note and
+        // queues its suggestion list for measurement — called once whenever
+        // a NEW note gets tracked (see onNoteWindowChanged below) and again
+        // every time that note's own misspelledWordRangesChanged fires
+        // (see the Connections below), so newly-typed typos get their
+        // popup size precached too, not just whatever was already
+        // misspelled when the note was first focused.
+        // Truncated to settings.spellcheckMaxSuggestions, same as
+        // NoteWindow.qml's own TapHandler does before ever assigning
+        // currentSpellingSuggestions (see its own comment there) — this
+        // MUST match exactly, not just be "close enough": predictedPopupSize()
+        // looks the cache up by bar.noteWindow.currentSpellingSuggestions,
+        // the already-truncated list, so caching the full untruncated
+        // suggestions() result here under a different key would make every
+        // lookup a guaranteed miss, silently defeating precaching entirely.
+        function precacheAllCurrentSuggestionSizes() {
+            if (!bar.noteWindow)
+                return
+            const ranges = bar.noteWindow.docHandler.misspelledWordRanges
+            for (let i = 0; i < ranges.length; i++) {
+                const suggestions = bar.noteWindow.docHandler.suggestionsForWordAt(ranges[i].start)
+                precacheSuggestionsPopupSize(suggestions.slice(0, settings.spellcheckMaxSuggestions))
+            }
+        }
+
+        Connections {
+            target: bar.noteWindow ? bar.noteWindow.docHandler : null
+            function onMisspelledWordRangesChanged() {
+                spellingSuggestionsPopup.precacheAllCurrentSuggestionSizes()
+            }
+        }
+
+        // A structural mirror of spellingSuggestionsContent below (same
+        // delegate, same padding/spacing, same always-present "Add to
+        // dictionary" button and conditional "No suggestions" label) whose
+        // only job is to sit off-screen and report implicit sizes for
+        // suggestion lists nobody's tapped yet. visible: false, same as
+        // spellingSuggestionsContent itself starts out — Qt Quick Layouts
+        // still computes implicitWidth/implicitHeight for an invisible
+        // item (confirmed by spellingSuggestionsBackground's own width/
+        // height bindings below, which already rely on exactly that for
+        // the real content before it's ever shown).
+        ColumnLayout {
+            id: sizeMeasureContent
+            visible: false
+            spacing: 2
+
+            Repeater {
+                id: sizeMeasureRepeater
+                model: []
+                ToolButton {
+                    required property string modelData
+                    text: modelData
+                    implicitHeight: bar.buttonSize
+                    leftPadding: 10
+                    rightPadding: 10
+                    contentItem: ToolbarButtonLabel {}
+                }
+            }
+            Label {
+                text: "No suggestions"
+                visible: sizeMeasureRepeater.count === 0
+                leftPadding: 10
+                rightPadding: 10
+                topPadding: 4
+                bottomPadding: 4
+            }
+            ToolButton {
+                text: "Add to dictionary"
+                implicitHeight: bar.buttonSize
+                leftPadding: 10
+                rightPadding: 10
+                contentItem: ToolbarButtonLabel {}
+            }
+
+            // Same wobble-then-settle behavior spellingSuggestionsContent's
+            // own onWidthChanged/onHeightChanged already documents (a
+            // Repeater model reassignment tears down/rebuilds every
+            // delegate, and the Layout's implicit size genuinely dips
+            // mid-rebuild before reaching its real final value) — restart
+            // on every change, only commit once nothing's changed for
+            // sizeMeasureSettleDebounce's own interval.
+            onWidthChanged: sizeMeasureSettleDebounce.restart()
+            onHeightChanged: sizeMeasureSettleDebounce.restart()
+        }
+
+        Timer {
+            id: sizeMeasureSettleDebounce
+            interval: 40
+            onTriggered: {
+                // Defense in depth alongside suggestionsSizeCacheKey's own
+                // `|| []` guard: nothing to commit if a stray restart
+                // (e.g. sizeMeasureContent's own onWidthChanged/
+                // onHeightChanged firing after the queue's already been
+                // drained) fires this with the queue empty.
+                if (spellingSuggestionsPopup.sizeMeasureQueue.length === 0) {
+                    spellingSuggestionsPopup.sizeMeasureInProgress = false
+                    return
+                }
+                const suggestions = spellingSuggestionsPopup.sizeMeasureQueue.shift()
+                const key = spellingSuggestionsPopup.suggestionsSizeCacheKey(suggestions)
+                spellingSuggestionsPopup.suggestionsSizeCache[key] = Qt.size(
+                    isFinite(sizeMeasureContent.implicitWidth) ? Math.max(sizeMeasureContent.implicitWidth + 8, 80) : 80,
+                    isFinite(sizeMeasureContent.implicitHeight) ? Math.max(sizeMeasureContent.implicitHeight + 8, 32) : 32)
+                spellingSuggestionsPopup.sizeMeasureInProgress = false
+                spellingSuggestionsPopup.measureNextInQueue()
+            }
+        }
+
         function spellingSuggestionsRevealIfReady() {
             if (wantsVisible && spellingSuggestionsMovesCompleted >= spellingSuggestionsMovesIssued
                     && spellingSuggestionsSizeSettled) {
@@ -1785,7 +1993,20 @@ Window {
             // alone, so a same-size jump still gets exactly one settle
             // window instead of leaving spellingSuggestionsSizeSettled
             // permanently false (see that property's own comment).
-            spellingSuggestionsSizeSettled = false
+            //
+            // EXCEPT when this word's popup size is already precached (see
+            // predictedPopupSize's own comment) — repositionSpellingSuggestionsPopup()
+            // below already targets the real final size in that case, so
+            // there's nothing left to wait for; marking it settled
+            // immediately lets the reveal go through as soon as the (now
+            // correctly-targeted, one-shot) position confirmation lands
+            // instead of ALSO waiting out spellingSuggestionsResettleDebounce.
+            // The debounce below still restarts regardless, as a safety
+            // net: if the real content ever settles at a genuinely
+            // different size than predicted, its own onWidthChanged/
+            // onHeightChanged handlers re-flip this false and this same
+            // debounce corrects the position for real.
+            spellingSuggestionsSizeSettled = (predictedPopupSize() !== null)
             spellingSuggestionsResettleDebounce.restart()
             repositionSpellingSuggestionsPopup()
         }
@@ -1960,12 +2181,31 @@ Window {
             const anchorTop = topLeft.y
             const anchorBottom = topLeft.y + rect.height
 
+            // Feature request: use the PRECACHED size for this word's own
+            // suggestion list when one's available (see
+            // precacheAllCurrentSuggestionSizes' own comment), rather than
+            // spellingSuggestionsPopup.width/height directly — right as a
+            // transition begins, those two are still whatever the
+            // PREVIOUS word's popup measured (or the 80x32 placeholder),
+            // not this word's real size yet; that only arrives
+            // asynchronously once spellingSuggestionsContent's own Repeater
+            // rebuilds and settles (see spellingSuggestionsResettleDebounce).
+            // Targeting the real size on this, the FIRST move request for
+            // this word, means the below/above and left/right clamping
+            // below is already correct — the debounce-triggered reposition
+            // that used to be needed to CORRECT a wrong-size guess becomes
+            // a no-op confirmation instead of a second, sequential KWin
+            // round-trip.
+            const predicted = predictedPopupSize()
+            const popupWidth = predicted ? predicted.width : spellingSuggestionsPopup.width
+            const popupHeight = predicted ? predicted.height : spellingSuggestionsPopup.height
+
             let targetX = topLeft.x
             let targetY = anchorBottom + 4
 
             const screen = note.screen
-            if (screen && targetY + spellingSuggestionsPopup.height > screen.virtualY + screen.height)
-                targetY = anchorTop - spellingSuggestionsPopup.height - 4
+            if (screen && targetY + popupHeight > screen.virtualY + screen.height)
+                targetY = anchorTop - popupHeight - 4
 
             // X-axis clamp (bug found live: a word right at the screen's
             // left/right edge), mirroring bar's own reposition()'s
@@ -1974,7 +2214,7 @@ Window {
             // request a position with the popup's own width extending
             // past that edge.
             if (screen)
-                targetX = Math.max(screen.virtualX, Math.min(targetX, screen.virtualX + screen.width - spellingSuggestionsPopup.width))
+                targetX = Math.max(screen.virtualX, Math.min(targetX, screen.virtualX + screen.width - popupWidth))
 
             spellingSuggestionsPopup.x = targetX
             spellingSuggestionsPopup.y = targetY
@@ -2054,10 +2294,10 @@ Window {
                     implicitHeight: bar.buttonSize
                     leftPadding: 10
                     rightPadding: 10
-                    Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
+                    Layout.alignment: Qt.AlignLeft | Qt.AlignVCenter
                     background: ToolbarButtonHighlight {}
                     hoverEnabled: true
-                    contentItem: ToolbarButtonLabel {}
+                    contentItem: ToolbarButtonLabel { horizontalAlignment: Text.AlignLeft }
                     // Replaces the misspelled word with this suggestion,
                     // then immediately clears currentMisspelledWord so the
                     // popup closes right away — doesn't depend on ordering
@@ -2083,7 +2323,7 @@ Window {
                 visible: suggestionsRepeater.count === 0
                 color: bar.noteWindow ? bar.noteWindow.noteAppearance.fontColor : "#ffffff"
                 opacity: 0.6
-                Layout.alignment: Qt.AlignHCenter
+                Layout.alignment: Qt.AlignLeft
                 leftPadding: 10
                 rightPadding: 10
                 topPadding: 4
@@ -2104,10 +2344,10 @@ Window {
                 implicitHeight: bar.buttonSize
                 leftPadding: 10
                 rightPadding: 10
-                Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
+                Layout.alignment: Qt.AlignLeft | Qt.AlignVCenter
                 background: ToolbarButtonHighlight {}
                 hoverEnabled: true
-                contentItem: ToolbarButtonLabel {}
+                contentItem: ToolbarButtonLabel { horizontalAlignment: Text.AlignLeft }
                 onClicked: bar.runAction(() => {
                     settings.addUserDictionaryWord(bar.noteWindow.currentMisspelledWord)
                     bar.noteWindow.docHandler.rehighlightSpellcheck()

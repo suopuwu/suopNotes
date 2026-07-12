@@ -1,10 +1,12 @@
 #pragma once
 
+#include <QHash>
 #include <QObject>
 #include <QPointer>
 #include <QQuickTextDocument>
 #include <QRectF>
 #include <QStringList>
+#include <QTimer>
 #include <QVariantList>
 #include <QVariantMap>
 
@@ -42,16 +44,13 @@ class DocumentHandler : public QObject
     // QML-reactive property (not the highlighter's own applied formats)
     // specifically so that overlay can bind directly and redraw on change.
     Q_PROPERTY(QVariantList misspelledWordRanges READ misspelledWordRanges NOTIFY misspelledWordRangesChanged)
-    // The editor's live cursor position (bound from NoteWindow.qml's
-    // editor.cursorPosition). Exists purely so misspelledWordRanges() can
-    // exclude whatever word the cursor currently sits inside — a word still
-    // being typed is, by definition, an incomplete/partial token that would
-    // otherwise flag as misspelled on every keystroke (e.g. "hel" while
-    // typing "hello"), underlining and un-underlining it letter by letter.
-    // Most spell checkers (LibreOffice, Word, browsers) hold off flagging
-    // the word the caret is currently inside for exactly this reason; it
-    // gets checked again, normally, the instant the cursor leaves it.
-    Q_PROPERTY(int cursorPosition READ cursorPosition WRITE setCursorPosition NOTIFY cursorPositionChanged)
+    // How long (ms) a block of text must sit unedited before the word at
+    // the most recent edit position is allowed back into
+    // misspelledWordRanges — mirrored from Settings::spellcheckDebounceMs.
+    // See the pending-edit tracking this drives (setDocument()'s
+    // contentsChange connection, m_pendingEditActive/m_pendingEditPosition)
+    // for the mechanism itself; this property only controls its timing.
+    Q_PROPERTY(int spellcheckDebounceMs READ spellcheckDebounceMs WRITE setSpellcheckDebounceMs NOTIFY spellcheckDebounceMsChanged)
 public:
     explicit DocumentHandler(QObject *parent = nullptr);
     ~DocumentHandler();
@@ -70,8 +69,8 @@ public:
 
     QVariantList misspelledWordRanges() const;
 
-    int cursorPosition() const;
-    void setCursorPosition(int position);
+    int spellcheckDebounceMs() const;
+    void setSpellcheckDebounceMs(int ms);
 
     // Resolves `position` to the word range (start/end/text) it falls inside,
     // using the exact same tokenization SpellCheckHighlighter uses to decide
@@ -219,7 +218,7 @@ signals:
     // recompute (see misspelledWordRanges' own doc comment for why this
     // property exists at all).
     void misspelledWordRangesChanged();
-    void cursorPositionChanged();
+    void spellcheckDebounceMsChanged();
     // Emitted after any call above that can change the format active at the
     // cursor/selection (the toggles, setHeadingLevel, and the two list-aware
     // Enter/autoconvert helpers when they actually mutate something) — lets
@@ -245,23 +244,23 @@ private:
 
     // Shared implementation behind the misspelledWordRanges Q_PROPERTY
     // getter: pulled out so callers that mutate something which can affect
-    // the result (a real edit, a cursor move, a settings change) can also
-    // recompute it themselves and compare against m_lastMisspelledWordRanges
-    // — see emitMisspelledWordRangesChangedIfNeeded()'s own comment for why.
+    // the result (a real edit, a settings change) can also recompute it
+    // themselves and compare against m_lastMisspelledWordRanges — see
+    // emitMisspelledWordRangesChangedIfNeeded()'s own comment for why.
     QVariantList computeMisspelledWordRanges() const;
     // Recomputes misspelledWordRanges and only emits misspelledWordRangesChanged
     // if the result actually differs from the last-emitted value. Every
     // trigger that used to emit misspelledWordRangesChanged unconditionally
-    // (a keystroke, a cursor move, a settings change) now routes through
-    // this instead — bug found live: with an unconditional emit, EVERY
-    // keystroke re-triggered NoteWindow.qml's underline-overlay Repeater
-    // (whose model is this property), tearing down and rebuilding every
-    // Canvas delegate even for keystrokes that didn't change which words
-    // are misspelled at all (the common case: typing inside a word that's
-    // excluded from checking anyway — see cursorPosition's own comment —
-    // while every OTHER word's misspelled status is unchanged). That
-    // constant rebuild was both wasteful and the direct cause of the
-    // underline's visible flicker while typing.
+    // (a keystroke, a settings change) now routes through this instead —
+    // bug found live: with an unconditional emit, EVERY keystroke
+    // re-triggered NoteWindow.qml's underline-overlay Repeater (whose model
+    // is this property), tearing down and rebuilding every Canvas delegate
+    // even for keystrokes that didn't change which words are misspelled at
+    // all (the common case: typing inside a word that's excluded from
+    // checking anyway — see m_pendingEditActive's own comment — while every
+    // OTHER word's misspelled status is unchanged). That constant rebuild
+    // was both wasteful and a direct cause of the underline's visible
+    // flicker while typing.
     void emitMisspelledWordRangesChangedIfNeeded();
     // Forces every block's cached misspelled-word data (see the
     // MisspelledBlockCache class in the .cpp) to be recomputed on the next
@@ -270,12 +269,51 @@ private:
     // "misspelled" itself changes instead (spellcheckLanguage,
     // userDictionaryWords, rehighlightSpellcheck()), since the cache's
     // normal staleness check (block.revision()) can't see that kind of
-    // change at all.
+    // change at all. Also drops the cached suggestion lists (see
+    // m_suggestionsCache's own comment) — a word's cached suggestions can
+    // go stale for the exact same reasons its cached misspelled/not
+    // verdict can.
     void invalidateAllMisspelledBlockCaches();
+    // Returns backend->suggestions(word), computing it once and reusing the
+    // result on every later call for the SAME word — feature request:
+    // precache each misspelled word's suggestions as it settles (see
+    // onContentsChange's own comment) rather than only computing them the
+    // instant the user taps a word, which could otherwise make the
+    // suggestion popup visibly wait on a real dictionary lookup (fuzzy
+    // edit-distance search, not a cheap operation) before it could even
+    // start opening.
+    QStringList cachedSuggestionsFor(const QString &word) const;
 
     QPointer<QQuickTextDocument> m_document;
     QVariantList m_lastMisspelledWordRanges;
-    int m_cursorPosition = -1;
+    int m_spellcheckDebounceMs = 500;
+    // Bug found live ("the current word that has a popup currently loses
+    // the underline when the popup is on" — the previous cursor/selection-
+    // position-based exclusion attempt): tracks the actual EDIT itself, not
+    // where the cursor merely sits — tapping a word to open its suggestion
+    // popup calls editor.select(), which moves the cursor but edits
+    // nothing, so it never touches these at all, and the word stays
+    // flagged (and thus underlined) for as long as its popup is open.
+    // m_pendingEditPosition is the position immediately after the most
+    // recent real text edit (see onContentsChange); m_pendingEditActive is
+    // true for m_spellcheckDebounceMs after that edit, during which the
+    // word AT that position is excluded from misspelledWordRanges — the
+    // standard "don't flag what's still being actively typed" debounce
+    // most word processors use, rather than trying to infer "still being
+    // typed" from cursor/selection state.
+    int m_pendingEditPosition = -1;
+    bool m_pendingEditActive = false;
+    QTimer *m_pendingEditDebounce = nullptr;
+    void onContentsChange(int from, int charsRemoved, int charsAdded);
+    // Per-word (not per-position) cache: a misspelled word's suggestions
+    // depend only on its own text, not where it sits, so every occurrence
+    // of the same misspelled word across the whole document shares one
+    // cached lookup. mutable: computeMisspelledWordRanges() and
+    // suggestionsForWordAt() are both const, but this is a pure
+    // memoization cache — logically read-only from either caller's
+    // perspective. Cleared by invalidateAllMisspelledBlockCaches() (see its
+    // own comment).
+    mutable QHash<QString, QStringList> m_suggestionsCache;
 
     // Reentrancy guard for the hand-rolled list machinery: inserting or
     // removing a list marker's TEXT synchronously re-enters QML's

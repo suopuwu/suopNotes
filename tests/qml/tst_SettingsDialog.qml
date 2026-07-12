@@ -129,6 +129,18 @@ Item {
             compare(settings.spellcheckMaxSuggestions, 5, "changing the spinbox should update the global setting immediately")
         }
 
+        // Feature request: debounce the in-progress word instead of
+        // excluding it by cursor/selection position (see DocumentHandler
+        // ::spellcheckDebounceMs's own comment) — same "one test, not two"
+        // ordering-hazard reasoning as the spinbox test above.
+        function test_debounce_spinbox_reflects_and_updates_the_global_setting() {
+            compare(dialog.spellcheckDebounceMsSpinBox.value, 500, "should reflect the default before any interaction")
+
+            dialog.spellcheckDebounceMsSpinBox.value = 800
+            dialog.spellcheckDebounceMsSpinBox.valueModified()
+            compare(settings.spellcheckDebounceMs, 800, "changing the spinbox should update the global setting immediately")
+        }
+
         // Feature request: the misspelled-word underline is now a solid,
         // straight line with a configurable color/width (replacing the
         // previous fixed wavy red squiggle) — see NoteWindow.qml's own

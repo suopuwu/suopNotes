@@ -945,6 +945,37 @@ Item {
                     "the popup should close itself immediately after a replacement is applied")
         }
 
+        // Feature request: suggestion buttons of very different text
+        // lengths used to each be individually centered in the popup's
+        // ColumnLayout, so their left edges landed at different x
+        // positions and the list read as jagged/staggered. They should
+        // instead all start flush against the same left edge.
+        function test_spelling_suggestion_buttons_are_left_aligned_rather_than_centered() {
+            noteA.docHandler.setMarkdown("I teh best\n")
+            wait(50)
+
+            noteA.currentMisspelledWord = "teh"
+            noteA.currentSpellingSuggestions = ["a", "a much longer suggestion"]
+            noteA.misspelledWordStart = 2
+            noteA.misspelledWordEnd = 5
+
+            bar.noteWindow = noteA
+            tryCompare(bar.spellingSuggestionsPopup.background, "visible", true, 2000)
+            compare(bar.spellingSuggestionsPopup.repeater.count, 2, "precondition: both suggestions rendered")
+
+            const shortButton = bar.spellingSuggestionsPopup.repeater.itemAt(0)
+            const longButton = bar.spellingSuggestionsPopup.repeater.itemAt(1)
+            verify(shortButton !== null && longButton !== null, "precondition: both suggestion buttons must exist")
+            verify(shortButton.width < longButton.width,
+                   "precondition: the two suggestions must actually differ in rendered width")
+            compare(shortButton.x, longButton.x,
+                    "buttons of different widths should share the same left edge, not be individually centered")
+
+            noteA.currentMisspelledWord = ""
+            noteA.docHandler.setMarkdown("")
+            wait(50)
+        }
+
         // Bug found live: spellingSuggestionsPopup is a real top-level
         // Window kept permanently mapped (never hidden again once shown,
         // same "shown once, content-visibility toggled from then on"
@@ -1241,6 +1272,103 @@ Item {
             // tests' dictionary state and into the real QSettings file
             // across separate test runs.
             settings.removeUserDictionaryWord("someuniquetestword")
+        }
+
+        // Feature request ("the popup takes a bit of time to show up —
+        // precache its position and size"): precacheSuggestionsPopupSize()
+        // measures a suggestion list's real popup size in the background
+        // (sizeMeasureContent, a hidden mirror of the real
+        // spellingSuggestionsContent layout) and stores it in
+        // suggestionsSizeCache, keyed by the suggestion list itself. This
+        // doesn't need a real dictionary or a tracked note at all — it's
+        // exercised directly, the same way the popup's own
+        // repositionSpellingSuggestionsPopup() will read it back later.
+        function test_precacheSuggestionsPopupSize_measures_and_caches_a_real_popup_size() {
+            const popup = bar.spellingSuggestionsPopup
+            const suggestions = ["the", "ten", "tea"]
+            const key = popup.suggestionsSizeCacheKey(suggestions)
+            verify(!(key in popup.suggestionsSizeCache),
+                   "precondition: this exact suggestion list hasn't been measured yet")
+
+            popup.precacheSuggestionsPopupSize(suggestions)
+
+            tryCompare(popup.sizeMeasureQueue, "length", 0, 2000)
+            wait(50) // past sizeMeasureSettleDebounce's own 40ms interval
+
+            verify(key in popup.suggestionsSizeCache,
+                   "the suggestion list's size should be cached once background measurement settles")
+            const size = popup.suggestionsSizeCache[key]
+            verify(size.width > 1 && size.height > 1,
+                   "the cached size should be the real measured layout, not the placeholder floor: " +
+                   JSON.stringify(size))
+        }
+
+        // Two different misspelled words that happen to produce the exact
+        // same suggestion list (e.g. two different typos of "the") share
+        // one popup size — the size only depends on what gets DISPLAYED,
+        // not which word triggered it — so caching should treat identical
+        // suggestion lists as one cache entry, not measure twice.
+        function test_precacheSuggestionsPopupSize_is_a_no_op_for_an_already_cached_list() {
+            const popup = bar.spellingSuggestionsPopup
+            const suggestions = ["alpha", "beta"]
+
+            popup.precacheSuggestionsPopupSize(suggestions)
+            tryCompare(popup.sizeMeasureQueue, "length", 0, 2000)
+            wait(50)
+            const key = popup.suggestionsSizeCacheKey(suggestions)
+            verify(key in popup.suggestionsSizeCache, "precondition: the list is already cached")
+
+            // A second, distinct array with the same contents (not the same
+            // JS object reference) — proves the dedup is by CONTENT, not by
+            // identity.
+            popup.precacheSuggestionsPopupSize(["alpha", "beta"])
+            compare(popup.sizeMeasureQueue.length, 0,
+                    "an already-cached suggestion list should never be queued for re-measurement")
+        }
+
+        // The actual payoff: once a suggestion list's popup size is
+        // precached, beginSpellingSuggestionsTransition() (triggered here
+        // by tracking a note whose currentSpellingSuggestions already
+        // matches the precached list) should mark
+        // spellingSuggestionsSizeSettled true IMMEDIATELY, synchronously —
+        // not after the usual spellingSuggestionsResettleDebounce wait —
+        // since repositionSpellingSuggestionsPopup() already has a real
+        // size to target on its very first move request.
+        function test_a_precached_popup_size_skips_the_settle_wait_on_tap() {
+            const popup = bar.spellingSuggestionsPopup
+            const suggestions = ["the", "ten"]
+
+            popup.precacheSuggestionsPopupSize(suggestions)
+            tryCompare(popup.sizeMeasureQueue, "length", 0, 2000)
+            wait(50)
+            const key = popup.suggestionsSizeCacheKey(suggestions)
+            verify(key in popup.suggestionsSizeCache, "precondition: the list is already cached")
+
+            // Real content, same as test_clicking_a_spelling_suggestion_
+            // replaces_the_misspelled_word's own setup — not relied upon
+            // for auto-detection (fixture state below is what actually
+            // drives the popup, per this file's own "no real dictionary on
+            // this dev machine" convention), just so misspelledWordStart/
+            // End below resolve to real, in-range document positions
+            // instead of positionToRectangle() logging a live "position
+            // out of range" warning against an empty document.
+            noteA.docHandler.setMarkdown("I teh best\n")
+            wait(50)
+
+            noteA.currentMisspelledWord = "teh"
+            noteA.currentSpellingSuggestions = suggestions
+            noteA.misspelledWordStart = 2
+            noteA.misspelledWordEnd = 5
+
+            bar.noteWindow = noteA
+
+            compare(popup.spellingSuggestionsSizeSettled, true,
+                    "a precached suggestion list's size should be trusted immediately, with no wait for " +
+                    "the content Repeater to rebuild and settle on its own")
+
+            noteA.currentMisspelledWord = ""
+            noteA.docHandler.setMarkdown("")
+            wait(50)
         }
     }
 }

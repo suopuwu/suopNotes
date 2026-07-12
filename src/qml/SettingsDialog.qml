@@ -11,6 +11,7 @@ ApplicationWindow {
     readonly property alias fontFamilyCombo: fontFamilyCombo
     readonly property alias spellcheckLanguageCombo: spellcheckLanguageCombo
     readonly property alias spellcheckMaxSuggestionsSpinBox: spellcheckMaxSuggestionsSpinBox
+    readonly property alias spellcheckDebounceMsSpinBox: spellcheckDebounceMsSpinBox
     readonly property alias spellcheckUnderlineWidthSlider: spellcheckUnderlineWidthSlider
     readonly property alias spellcheckUnderlineColorSwatch: spellcheckUnderlineColorSwatch
     readonly property alias newUserDictionaryWordField: newUserDictionaryWordField
@@ -157,6 +158,19 @@ ApplicationWindow {
                     to: 10
                     value: settings.spellcheckMaxSuggestions
                     onValueModified: settings.spellcheckMaxSuggestions = value
+                }
+            }
+
+            Row {
+                spacing: 8
+                Label { text: "Spellcheck debounce (ms):"; anchors.verticalCenter: parent.verticalCenter }
+                SpinBox {
+                    id: spellcheckDebounceMsSpinBox
+                    from: 0
+                    to: 5000
+                    stepSize: 100
+                    value: settings.spellcheckDebounceMs
+                    onValueModified: settings.spellcheckDebounceMs = value
                 }
             }
 
