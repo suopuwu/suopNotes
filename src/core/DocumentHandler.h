@@ -305,6 +305,14 @@ private:
     bool m_pendingEditActive = false;
     QTimer *m_pendingEditDebounce = nullptr;
     void onContentsChange(int from, int charsRemoved, int charsAdded);
+    // The document's own blockCount() as of the end of the last
+    // onContentsChange call — compared against the CURRENT blockCount at the
+    // start of the next one to detect a block merge (see that function's own
+    // comment on why a merge specifically needs
+    // TextFormatting::maintainHeadingCharFormatAfterMerge). Reset to the
+    // fresh document's own count in setDocument() so opening a note doesn't
+    // register as "N blocks merged into 1" on its very first edit.
+    int m_lastKnownBlockCount = 1;
     // Per-word (not per-position) cache: a misspelled word's suggestions
     // depend only on its own text, not where it sits, so every occurrence
     // of the same misspelled word across the whole document shares one

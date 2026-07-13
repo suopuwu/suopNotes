@@ -136,6 +136,68 @@ HandRolledKind handRolledKind(const QTextBlock &block)
     return markerLength(kind, block.text()) > 0 ? kind : HandRolledKind::None;
 }
 
+// The raw, unvalidated property alone — unlike handRolledKind(), does NOT
+// require the block to actually still carry valid marker text. Meant only
+// for detecting the specific staleness maintainHandRolledListNumbering
+// cleans up: a block that WAS a genuine hand-rolled item (this property set)
+// but no longer qualifies as one (handRolledKind() now reports None), whose
+// leftover hanging-indent format needs clearing.
+HandRolledKind rawHandRolledKind(const QTextBlock &block)
+{
+    const QVariant value = block.blockFormat().property(HandRolledKindProperty);
+    return value.isValid() ? static_cast<HandRolledKind>(value.toInt()) : HandRolledKind::None;
+}
+
+// The bold/size-adjustment char format a block at the given heading level
+// should have — shared by setHeadingLevel (which applies it explicitly) and
+// maintainHeadingCharFormatAfterMerge (which only re-applies it where a
+// block-merge left it stale — see that function's own comment). See
+// setHeadingLevel's own comment for why FontSizeAdjustment (not an absolute
+// point size) is what encodes the size half of this.
+QTextCharFormat headingCharFormat(int level)
+{
+    QTextCharFormat format;
+    format.setFontWeight(level > 0 ? QFont::Bold : QFont::Normal);
+    int adjustment = 0;
+    if (level == 1)
+        adjustment = 3;
+    else if (level == 2)
+        adjustment = 2;
+    format.setProperty(QTextFormat::FontSizeAdjustment, adjustment);
+    return format;
+}
+
+// Whether an existing char format already carries the same bold/size a
+// heading's char format would apply — the only two properties either of
+// them ever touches, so this is a complete equivalence check for their
+// purposes (an unrelated property like italic is free to differ either way
+// without counting as a mismatch here).
+bool matchesHeadingCharFormat(const QTextCharFormat &format, const QTextCharFormat &expected)
+{
+    return (format.fontWeight() >= QFont::Bold) == (expected.fontWeight() >= QFont::Bold)
+        && format.property(QTextFormat::FontSizeAdjustment).toInt()
+        == expected.property(QTextFormat::FontSizeAdjustment).toInt();
+}
+
+// Whether every fragment inside [rangeStart, rangeEnd) of `block` already
+// matches `expected` — the no-op fast path maintainHeadingCharFormatAfterMerge
+// checks before actually merging anything, so an ordinary merge of two
+// same-level blocks (the overwhelmingly common case: joining two plain
+// paragraphs with Backspace) never touches the undo stack at all.
+bool rangeMatchesHeadingCharFormat(const QTextBlock &block, int rangeStart, int rangeEnd, const QTextCharFormat &expected)
+{
+    for (auto it = block.begin(); !it.atEnd(); ++it) {
+        const QTextFragment fragment = it.fragment();
+        if (fragment.position() + fragment.length() <= rangeStart)
+            continue;
+        if (fragment.position() >= rangeEnd)
+            break;
+        if (!matchesHeadingCharFormat(fragment.charFormat(), expected))
+            return false;
+    }
+    return true;
+}
+
 QTextBlock runStart(QTextBlock block, HandRolledKind kind)
 {
     while (block.previous().isValid() && handRolledKind(block.previous()) == kind)
@@ -147,6 +209,52 @@ QTextBlock runEnd(QTextBlock block, HandRolledKind kind)
 {
     while (block.next().isValid() && handRolledKind(block.next()) == kind)
         block = block.next();
+    return block;
+}
+
+// Walks outward from an already-valid `kind` block in one direction,
+// extending over every immediately-adjacent block that's EITHER already
+// properly tagged as `kind` (the ordinary case) OR still looks like a
+// genuine `kind` marker in its own literal TEXT despite having lost its
+// HandRolledKindProperty tag entirely — e.g. Qt's own multi-block
+// paste/merge machinery synthesizing a fresh block format that doesn't carry
+// custom properties over (reported live: several consecutive items in a
+// pasted-over list "losing their special properties" at once, each only
+// reflowing again once individually re-edited). Retags each such block as it
+// reclaims it, so a single edit anywhere in a still-intact part of the run
+// heals every adjacent lost item in one pass — including ones separated from
+// the edit by other, already-valid items — not just the block the cursor
+// happens to be sitting in. The two cases are interleaved in the SAME walk
+// (not a separate pass over each) so a healed block never blocks the walk
+// from reaching a still-valid block further out. Deliberately only ever
+// extends from an already-recognized block — never bare isolated text
+// elsewhere in the document — so an ordinary paragraph that just happens to
+// start with "3. " on its own is never mistaken for a list item.
+//
+// `healedCount`, if non-null, is incremented once per block healed — the
+// BACKWARD walk's caller needs this to shift its own startNumber back (see
+// renumberRun), since every healed predecessor slots in BEFORE whatever
+// number was computed from the pre-healing block, and would otherwise
+// collide with the numbers already assigned to the run it just joined.
+QTextBlock walkRunHealing(QTextBlock block, HandRolledKind kind, bool forward, int *healedCount)
+{
+    for (;;) {
+        const QTextBlock candidate = forward ? block.next() : block.previous();
+        if (!candidate.isValid())
+            break;
+        if (handRolledKind(candidate) == kind) {
+            block = candidate;
+            continue;
+        }
+        if (rawHandRolledKind(candidate) == HandRolledKind::None && markerLength(kind, candidate.text()) > 0) {
+            setHandRolledKind(QTextCursor(candidate), kind);
+            if (healedCount)
+                ++(*healedCount);
+            block = candidate;
+            continue;
+        }
+        break;
+    }
     return block;
 }
 
@@ -174,8 +282,14 @@ void renumberRun(const QTextBlock &anyBlockInRun, HandRolledKind kind, int start
     if (!document || kind == HandRolledKind::None)
         return;
 
-    const QTextBlock first = runStart(anyBlockInRun, kind);
-    const QTextBlock last = runEnd(anyBlockInRun, kind);
+    int healedBefore = 0;
+    const QTextBlock first = walkRunHealing(anyBlockInRun, kind, /*forward=*/false, &healedBefore);
+    const QTextBlock last = walkRunHealing(anyBlockInRun, kind, /*forward=*/true, nullptr);
+    // Healed predecessors slot in BEFORE whatever number the caller already
+    // decided `anyBlockInRun` (pre-healing) should start at — see
+    // walkRunHealing's own comment for why the caller's startNumber has to
+    // shift back to make room for them, rather than colliding with it.
+    startNumber -= healedBefore;
 
     int itemCount = 0;
     for (QTextBlock b = first; b.isValid(); b = b.next()) {
@@ -208,6 +322,25 @@ void renumberRun(const QTextBlock &anyBlockInRun, HandRolledKind kind, int start
             }
         }
 
+        // Bugfix: a narrower marker (e.g. "9. ", 3 characters) than the
+        // run's widest (e.g. "10. ", 4 characters) used to hang at the SAME
+        // textIndent as every other item — meaning its own first line of
+        // TEXT (right after its own, narrower marker) landed measurably
+        // further left than every wrapped continuation line and every other
+        // item's own first line, all of which sit at the run's widest
+        // width (confirmed empirically — a real misalignment, not
+        // cosmetic). leftMargin stays constant across the whole run (it's
+        // what keeps wrapped continuation lines lined up with each other
+        // regardless of which item they belong to), but textIndent is now
+        // sized to THIS block's own marker width, not the run's shared one:
+        // that pulls a narrower marker's first line further left by exactly
+        // the difference, reserving the same blank space to ITS left that
+        // the wider marker already occupies, so the actual text after every
+        // marker — first line or wrapped — starts at the same spot.
+        const qreal ownMarkerWidth = kind == HandRolledKind::Numbered
+            ? metrics.horizontalAdvance(block.text().left(markerLength(kind, block.text())))
+            : markerWidth;
+
         // Bugfix: this used to merge unconditionally, even when the block's
         // margin/indent already matched — renumberRun reruns reactively on
         // EVERY keystroke typed anywhere inside a numbered list (see
@@ -221,10 +354,10 @@ void renumberRun(const QTextBlock &anyBlockInRun, HandRolledKind kind, int start
         // nothing would change makes reactive maintenance passes a true
         // no-op — nothing to undo — rather than an invisible-but-real edit.
         const QTextBlockFormat existingFormat = block.blockFormat();
-        if (existingFormat.leftMargin() != markerWidth || existingFormat.textIndent() != -markerWidth) {
+        if (existingFormat.leftMargin() != markerWidth || existingFormat.textIndent() != -ownMarkerWidth) {
             QTextBlockFormat format = existingFormat;
             format.setLeftMargin(markerWidth);
-            format.setTextIndent(-markerWidth);
+            format.setTextIndent(-ownMarkerWidth);
             QTextCursor formatCursor(block);
             formatCursor.mergeBlockFormat(format);
         }
@@ -463,10 +596,71 @@ bool isHandRolledListItemEmpty(QTextCursor cursor)
 
 void maintainHandRolledListNumbering(QTextCursor cursor)
 {
-    const HandRolledKind kind = handRolledKind(cursor.block());
+    const QTextBlock block = cursor.block();
+    const HandRolledKind kind = handRolledKind(block);
+
+    if (kind == HandRolledKind::None) {
+        // The block's HandRolledKindProperty tag can outlive its own marker
+        // text through perfectly ordinary editing that never goes through
+        // detachFromHandRolledList/exitHandRolledList at all — e.g. clicking
+        // at the very start of a list item and typing plain prose there,
+        // which pushes the marker away from position 0 and breaks
+        // numberedMarkerPattern's own "^" requirement (handRolledKind()
+        // above already accounts for this). Left alone, though, the block's
+        // hanging-indent format (leftMargin/textIndent, sized for the
+        // marker that's no longer actually there) survives right along with
+        // the stale tag, silently indenting every WRAPPED continuation line
+        // of what is now just an ordinary paragraph, forever (confirmed
+        // empirically — a real bug, reported live). Only the first line
+        // looks fine, since textIndent cancels leftMargin there.
+        if (rawHandRolledKind(block) != HandRolledKind::None) {
+            QTextBlockFormat format = block.blockFormat();
+            format.setProperty(HandRolledKindProperty, static_cast<int>(HandRolledKind::None));
+            format.setLeftMargin(0);
+            format.setTextIndent(0);
+            cursor.mergeBlockFormat(format);
+        }
+        return;
+    }
+
     if (kind != HandRolledKind::Numbered)
         return; // checkbox markers never need renumbering, only their (constant) shared width
-    renumberRun(cursor.block(), kind, runStartNumber(cursor.block(), kind));
+    renumberRun(block, kind, runStartNumber(block, kind));
+}
+
+void maintainHeadingCharFormatAfterMerge(QTextCursor cursor)
+{
+    const QTextBlock block = cursor.block();
+    const int level = block.blockFormat().headingLevel();
+    const QTextCharFormat expected = headingCharFormat(level);
+
+    const int blockEnd = block.position() + block.length() - 1; // -1: exclude the block separator itself
+    const int rangeStart = cursor.position();
+
+    // The merge point sits at (or past) the block's own end — nothing of
+    // either side's text actually landed in this block after `rangeStart`
+    // (e.g. an empty line got backspaced away entirely). The block itself
+    // can still be a genuinely empty, freshly-surviving heading/paragraph
+    // whose own (invisible until typed-into) blockCharFormat() is stale —
+    // same bug, same fix, as setHeadingLevel's own empty-block bugfix above.
+    if (rangeStart >= blockEnd) {
+        if (block.length() <= 1 && !matchesHeadingCharFormat(block.charFormat(), expected))
+            QTextCursor(block).mergeBlockCharFormat(expected);
+        return;
+    }
+
+    // No-op fast path (see rangeMatchesHeadingCharFormat's own comment):
+    // merging two blocks that already agree on heading level — by far the
+    // most common case, e.g. joining two plain paragraphs with Backspace —
+    // needs nothing fixed and must not create an undo-stack entry for doing
+    // nothing.
+    if (rangeMatchesHeadingCharFormat(block, rangeStart, blockEnd, expected))
+        return;
+
+    QTextCursor formatCursor(cursor.document());
+    formatCursor.setPosition(rangeStart);
+    formatCursor.setPosition(blockEnd, QTextCursor::KeepAnchor);
+    formatCursor.mergeCharFormat(expected);
 }
 
 void setHeadingLevel(QTextCursor cursor, int level)
@@ -487,14 +681,7 @@ void setHeadingLevel(QTextCursor cursor, int level)
     // toggling back to level 0 exactly restores the original size
     // regardless of the note's own configured font — no need to know or
     // store that value anywhere.
-    QTextCharFormat charFormat;
-    charFormat.setFontWeight(level > 0 ? QFont::Bold : QFont::Normal);
-    int adjustment = 0;
-    if (level == 1)
-        adjustment = 3;
-    else if (level == 2)
-        adjustment = 2;
-    charFormat.setProperty(QTextFormat::FontSizeAdjustment, adjustment);
+    const QTextCharFormat charFormat = headingCharFormat(level);
 
     // Bugfix: this used to scope the char-format pass to cursor.block()
     // alone. For a selection spanning multiple lines, mergeBlockFormat
@@ -522,6 +709,25 @@ void setHeadingLevel(QTextCursor cursor, int level)
     formatCursor.setPosition(firstBlock.position());
     formatCursor.setPosition(lastBlock.position() + lastBlock.length() - 1, QTextCursor::KeepAnchor);
     formatCursor.mergeCharFormat(charFormat);
+
+    // Bugfix: mergeCharFormat() above only ever touches characters that
+    // actually exist in the selection — for a block that's still EMPTY
+    // (e.g. the fresh line tryResetHeadingOnReturn() just split off via
+    // insertBlock(), which copies the split point's char format onto the
+    // new block by default), that selection is zero-length, so the merge
+    // above is a complete no-op on it. The stale bold+oversized format then
+    // silently survives as the block's own charFormat() — invisible until
+    // the user actually types there, at which point the typed text inherits
+    // it for real (confirmed empirically: pressing Enter on a heading line
+    // then typing produced text that *looked* like it was still the
+    // heading, and stayed bold — though correctly NOT heading-sized or
+    // serialized as "# " — even after reload, since headingLevel itself
+    // .mergeBlockFormat()'d fine above; only the char format leaked).
+    // mergeBlockCharFormat merges into every block touched by the
+    // selection (or just the current block, for an empty/no-op selection
+    // like this one) rather than into actual characters, which is exactly
+    // the format newly-typed text in an empty block inherits.
+    formatCursor.mergeBlockCharFormat(charFormat);
 }
 
 void insertTabSpaces(QTextCursor cursor)

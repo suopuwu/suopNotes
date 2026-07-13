@@ -78,6 +78,24 @@ bool isHandRolledListItemEmpty(QTextCursor cursor);
 void maintainHandRolledListNumbering(QTextCursor cursor);
 // level 0 clears heading formatting back to a normal paragraph; 1-6 are h1-h6.
 void setHeadingLevel(QTextCursor cursor, int level);
+// Bug found live: deleting the newline between two blocks (Backspace at the
+// start of one, or Delete at the end of the other — anywhere Qt's own
+// default editing merges two blocks into one) keeps each side's ORIGINAL
+// per-character bold/size format untouched, even though the surviving
+// block's own headingLevel is exactly as if it had always been that way
+// (mergeBlockFormat, unlike char format, always resolves cleanly to a single
+// value across a merge). So text newly absorbed into a heading doesn't LOOK
+// like a heading, and a heading's own text absorbed into a plain paragraph
+// keeps looking like one, until the next full markdown round-trip (a
+// reload) re-derives char format from headingLevel + text fresh via Qt's
+// own markdown parser. `cursor` should be positioned at the merge point
+// (contentsChange's own `from`) — the caller (DocumentHandler::
+// onContentsChange) is what actually detects that a merge just happened
+// (block count went down), since applying this on every ordinary keystroke
+// — not just at an actual merge boundary — would risk overwriting a
+// deliberate partial bold/italic override elsewhere in the same block from
+// an unrelated toggleBold call.
+void maintainHeadingCharFormatAfterMerge(QTextCursor cursor);
 // Tab (feature request): inserts four literal spaces at the cursor,
 // replacing any selection — mirrors toggleBold/etc's own "mutate the
 // QTextCursor directly" convention rather than TextEdit's own insert()

@@ -370,6 +370,16 @@ Window {
             onActivated: docHandler.insertTable(editor.selectionEnd)
         }
 
+        // Ctrl+Y as an extra redo binding: TextArea's built-in undo/redo
+        // already responds to Qt's default StandardKey.Redo (Ctrl+Shift+Z
+        // on this platform), but Ctrl+Y is the redo convention users
+        // coming from Windows/other editors expect, so it's added
+        // alongside rather than in place of the default.
+        Shortcut {
+            sequence: "Ctrl+Y"
+            onActivated: editor.redo()
+        }
+
         Flickable {
             id: editorFlick
             anchors.top: parent.top

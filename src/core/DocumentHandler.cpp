@@ -149,8 +149,10 @@ void DocumentHandler::setDocument(QQuickTextDocument *document)
         // unspecified, risking exactly the one-frame "flagged, then
         // immediately un-flagged" flash this debounce exists to prevent.
         connect(document->textDocument(), &QTextDocument::contentsChange, this, &DocumentHandler::onContentsChange);
+        m_lastKnownBlockCount = document->textDocument()->blockCount();
     } else {
         m_highlighter.reset();
+        m_lastKnownBlockCount = 1;
     }
     m_lastMisspelledWordRanges = computeMisspelledWordRanges();
     emit misspelledWordRangesChanged();
@@ -250,6 +252,28 @@ void DocumentHandler::onContentsChange(int from, int charsRemoved, int charsAdde
         m_pendingEditActive = true;
         m_pendingEditDebounce->start(m_spellcheckDebounceMs);
     }
+
+    if (m_document && m_document->textDocument()) {
+        QTextDocument *doc = m_document->textDocument();
+        const int currentBlockCount = doc->blockCount();
+        // charsRemoved > 0 alone doesn't mean a merge happened — deleting a
+        // character that isn't a block separator removes text without
+        // changing blockCount at all. Comparing against blockCount as of the
+        // END of the previous call is what actually confirms two blocks
+        // became one (see m_lastKnownBlockCount's own comment) — the one
+        // case TextFormatting::maintainHeadingCharFormatAfterMerge needs to
+        // run for, and the only case it's safe to run in (see its own
+        // comment for why running it on every ordinary keystroke would risk
+        // clobbering an unrelated, deliberate partial bold/italic toggle
+        // elsewhere in the same block).
+        if (charsRemoved > 0 && currentBlockCount < m_lastKnownBlockCount) {
+            QTextCursor mergeCursor(doc);
+            mergeCursor.setPosition(from);
+            TextFormatting::maintainHeadingCharFormatAfterMerge(mergeCursor);
+        }
+        m_lastKnownBlockCount = currentBlockCount;
+    }
+
     emitMisspelledWordRangesChangedIfNeeded();
 }
 
@@ -509,7 +533,40 @@ void DocumentHandler::setMarkdown(const QString &markdown)
 {
     if (!m_document || !m_document->textDocument())
         return;
-    MarkdownSerialization::setMarkdownPreservingBlankLines(m_document->textDocument(), markdown);
+
+    // setMarkdownPreservingBlankLines() rebuilds the document through a
+    // document->clear() followed by many separate, unbatched QTextCursor
+    // edits (one insertFragment()/insertBlock() per chunk/spacer) — with
+    // undo/redo left enabled, Qt's native undo stack (which TextArea's
+    // Ctrl+Z and editor.undo()/redo() read directly) faithfully records the
+    // ENTIRE note load as a pile of individually-undoable commands. That
+    // made a freshly opened note's very first Ctrl+Z partially or fully
+    // empty it instead of being a no-op, and redo unreliable (separate
+    // stack entries that may or may not merge, rather than one atomic
+    // "load" step). Toggling undoRedoEnabled off then back on is Qt's own
+    // documented mechanism for "populate a document programmatically
+    // without adding to undo history" — re-enabling it afterward also
+    // leaves the stack empty, so the user's first real edit becomes undo
+    // step #1, exactly as expected.
+    QTextDocument *document = m_document->textDocument();
+    document->setUndoRedoEnabled(false);
+    MarkdownSerialization::setMarkdownPreservingBlankLines(document, markdown);
+    document->setUndoRedoEnabled(true);
+
+    // Disabling undo/redo above doesn't just skip recording history — it
+    // also freezes QTextBlock::revision() (confirmed empirically: Qt drives
+    // it off the undo stack, so it stops advancing for edits made while
+    // undo is off), and document->clear() under a disabled undo stack
+    // reuses the same underlying block object — and whatever
+    // MisspelledBlockCache is still attached to it as QTextBlockUserData —
+    // instead of destroying it. Left alone, that means a SECOND setMarkdown()
+    // call on an already-used document silently reuses a stale, pre-reload
+    // spellcheck cache for the new text (bug found live: reloading content
+    // into an open note stopped flagging any misspelled words at all).
+    // Forcing every cache to recompute here closes that gap the same way
+    // spellcheckLanguage/userDictionaryWords changes already do.
+    invalidateAllMisspelledBlockCaches();
+    emitMisspelledWordRangesChangedIfNeeded();
 }
 
 QTextCursor DocumentHandler::cursorFor(int selectionStart, int selectionEnd) const
