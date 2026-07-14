@@ -668,3 +668,131 @@ SCENARIO("A paragraph directly before a checkbox list survives a save/reload cyc
         }
     }
 }
+
+SCENARIO("A bullet list built live (toolbar toggle + Enter, never a markdown round-trip) directly followed "
+         "by a plain paragraph does not grow a phantom blank line on save",
+         "[markdown_serialization]")
+{
+    GIVEN("a document built the way the live editor actually builds it — toggleBulletList()/tryContinueList()-"
+          "style QTextCursor mutations, never setMarkdownPreservingBlankLines — with the closing paragraph typed "
+          "directly into the item Enter left behind on exiting the list, so there is no blank spacer block "
+          "between the list and 'outro' at the QTextDocument level")
+    {
+        QTextDocument doc;
+        QTextCursor cursor(&doc);
+        cursor.insertText("intro");
+        cursor.insertBlock();
+        TextFormatting::toggleBulletList(cursor);
+        cursor.insertText("item1");
+        cursor.insertBlock();
+        QTextList *list = cursor.currentList();
+        list->add(cursor.block());
+        cursor.insertText("item2");
+        // Mirrors DocumentHandler::tryContinueList's two branches: Enter on
+        // non-empty item2 creates a new (empty) item...
+        cursor.insertBlock();
+        list->add(cursor.block());
+        // ...then Enter again on that now-empty item exits the list, reusing
+        // the same (now plain) block rather than inserting another one.
+        QTextBlockFormat blockFormat = cursor.blockFormat();
+        blockFormat.setIndent(0);
+        cursor.mergeBlockFormat(blockFormat);
+        list->remove(cursor.block());
+        cursor.insertText("outro");
+
+        QStringList blockTexts;
+        for (QTextBlock block = doc.begin(); block.isValid(); block = block.next())
+            blockTexts << block.text();
+        CHECK(blockTexts == QStringList{"intro", "item1", "item2", "outro"});
+
+        THEN("the saved markdown writes 'outro' as its own top-level paragraph, not an indented list "
+             "continuation")
+        {
+            // Bug found live: Qt's own markdown writer, when a plain block
+            // directly follows list items with no blank spacer block
+            // separating them in the QTextDocument, writes it as a nested,
+            // blank-line-indented continuation of the list's last item
+            // ("- item2\n\n  outro") instead of a separate top-level
+            // paragraph — a phantom blank line that then only grows on every
+            // subsequent load/save.
+            const QString saved = toMarkdownPreservingBlankLines(&doc);
+            CHECK(saved == QStringLiteral("intro\n\n- item1\n- item2\n\noutro\n"));
+        }
+
+        THEN("re-saving after a reload reproduces the exact same text — no growth on repeated save/reload")
+        {
+            const QString saved1 = toMarkdownPreservingBlankLines(&doc);
+
+            QTextDocument doc2;
+            setMarkdownPreservingBlankLines(&doc2, saved1);
+            const QString saved2 = toMarkdownPreservingBlankLines(&doc2);
+
+            CHECK(saved1 == saved2);
+
+            QStringList blockTexts2;
+            for (QTextBlock block = doc2.begin(); block.isValid(); block = block.next())
+                blockTexts2 << block.text();
+            CHECK(blockTexts2 == blockTexts);
+        }
+    }
+}
+
+SCENARIO("A bullet list directly followed by a paragraph (single Enter, no blank spacer block) survives "
+         "a save/reload cycle with no growth",
+         "[markdown_serialization]")
+{
+    GIVEN("markdown with a bullet list immediately followed by a paragraph — no blank line between them, "
+          "matching what a single Enter after the list's last item produces")
+    {
+        const QString markdown = QStringLiteral("intro\n\n- item1\n- item2\noutro\n");
+
+        WHEN("it's loaded with setMarkdownPreservingBlankLines")
+        {
+            QTextDocument doc;
+            setMarkdownPreservingBlankLines(&doc, markdown);
+
+            THEN("re-saving reproduces the exact same text — no growth on repeated save/reload")
+            {
+                const QString saved1 = toMarkdownPreservingBlankLines(&doc);
+
+                QTextDocument doc2;
+                setMarkdownPreservingBlankLines(&doc2, saved1);
+                const QString saved2 = toMarkdownPreservingBlankLines(&doc2);
+
+                CHECK(saved1 == saved2);
+            }
+        }
+    }
+}
+
+SCENARIO("A bullet list at the very end of the document (no trailing paragraph) survives repeated "
+         "save/reload cycles with no growth",
+         "[markdown_serialization]")
+{
+    GIVEN("markdown ending directly on a bullet list, nothing after it")
+    {
+        const QString markdown = QStringLiteral("intro\n\n- item1\n- item2\n");
+
+        WHEN("it's loaded, saved, reloaded, and saved again, twice over")
+        {
+            QTextDocument doc;
+            setMarkdownPreservingBlankLines(&doc, markdown);
+            const QString saved1 = toMarkdownPreservingBlankLines(&doc);
+
+            QTextDocument doc2;
+            setMarkdownPreservingBlankLines(&doc2, saved1);
+            const QString saved2 = toMarkdownPreservingBlankLines(&doc2);
+
+            QTextDocument doc3;
+            setMarkdownPreservingBlankLines(&doc3, saved2);
+            const QString saved3 = toMarkdownPreservingBlankLines(&doc3);
+
+            THEN("every generation matches the original exactly")
+            {
+                CHECK(saved1 == markdown);
+                CHECK(saved2 == markdown);
+                CHECK(saved3 == markdown);
+            }
+        }
+    }
+}

@@ -523,6 +523,76 @@ Item {
                    "Up from the last line should land on the line above, not jump straight to the document's start")
         }
 
+        // Regression guard: a bottom-of-document list item short enough to
+        // fit on a single visual line used to send Down the WRONG way —
+        // onto the end of the line above — instead of leaving the cursor
+        // on its own (already-bottommost) line. Root cause was the
+        // boundary check comparing cursorRectangle against contentHeight,
+        // two values that can legitimately disagree by a pixel or more
+        // for a list marker's line (see the fix's own comment in
+        // NoteWindow.qml). Bullet, checkbox and numbered markers are each
+        // exercised below since the marker-height mismatch that caused
+        // this is marker-specific.
+        function down_arrow_lands_at_end_of_short_bottom_list_item(markdown) {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+
+            win.docHandler.setMarkdown(markdown)
+            wait(50)
+
+            // Land mid-way through the last item's own line (not at its
+            // very end already), the same way a user arrives there by
+            // clicking or arrowing in — Home from the document's end,
+            // then one character in.
+            editor.cursorPosition = editor.length
+            win.requestActivate()
+            tryCompare(win, "active", true)
+            editor.forceActiveFocus()
+            tryCompare(editor, "activeFocus", true)
+            keyClick(Qt.Key_Home)
+            keyClick(Qt.Key_Right)
+
+            keyClick(Qt.Key_Down)
+
+            compare(editor.cursorPosition, editor.length,
+                    "Down on a short bottom list item should land at its own end, not jump backward onto the line above")
+        }
+        function test_down_arrow_on_short_bottom_bullet_list_item_stays_at_its_own_end() {
+            down_arrow_lands_at_end_of_short_bottom_list_item("- one\n- two\n")
+        }
+        function test_down_arrow_on_short_bottom_checkbox_list_item_stays_at_its_own_end() {
+            down_arrow_lands_at_end_of_short_bottom_list_item("- [ ] one\n- [ ] two\n")
+        }
+        function test_down_arrow_on_short_bottom_numbered_list_item_stays_at_its_own_end() {
+            down_arrow_lands_at_end_of_short_bottom_list_item("1. one\n2. two\n")
+        }
+
+        // Companion to the regression guard above: the bug never affected
+        // a bottom list item long enough to wrap across multiple visual
+        // lines, because only a marker's own (first) line can carry the
+        // height mismatch — this pins that down as intended, working
+        // behavior rather than an accident.
+        function test_down_arrow_on_multiline_bottom_list_item_stays_at_its_own_end() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+
+            win.docHandler.setMarkdown("- one\n- this list item is long enough that it should wrap across two visual lines in the note\n")
+            wait(50)
+
+            editor.cursorPosition = editor.length
+            win.requestActivate()
+            tryCompare(win, "active", true)
+            editor.forceActiveFocus()
+            tryCompare(editor, "activeFocus", true)
+            keyClick(Qt.Key_Home)
+            keyClick(Qt.Key_Right)
+
+            keyClick(Qt.Key_Down)
+
+            compare(editor.cursorPosition, editor.length,
+                    "Down on the last visual line of a wrapped bottom list item should land at its own end")
+        }
+
         // A drag-select (not just a click) that starts on the last real
         // line of text and is dragged down into the below-content fill
         // space should extend the selection to the nearest character on

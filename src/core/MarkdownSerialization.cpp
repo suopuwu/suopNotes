@@ -50,6 +50,36 @@ bool isCodeFormatted(const QTextBlock &block)
     return format.hasProperty(QTextFormat::BlockCodeLanguage) || format.hasProperty(QTextFormat::BlockCodeFence);
 }
 
+// Which kind of list (if any) `block` belongs to — used as a run-boundary
+// condition alongside code-format transitions. None/HandRolled/Native are
+// deliberately distinguished (not just a single "is this a list block?"
+// bool): a plain paragraph directly following a bullet list, with no blank
+// spacer block between them at the QTextDocument level, sits in the exact
+// same "next block" position a loose list-item continuation paragraph
+// would — and Qt's own markdown writer (cursor.selection().toMarkdown(),
+// used for any run that isn't hand-rolled) can't tell them apart: it
+// writes the paragraph nested and blank-line-indented under the list's
+// last item instead of as its own top-level block (confirmed empirically —
+// "- item1\n- item2\n\n  outro" instead of a separate "outro" paragraph),
+// which then round-trips as a genuinely new, ever-growing blank line on
+// every subsequent load/save. Hand-rolled runs already dodge this by
+// forcing a boundary (see below); native QTextList-based bullet lists need
+// the exact same treatment. HandRolled and Native are kept distinct (not
+// merged into one "is list" bool) so a hand-rolled item directly touching a
+// native bullet item — an unlikely but possible edit sequence — still
+// forces its own boundary too, rather than one run trying to feed a native
+// list block through handRolledBlockMarkdownText().
+enum class BlockListKind { None, HandRolled, Native };
+
+BlockListKind blockListKind(const QTextBlock &block)
+{
+    if (TextFormatting::isHandRolledListBlock(block))
+        return BlockListKind::HandRolled;
+    if (block.textList())
+        return BlockListKind::Native;
+    return BlockListKind::None;
+}
+
 struct Run
 {
     int startBlockNumber;
@@ -140,7 +170,7 @@ QString toMarkdownPreservingBlankLines(QTextDocument *document)
     int pendingSpacers = 0;
     int runStart = -1;
     bool runIsCode = false;
-    bool runIsHandRolledList = false;
+    BlockListKind runListKind = BlockListKind::None;
     int blockNumber = 0;
     for (QTextBlock block = document->begin(); block.isValid(); block = block.next(), ++blockNumber) {
         if (isBlankSpacerBlock(block)) {
@@ -148,26 +178,27 @@ QString toMarkdownPreservingBlankLines(QTextDocument *document)
             continue;
         }
         const bool blockIsCode = isCodeFormatted(block);
-        const bool blockIsHandRolledList = TextFormatting::isHandRolledListBlock(block);
+        const BlockListKind blockKind = blockListKind(block);
         if (!seenContent) {
             leadingSpacers = pendingSpacers;
             runStart = blockNumber;
             runIsCode = blockIsCode;
-            runIsHandRolledList = blockIsHandRolledList;
-        } else if (pendingSpacers > 0 || blockIsCode != runIsCode || blockIsHandRolledList != runIsHandRolledList) {
+            runListKind = blockKind;
+        } else if (pendingSpacers > 0 || blockIsCode != runIsCode || blockKind != runListKind) {
             // A code-format transition forces a run boundary even with zero
             // spacer blocks between them: Qt's writer, when a fenced code
             // block sits tight against a plain block in the same pass,
             // silently drops the blank line that's supposed to separate them
             // (confirmed empirically) — splitting the run guarantees at
             // least the CommonMark-minimum blank line gets written back in.
-            // A hand-rolled-list transition forces one for a different
-            // reason — see markdownForRun's own handling of such runs.
+            // A list-kind transition forces one for a different reason — see
+            // blockListKind's own comment and markdownForRun's handling of
+            // hand-rolled runs.
             runs.append({runStart, blockNumber - 1 - pendingSpacers});
             interiorGapSpacers.append(pendingSpacers);
             runStart = blockNumber;
             runIsCode = blockIsCode;
-            runIsHandRolledList = blockIsHandRolledList;
+            runListKind = blockKind;
         }
         pendingSpacers = 0;
         seenContent = true;

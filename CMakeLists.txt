@@ -96,5 +96,21 @@ endif()
 
 enable_testing()
 
+include(GNUInstallDirs)
+
 add_subdirectory(src)
 add_subdirectory(tests)
+
+# Desktop entry so the installed binary is discoverable by app launchers
+# (KRunner, application grids, etc). Exec= is baked in as an absolute path
+# at configure time so it works regardless of whether the install prefix's
+# bin dir is on $PATH.
+set(SUOPNOTES_INSTALLED_EXECUTABLE "${CMAKE_INSTALL_FULL_BINDIR}/suopNotes")
+configure_file(
+    ${CMAKE_SOURCE_DIR}/data/suopnotes.desktop.in
+    ${CMAKE_BINARY_DIR}/suopnotes.desktop
+    @ONLY
+)
+install(FILES ${CMAKE_BINARY_DIR}/suopnotes.desktop
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/applications
+)

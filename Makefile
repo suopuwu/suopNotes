@@ -1,14 +1,18 @@
 BUILD_DIR := build
 JOBS := $(shell nproc)
+PREFIX := $(HOME)/.local
 
-.PHONY: build run test clean
+.PHONY: build install run test clean
 
 build:
-	cmake -S . -B $(BUILD_DIR) -DCMAKE_BUILD_TYPE=Release
+	cmake -S . -B $(BUILD_DIR) -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=$(PREFIX)
 	cmake --build $(BUILD_DIR) -j$(JOBS)
 
-run: build
-	./$(BUILD_DIR)/src/suopNotes
+install: build
+	cmake --install $(BUILD_DIR)
+
+run: install
+	$(PREFIX)/bin/suopNotes
 
 test: build
 	cd $(BUILD_DIR) && ctest --output-on-failure

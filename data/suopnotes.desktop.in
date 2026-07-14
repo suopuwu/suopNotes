@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=suopNotes
+Comment=Lightweight sticky notes for the desktop
+Exec=@SUOPNOTES_INSTALLED_EXECUTABLE@
+Icon=accessories-text-editor
+Terminal=false
+Categories=Utility;
+StartupNotify=false

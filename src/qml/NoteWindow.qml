@@ -1138,10 +1138,27 @@ Window {
                     // on the cursor's own row mirrors belowContentArea's
                     // reprojectedPosition() above, which relies on the same
                     // nearest-x hit-testing to land on a line boundary.
-                    // cursorRectangle is in the same coordinate space as
-                    // contentHeight (both TextEdit-native, unaffected by the
-                    // Control's own padding) — see ensureCursorVisible's
-                    // comment above for why that direct comparison is safe.
+                    //
+                    // "Is there a line above/below" used to be answered by
+                    // comparing cursorRectangle against contentHeight (a
+                    // document-wide aggregate). Bugfix (reported: Down on a
+                    // short, single-visual-line bottom list item landed on
+                    // the line ABOVE instead of staying on its own line —
+                    // wrapped list items were unaffected). Root suspect:
+                    // for a bullet/checkbox/numbered marker's line, the
+                    // marker glyph and the plain-text cursor glyph beside
+                    // it can be laid out with different line heights, so
+                    // cursorRectangle.height + cursorRectangle.y can
+                    // legitimately disagree with contentHeight by a pixel
+                    // or more even on the true last line — only ever on a
+                    // marker's own (first) line, which is why a wrapped
+                    // item's last visual sub-line (plain text throughout)
+                    // never showed this. Comparing two
+                    // positionToRectangle()/cursorRectangle results against
+                    // each other instead — never against contentHeight —
+                    // keeps both sides of the comparison on the same,
+                    // self-consistent per-character metric, immune to
+                    // whatever a marker's own line-height quirk is.
                     //
                     // event.accepted defaults to true for these per-key
                     // Keys.onXxxPressed handlers (unlike the general
@@ -1150,15 +1167,17 @@ Window {
                     // gets swallowed here and never reaches TextEdit's own
                     // default line-to-line cursor movement underneath.
                     Keys.onUpPressed: (event) => {
-                        if (cursorRectangle.y < 1) {
-                            cursorPosition = positionAt(0, cursorRectangle.y)
+                        const target = positionAt(0, cursorRectangle.y - 1)
+                        if (positionToRectangle(target).y >= cursorRectangle.y) {
+                            cursorPosition = target
                         } else {
                             event.accepted = false
                         }
                     }
                     Keys.onDownPressed: (event) => {
-                        if (cursorRectangle.y + cursorRectangle.height > contentHeight - 1) {
-                            cursorPosition = positionAt(width, cursorRectangle.y)
+                        const target = positionAt(width, cursorRectangle.y + cursorRectangle.height + 1)
+                        if (positionToRectangle(target).y <= cursorRectangle.y) {
+                            cursorPosition = target
                         } else {
                             event.accepted = false
                         }

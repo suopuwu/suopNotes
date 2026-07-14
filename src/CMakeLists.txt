@@ -104,3 +104,5 @@ target_link_libraries(suopNotes PRIVATE
     Qt6::LabsPlatform
     Qt6::Widgets
 )
+
+install(TARGETS suopNotes RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
