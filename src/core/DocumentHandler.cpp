@@ -1,4 +1,5 @@
 #include "DocumentHandler.h"
+#include "MarkdownHighlighter.h"
 #include "MarkdownSerialization.h"
 #include "SpellCheckHighlighter.h"
 #include "SpellChecker.h"
@@ -132,6 +133,28 @@ void DocumentHandler::setDocument(QQuickTextDocument *document)
     if (document && document->textDocument()) {
         m_highlighter = std::make_unique<SpellCheckHighlighter>(document->textDocument(), m_spellCheckerBackend.get());
         m_highlighter->setActive(m_spellcheckEnabled);
+        // Sibling of m_highlighter: same lifetime, same document. Unlike
+        // spellcheck there's no setActive() gate — formatting isn't a user
+        // preference.
+        //
+        // CONSTRUCTED SECOND, AND THAT ORDER IS LOAD-BEARING. Two
+        // QSyntaxHighlighters on one QTextDocument do NOT compose: each one's
+        // internal applyFormatChanges() *clears* the block's existing layout
+        // format ranges before writing its own, so whichever runs LAST wins
+        // outright (verified empirically — attaching both and rehighlighting
+        // spellcheck last erased every markdown format, and vice versa).
+        // Constructing markdown second puts it last in the document's
+        // contentsChange connection order, so markdown decoration is what
+        // survives on screen.
+        //
+        // Losing spellcheck's own formats to that clobbering costs nothing:
+        // QtQuick's TextArea never renders a QSyntaxHighlighter's underline
+        // anyway (see misspelledWordRanges' comment in the header) — the
+        // visible underline is a QML overlay driven by that property, which
+        // computeMisspelledWordRanges() builds independently of any
+        // highlighter instance. See rehighlightAll() for the ordering rule
+        // this implies everywhere else.
+        m_markdownHighlighter = std::make_unique<MarkdownHighlighter>(document->textDocument());
         // Real text edits are the one trigger for misspelledWordRangesChanged
         // that isn't already covered by an explicit setter/invokable below —
         // connect once per document so the underline overlay knows to
@@ -186,8 +209,7 @@ void DocumentHandler::setSpellcheckLanguage(const QString &language)
     m_spellcheckLanguage = language;
     if (m_spellCheckerBackend)
         m_spellCheckerBackend->setInner(makeSpellCheckerBackend(language));
-    if (m_highlighter)
-        m_highlighter->rehighlight();
+    rehighlightAll();
     // The per-block cache in computeMisspelledWordRanges() keys staleness
     // off block.revision(), which only moves on a real text edit — a
     // language swap changes what isMisspelled() itself returns for the
@@ -210,8 +232,7 @@ void DocumentHandler::setUserDictionaryWords(const QStringList &words)
     m_userDictionaryWords = words;
     if (m_spellCheckerBackend)
         m_spellCheckerBackend->setUserWords(words);
-    if (m_highlighter)
-        m_highlighter->rehighlight();
+    rehighlightAll();
     // Same reasoning as setSpellcheckLanguage's own invalidation call above:
     // adding/removing a personal-dictionary word changes isMisspelled() for
     // unchanged text.
@@ -406,10 +427,23 @@ void DocumentHandler::invalidateAllMisspelledBlockCaches()
     m_suggestionsCache.clear();
 }
 
-void DocumentHandler::rehighlightSpellcheck()
+void DocumentHandler::rehighlightAll()
 {
+    // Order matters and is the whole reason this helper exists: because two
+    // QSyntaxHighlighters on one document clobber rather than compose (see
+    // setDocument()), rehighlighting spellcheck ALONE wipes every markdown
+    // format off the block until the next keystroke happens to restore it —
+    // a real, visible "all my bold and headings vanished when I added a word
+    // to the dictionary" bug. Markdown must always get the last pass.
     if (m_highlighter)
         m_highlighter->rehighlight();
+    if (m_markdownHighlighter)
+        m_markdownHighlighter->rehighlight();
+}
+
+void DocumentHandler::rehighlightSpellcheck()
+{
+    rehighlightAll();
     // Same reasoning as setSpellcheckLanguage's own invalidation call above
     // — this is an explicit "the dictionary's answer for some word may have
     // changed" signal (e.g. right after settings.addUserDictionaryWord()),
@@ -527,7 +561,24 @@ QString DocumentHandler::toMarkdown() const
 {
     if (!m_document || !m_document->textDocument())
         return QString();
-    return MarkdownSerialization::toMarkdownPreservingBlankLines(m_document->textDocument());
+
+    // The buffer holds literal markdown source, so saving is just handing back
+    // the text — no serialization, no object-model walk, and nothing that can
+    // disagree with what the user typed. This is the entire point of the
+    // plain-text rewrite: MarkdownSerialization used to regenerate markdown
+    // from a parsed block/list/table model, which could not tell one blank line
+    // between paragraphs from none.
+    //
+    // Deliberately toRawText() rather than toPlainText(): toPlainText()
+    // "helpfully" rewrites some characters, notably replacing a no-break space
+    // (U+00A0) with an ordinary space — silently corrupting pasted content on
+    // save, which is exactly the buffer-vs-disk mismatch being eliminated here.
+    // toRawText() returns the characters as stored, leaving only Qt's internal
+    // block/line separators to translate into real newlines.
+    QString text = m_document->textDocument()->toRawText();
+    text.replace(QChar::ParagraphSeparator, QLatin1Char('\n'));
+    text.replace(QChar::LineSeparator, QLatin1Char('\n'));
+    return text;
 }
 
 void DocumentHandler::setMarkdown(const QString &markdown)
@@ -535,32 +586,31 @@ void DocumentHandler::setMarkdown(const QString &markdown)
     if (!m_document || !m_document->textDocument())
         return;
 
-    // setMarkdownPreservingBlankLines() rebuilds the document through a
-    // document->clear() followed by many separate, unbatched QTextCursor
-    // edits (one insertFragment()/insertBlock() per chunk/spacer) — with
-    // undo/redo left enabled, Qt's native undo stack (which TextArea's
-    // Ctrl+Z and editor.undo()/redo() read directly) faithfully records the
-    // ENTIRE note load as a pile of individually-undoable commands. That
-    // made a freshly opened note's very first Ctrl+Z partially or fully
-    // empty it instead of being a no-op, and redo unreliable (separate
-    // stack entries that may or may not merge, rather than one atomic
-    // "load" step). Toggling undoRedoEnabled off then back on is Qt's own
-    // documented mechanism for "populate a document programmatically
-    // without adding to undo history" — re-enabling it afterward also
-    // leaves the stack empty, so the user's first real edit becomes undo
-    // step #1, exactly as expected.
+    // Loading is now a single setPlainText() — the markdown text becomes the
+    // buffer verbatim, with no parsing step to lose information. The
+    // highlighter re-derives every visual from that text on its own pass.
+    //
+    // The undo toggle below is kept from the pre-rewrite implementation and is
+    // still load-bearing: Qt's native undo stack (which TextArea's Ctrl+Z and
+    // editor.undo()/redo() read directly) would otherwise record the note load
+    // itself, making a freshly opened note's very first Ctrl+Z empty it instead
+    // of being a no-op. Toggling undoRedoEnabled off then back on is Qt's own
+    // documented mechanism for populating a document programmatically without
+    // adding to undo history, and leaves the stack empty so the user's first
+    // real edit becomes undo step #1.
     QTextDocument *document = m_document->textDocument();
     document->setUndoRedoEnabled(false);
-    MarkdownSerialization::setMarkdownPreservingBlankLines(document, markdown);
+    document->setPlainText(markdown);
     document->setUndoRedoEnabled(true);
 
     // Disabling undo/redo above doesn't just skip recording history — it
     // also freezes QTextBlock::revision() (confirmed empirically: Qt drives
     // it off the undo stack, so it stops advancing for edits made while
-    // undo is off), and document->clear() under a disabled undo stack
-    // reuses the same underlying block object — and whatever
-    // MisspelledBlockCache is still attached to it as QTextBlockUserData —
-    // instead of destroying it. Left alone, that means a SECOND setMarkdown()
+    // undo is off), and the document clear that setPlainText() does
+    // internally, under a disabled undo stack, reuses the same underlying
+    // block object — and whatever MisspelledBlockCache is still attached to
+    // it as QTextBlockUserData — instead of destroying it. Left alone, that
+    // means a SECOND setMarkdown()
     // call on an already-used document silently reuses a stale, pre-reload
     // spellcheck cache for the new text (bug found live: reloading content
     // into an open note stopped flagging any misspelled words at all).

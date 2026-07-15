@@ -548,7 +548,15 @@ Window {
                     // below short notes.
                     height: Math.max(contentHeight, editorFlick.height)
                     wrapMode: TextEdit.Wrap
-                    textFormat: TextEdit.MarkdownText
+                    // The buffer holds literal markdown source and saves
+                    // byte-for-byte what was typed; MarkdownHighlighter (owned
+                    // by docHandler, attached to this TextArea's own
+                    // textDocument) paints the formatting by scanning that
+                    // text. MarkdownText mode did the opposite — it parsed
+                    // markdown into a block/list/table object model and
+                    // regenerated the text on save, which could not tell one
+                    // blank line between paragraphs from none.
+                    textFormat: TextEdit.PlainText
                     selectByMouse: true
                     // Regression found live (popup toolbar feature): with
                     // this left at its default (false), the selection was

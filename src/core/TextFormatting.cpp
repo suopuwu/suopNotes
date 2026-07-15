@@ -454,30 +454,179 @@ void toggleHandRolled(QTextCursor cursor, HandRolledKind targetKind, int startNu
     renumberRun(block, targetKind, effectiveStart);
 }
 
+// --- Inline emphasis, as literal markdown markers -----------------------
+//
+// Emphasis used to be a QTextCharFormat merge over the selection. Under the
+// plain-text buffer there is no character formatting to carry it: bold IS the
+// two asterisks, and the highlighter re-derives the look from them. So every
+// toggle below is a text edit, and every query below is a text scan.
+
+// A line's heading level: the number of leading "#" characters, but only when
+// they're followed by whitespace. GFM requires that space, so "#hashtag" is
+// ordinary text, not an H1 — and more than six hashes isn't a heading at all.
+int leadingHashCount(const QString &text)
+{
+    int hashes = 0;
+    while (hashes < text.size() && text.at(hashes) == QLatin1Char('#'))
+        ++hashes;
+    if (hashes == 0 || hashes > 6)
+        return 0;
+    if (hashes >= text.size() || !text.at(hashes).isSpace())
+        return 0;
+    return hashes;
+}
+
+QString boldMarker()
+{
+    return QStringLiteral("**");
+}
+
+QString italicMarker()
+{
+    return QStringLiteral("*");
+}
+
+QString strikethroughMarker()
+{
+    return QStringLiteral("~~");
+}
+
+// Bold's alternate GFM spelling. Toggling always writes "**", but a query has
+// to recognise "__bold__" too — a user may have typed it, or pasted it.
+QString boldUnderscoreMarker()
+{
+    return QStringLiteral("__");
+}
+
+QString italicUnderscoreMarker()
+{
+    return QStringLiteral("_");
+}
+
+QString documentTextAt(const QTextDocument *document, int position, int length)
+{
+    if (!document || length <= 0 || position < 0)
+        return QString();
+    // characterCount() includes the document's final block separator, so the
+    // last real character sits at characterCount() - 2.
+    if (position + length > document->characterCount() - 1)
+        return QString();
+
+    QTextCursor cursor(const_cast<QTextDocument *>(document));
+    cursor.setPosition(position);
+    cursor.setPosition(position + length, QTextCursor::KeepAnchor);
+    return cursor.selectedText();
+}
+
+// Whether `marker` sits immediately outside the selection on both sides —
+// "**bold**" with "bold" selected. This is the shape the toggle itself
+// produces, so it's the common case.
+bool isWrappedOutside(const QTextCursor &cursor, const QString &marker)
+{
+    const int start = cursor.selectionStart();
+    const int end = cursor.selectionEnd();
+    return documentTextAt(cursor.document(), start - marker.size(), marker.size()) == marker
+        && documentTextAt(cursor.document(), end, marker.size()) == marker;
+}
+
+// Whether the selection itself spans the markers too — the shape you get by
+// selecting a whole "**bold**" run, e.g. by double-clicking through it or
+// selecting a whole line. Without this, toggling such a selection would nest a
+// second pair of markers instead of removing the existing one.
+bool isWrappedInside(const QTextCursor &cursor, const QString &marker)
+{
+    const int start = cursor.selectionStart();
+    const int end = cursor.selectionEnd();
+    if (end - start < 2 * marker.size())
+        return false;
+    return documentTextAt(cursor.document(), start, marker.size()) == marker
+        && documentTextAt(cursor.document(), end - marker.size(), marker.size()) == marker;
+}
+
+// A single "*" must not report the "**" of a bold run as italic, and a single
+// "_" must not report "__". Since the italic markers are prefixes of the bold
+// ones, a naive scan for "*" matches "**" every time — so an italic query has
+// to explicitly reject the doubled form.
+bool isDoubledAround(const QTextCursor &cursor, const QString &marker)
+{
+    const QString doubled = marker + marker;
+    return isWrappedOutside(cursor, doubled) || isWrappedInside(cursor, doubled);
+}
+
+void removeMarkersOutside(QTextCursor cursor, const QString &marker)
+{
+    const int start = cursor.selectionStart();
+    const int end = cursor.selectionEnd();
+    QTextCursor edit(cursor.document());
+    edit.beginEditBlock();
+    // Trailing marker first: removing it leaves every offset before it
+    // untouched, so `start` is still correct on the second removal.
+    edit.setPosition(end);
+    edit.setPosition(end + marker.size(), QTextCursor::KeepAnchor);
+    edit.removeSelectedText();
+    edit.setPosition(start - marker.size());
+    edit.setPosition(start, QTextCursor::KeepAnchor);
+    edit.removeSelectedText();
+    edit.endEditBlock();
+}
+
+void removeMarkersInside(QTextCursor cursor, const QString &marker)
+{
+    const int start = cursor.selectionStart();
+    const int end = cursor.selectionEnd();
+    QTextCursor edit(cursor.document());
+    edit.beginEditBlock();
+    edit.setPosition(end - marker.size());
+    edit.setPosition(end, QTextCursor::KeepAnchor);
+    edit.removeSelectedText();
+    edit.setPosition(start);
+    edit.setPosition(start + marker.size(), QTextCursor::KeepAnchor);
+    edit.removeSelectedText();
+    edit.endEditBlock();
+}
+
+void toggleInlineMarker(QTextCursor cursor, const QString &marker)
+{
+    if (!cursor.document())
+        return;
+
+    if (isWrappedOutside(cursor, marker)) {
+        removeMarkersOutside(cursor, marker);
+        return;
+    }
+    if (isWrappedInside(cursor, marker)) {
+        removeMarkersInside(cursor, marker);
+        return;
+    }
+
+    const int start = cursor.selectionStart();
+    const int end = cursor.selectionEnd();
+    QTextCursor edit(cursor.document());
+    edit.beginEditBlock();
+    // End first, for the same reason as removeMarkersOutside: inserting at the
+    // end can't shift `start`, but inserting at the start would shift `end`.
+    edit.setPosition(end);
+    edit.insertText(marker);
+    edit.setPosition(start);
+    edit.insertText(marker);
+    edit.endEditBlock();
+}
+
 }
 
 void toggleBold(QTextCursor cursor)
 {
-    const bool isBold = cursor.charFormat().fontWeight() >= QFont::Bold;
-    QTextCharFormat format;
-    format.setFontWeight(isBold ? QFont::Normal : QFont::Bold);
-    cursor.mergeCharFormat(format);
+    toggleInlineMarker(cursor, boldMarker());
 }
 
 void toggleItalic(QTextCursor cursor)
 {
-    const bool isItalic = cursor.charFormat().fontItalic();
-    QTextCharFormat format;
-    format.setFontItalic(!isItalic);
-    cursor.mergeCharFormat(format);
+    toggleInlineMarker(cursor, italicMarker());
 }
 
 void toggleStrikethrough(QTextCursor cursor)
 {
-    const bool isStruck = cursor.charFormat().fontStrikeOut();
-    QTextCharFormat format;
-    format.setFontStrikeOut(!isStruck);
-    cursor.mergeCharFormat(format);
+    toggleInlineMarker(cursor, strikethroughMarker());
 }
 
 void toggleBulletList(QTextCursor cursor)
@@ -665,69 +814,63 @@ void maintainHeadingCharFormatAfterMerge(QTextCursor cursor)
 
 void setHeadingLevel(QTextCursor cursor, int level)
 {
-    QTextBlockFormat blockFormat = cursor.blockFormat();
-    blockFormat.setHeadingLevel(level);
-    cursor.mergeBlockFormat(blockFormat);
-
-    // headingLevel alone has NO visual effect when applied this way
-    // (confirmed empirically: toggling it via the toolbar saved correctly
-    // but changed nothing on screen) — Qt's markdown *parser* bakes heading
-    // appearance (bold + a scaled font size) into the actual CHAR format
-    // only when building a heading block fresh from "# " syntax; it's
-    // never derived from headingLevel at paint time. FontSizeAdjustment is
-    // a multiplier RELATIVE to the block's own base font (confirmed
-    // empirically: adjustment 3 = 2x, matching Qt's own h1 scaling;
-    // adjustment 2 = 1.5x, matching h2) rather than an absolute size, so
-    // toggling back to level 0 exactly restores the original size
-    // regardless of the note's own configured font — no need to know or
-    // store that value anywhere.
-    const QTextCharFormat charFormat = headingCharFormat(level);
-
-    // Bugfix: this used to scope the char-format pass to cursor.block()
-    // alone. For a selection spanning multiple lines, mergeBlockFormat
-    // above already applies the HeadingLevel property to every block the
-    // selection touches, but only the LAST block (cursor.block(), since
-    // cursor.position() sits at the selection's moving end) actually got
-    // its bold/size char format updated — every earlier line kept its old
-    // styling despite its heading level having genuinely changed, which is
-    // exactly what makes the button look like it silently did nothing on
-    // those lines. Widen the char-format pass to the same block range
-    // mergeBlockFormat just touched, using selectionStart()/selectionEnd()
-    // rather than anchor()/position() since a backwards selection has
-    // anchor() > position().
     QTextDocument *document = cursor.document();
+    if (!document)
+        return;
+
+    // A heading is now just a line that starts with "# " — no block format, no
+    // char format, no size/weight to apply. That single fact deletes the whole
+    // machinery this function used to need: setting HeadingLevel had no visual
+    // effect on its own, so it also had to merge a bold/FontSizeAdjustment char
+    // format over the selection, then re-merge it as a *block* char format so
+    // an empty line wouldn't keep a stale one, and maintainHeadingCharFormatAfterMerge
+    // existed purely to repair the desync when two blocks merged. The
+    // highlighter re-derives all of it from the "#" characters instead.
     const int rangeStart = cursor.selectionStart();
     const int rangeEnd = cursor.selectionEnd();
     const QTextBlock firstBlock = document->findBlock(rangeStart);
-    // rangeEnd - 1 when there's a real selection: a selection ending
-    // exactly at the start of the next block (i.e. it only swallowed the
-    // previous block's trailing newline) shouldn't pull that next,
-    // unselected block in too.
+    // rangeEnd - 1 when there's a real selection: a selection ending exactly at
+    // the start of the next block (i.e. it only swallowed the previous block's
+    // trailing newline) shouldn't pull that next, unselected block in too.
     const QTextBlock lastBlock =
         document->findBlock(rangeEnd > rangeStart ? rangeEnd - 1 : rangeEnd);
-    QTextCursor formatCursor(document);
-    formatCursor.setPosition(firstBlock.position());
-    formatCursor.setPosition(lastBlock.position() + lastBlock.length() - 1, QTextCursor::KeepAnchor);
-    formatCursor.mergeCharFormat(charFormat);
 
-    // Bugfix: mergeCharFormat() above only ever touches characters that
-    // actually exist in the selection — for a block that's still EMPTY
-    // (e.g. the fresh line tryResetHeadingOnReturn() just split off via
-    // insertBlock(), which copies the split point's char format onto the
-    // new block by default), that selection is zero-length, so the merge
-    // above is a complete no-op on it. The stale bold+oversized format then
-    // silently survives as the block's own charFormat() — invisible until
-    // the user actually types there, at which point the typed text inherits
-    // it for real (confirmed empirically: pressing Enter on a heading line
-    // then typing produced text that *looked* like it was still the
-    // heading, and stayed bold — though correctly NOT heading-sized or
-    // serialized as "# " — even after reload, since headingLevel itself
-    // .mergeBlockFormat()'d fine above; only the char format leaked).
-    // mergeBlockCharFormat merges into every block touched by the
-    // selection (or just the current block, for an empty/no-op selection
-    // like this one) rather than into actual characters, which is exactly
-    // the format newly-typed text in an empty block inherits.
-    formatCursor.mergeBlockCharFormat(charFormat);
+    QTextCursor edit(document);
+    edit.beginEditBlock();
+    // Bottom-up: rewriting a block's prefix shifts the positions of every block
+    // after it, but never of those before it, so walking backwards keeps each
+    // remaining block's cached position valid without re-finding it.
+    QList<QTextBlock> blocks;
+    for (QTextBlock b = firstBlock; b.isValid(); b = b.next()) {
+        blocks.append(b);
+        if (b.blockNumber() == lastBlock.blockNumber())
+            break;
+    }
+    for (int i = blocks.size() - 1; i >= 0; --i) {
+        const QTextBlock block = blocks.at(i);
+        const QString text = block.text();
+        const int existing = leadingHashCount(text);
+
+        // Replace whatever prefix is already there (hashes plus the space after
+        // them) so re-heading an existing heading swaps its level rather than
+        // stacking a second "#" run onto it.
+        int prefixLength = 0;
+        if (existing > 0) {
+            prefixLength = existing;
+            while (prefixLength < text.size() && text.at(prefixLength).isSpace())
+                ++prefixLength;
+        }
+
+        const QString replacement =
+            level > 0 ? QString(level, QLatin1Char('#')) + QLatin1Char(' ') : QString();
+
+        edit.setPosition(block.position());
+        edit.setPosition(block.position() + prefixLength, QTextCursor::KeepAnchor);
+        if (edit.selectedText() == replacement)
+            continue;
+        edit.insertText(replacement); // replaces the selection
+    }
+    edit.endEditBlock();
 }
 
 void insertTabSpaces(QTextCursor cursor)
@@ -830,22 +973,39 @@ void deleteTable(QTextCursor cursor)
 
 bool isBold(QTextCursor cursor)
 {
-    return cursor.charFormat().fontWeight() >= QFont::Bold;
+    // Either GFM spelling counts — the toggle only ever writes "**", but the
+    // text may have been typed or pasted with "__".
+    return isWrappedOutside(cursor, boldMarker()) || isWrappedInside(cursor, boldMarker())
+        || isWrappedOutside(cursor, boldUnderscoreMarker())
+        || isWrappedInside(cursor, boldUnderscoreMarker());
 }
 
 bool isItalic(QTextCursor cursor)
 {
-    return cursor.charFormat().fontItalic();
+    // "**bold**" is wrapped in "*" as far as a naive scan can tell, since the
+    // italic marker is a prefix of the bold one — so the doubled form has to be
+    // excluded explicitly, or every bold run would light the italic button too.
+    const bool asterisk = (isWrappedOutside(cursor, italicMarker())
+                           || isWrappedInside(cursor, italicMarker()))
+        && !isDoubledAround(cursor, italicMarker());
+    const bool underscore = (isWrappedOutside(cursor, italicUnderscoreMarker())
+                             || isWrappedInside(cursor, italicUnderscoreMarker()))
+        && !isDoubledAround(cursor, italicUnderscoreMarker());
+    return asterisk || underscore;
 }
 
 bool isStrikethrough(QTextCursor cursor)
 {
-    return cursor.charFormat().fontStrikeOut();
+    return isWrappedOutside(cursor, strikethroughMarker())
+        || isWrappedInside(cursor, strikethroughMarker());
 }
 
 int headingLevel(QTextCursor cursor)
 {
-    return cursor.blockFormat().headingLevel();
+    // Heading-ness is now literally "how many '#' does this line start with",
+    // which is also why it survives a block merge for free — there is no
+    // separate structural state left to drift out of sync with the text.
+    return leadingHashCount(cursor.block().text());
 }
 
 bool isBulletList(QTextCursor cursor)

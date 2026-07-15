@@ -12,6 +12,7 @@
 
 #include <memory>
 
+class MarkdownHighlighter;
 class SpellCheckerBackend;
 class SpellCheckHighlighter;
 class UserDictionaryFilteringBackend;
@@ -242,6 +243,11 @@ signals:
     void contentEdited();
 
 private:
+    // Re-runs both highlighters in the one order that works — spellcheck
+    // first, markdown LAST. See its definition for why the order is not a
+    // style choice.
+    void rehighlightAll();
+
     QTextCursor cursorFor(int selectionStart, int selectionEnd) const;
 
     // Builds a fresh backend for `language` (empty = system default via Sonnet;
@@ -361,6 +367,11 @@ private:
     // (Re)constructed in setDocument() against the new document's
     // textDocument() — does not own m_spellCheckerBackend, just borrows it.
     std::unique_ptr<SpellCheckHighlighter> m_highlighter;
+    // Paints markdown decoration from the buffer's literal source text — the
+    // job textFormat: TextEdit.MarkdownText used to do before the editor moved
+    // to a plain-text buffer. Sibling of m_highlighter above: same lifetime,
+    // same document, (re)constructed alongside it in setDocument().
+    std::unique_ptr<MarkdownHighlighter> m_markdownHighlighter;
     bool m_spellcheckEnabled = true;
     QString m_spellcheckLanguage;
     QStringList m_userDictionaryWords;
