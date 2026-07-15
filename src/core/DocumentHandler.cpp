@@ -1,6 +1,6 @@
 #include "DocumentHandler.h"
 #include "MarkdownHighlighter.h"
-#include "MarkdownSerialization.h"
+#include "MarkdownTable.h"
 #include "SpellCheckHighlighter.h"
 #include "SpellChecker.h"
 #include "TextFormatting.h"
@@ -9,8 +9,6 @@
 #include <QRegularExpression>
 #include <QTextBlock>
 #include <QTextDocument>
-#include <QTextList>
-#include <QTextTable>
 
 namespace
 {
@@ -172,10 +170,9 @@ void DocumentHandler::setDocument(QQuickTextDocument *document)
         // unspecified, risking exactly the one-frame "flagged, then
         // immediately un-flagged" flash this debounce exists to prevent.
         connect(document->textDocument(), &QTextDocument::contentsChange, this, &DocumentHandler::onContentsChange);
-        m_lastKnownBlockCount = document->textDocument()->blockCount();
     } else {
         m_highlighter.reset();
-        m_lastKnownBlockCount = 1;
+        m_markdownHighlighter.reset();
     }
     m_lastMisspelledWordRanges = computeMisspelledWordRanges();
     emit misspelledWordRangesChanged();
@@ -275,26 +272,13 @@ void DocumentHandler::onContentsChange(int from, int charsRemoved, int charsAdde
         emit contentEdited();
     }
 
-    if (m_document && m_document->textDocument()) {
-        QTextDocument *doc = m_document->textDocument();
-        const int currentBlockCount = doc->blockCount();
-        // charsRemoved > 0 alone doesn't mean a merge happened — deleting a
-        // character that isn't a block separator removes text without
-        // changing blockCount at all. Comparing against blockCount as of the
-        // END of the previous call is what actually confirms two blocks
-        // became one (see m_lastKnownBlockCount's own comment) — the one
-        // case TextFormatting::maintainHeadingCharFormatAfterMerge needs to
-        // run for, and the only case it's safe to run in (see its own
-        // comment for why running it on every ordinary keystroke would risk
-        // clobbering an unrelated, deliberate partial bold/italic toggle
-        // elsewhere in the same block).
-        if (charsRemoved > 0 && currentBlockCount < m_lastKnownBlockCount) {
-            QTextCursor mergeCursor(doc);
-            mergeCursor.setPosition(from);
-            TextFormatting::maintainHeadingCharFormatAfterMerge(mergeCursor);
-        }
-        m_lastKnownBlockCount = currentBlockCount;
-    }
+    // Block-merge detection used to live here, purely to invoke
+    // TextFormatting::maintainHeadingCharFormatAfterMerge and repair the
+    // char-format/block-format desync a merge left behind. Both are gone: a
+    // heading is now just a line starting with "# ", so merging two blocks
+    // produces whatever text it produces and the highlighter re-derives the
+    // styling on its next pass. There is no second source of truth left to
+    // fall out of sync, so there is nothing to repair.
 
     emitMisspelledWordRangesChangedIfNeeded();
 }
@@ -631,22 +615,25 @@ QTextCursor DocumentHandler::cursorFor(int selectionStart, int selectionEnd) con
     return cursor;
 }
 
-void DocumentHandler::toggleBold(int selectionStart, int selectionEnd)
+QVariantMap DocumentHandler::toggleBold(int selectionStart, int selectionEnd)
 {
-    TextFormatting::toggleBold(cursorFor(selectionStart, selectionEnd));
+    const QPair<int, int> range = TextFormatting::toggleBold(cursorFor(selectionStart, selectionEnd));
     emit formattingChanged();
+    return QVariantMap{{QStringLiteral("start"), range.first}, {QStringLiteral("end"), range.second}};
 }
 
-void DocumentHandler::toggleItalic(int selectionStart, int selectionEnd)
+QVariantMap DocumentHandler::toggleItalic(int selectionStart, int selectionEnd)
 {
-    TextFormatting::toggleItalic(cursorFor(selectionStart, selectionEnd));
+    const QPair<int, int> range = TextFormatting::toggleItalic(cursorFor(selectionStart, selectionEnd));
     emit formattingChanged();
+    return QVariantMap{{QStringLiteral("start"), range.first}, {QStringLiteral("end"), range.second}};
 }
 
-void DocumentHandler::toggleStrikethrough(int selectionStart, int selectionEnd)
+QVariantMap DocumentHandler::toggleStrikethrough(int selectionStart, int selectionEnd)
 {
-    TextFormatting::toggleStrikethrough(cursorFor(selectionStart, selectionEnd));
+    const QPair<int, int> range = TextFormatting::toggleStrikethrough(cursorFor(selectionStart, selectionEnd));
     emit formattingChanged();
+    return QVariantMap{{QStringLiteral("start"), range.first}, {QStringLiteral("end"), range.second}};
 }
 
 void DocumentHandler::toggleBulletList(int selectionStart, int selectionEnd)
@@ -769,34 +756,17 @@ bool DocumentHandler::tryContinueList(int cursorPosition)
     QTextCursor cursor(m_document->textDocument());
     cursor.setPosition(cursorPosition);
 
-    // Numbered/checkbox items are hand-rolled (see TextFormatting.h) and
-    // handled independently of the QTextList-based bullet path below.
-    if (TextFormatting::isNumberedList(cursor) || TextFormatting::isCheckboxList(cursor)) {
-        if (TextFormatting::isHandRolledListItemEmpty(cursor)) {
-            TextFormatting::exitHandRolledList(cursor);
-            return true;
-        }
-        return TextFormatting::continueHandRolledList(cursor);
-    }
-
-    QTextList *list = cursor.currentList();
-    if (!list)
-        return false;
-
-    if (cursor.block().text().isEmpty()) {
-        // An empty item is the standard "press Enter again to leave the
-        // list" escape hatch — otherwise there would be no way to get back
-        // to a plain paragraph without reaching for the toolbar.
-        QTextBlockFormat blockFormat = cursor.blockFormat();
-        blockFormat.setIndent(0);
-        cursor.mergeBlockFormat(blockFormat);
-        list->remove(cursor.block());
+    // One path for every list kind now. Bullets used to need a separate
+    // QTextList branch here; they're ordinary "- " marker text like numbered
+    // and checkbox items, so the same two rules cover all three.
+    if (TextFormatting::isHandRolledListItemEmpty(cursor)) {
+        // An empty item is the standard "press Enter again to leave the list"
+        // escape hatch — otherwise there would be no way back to a plain
+        // paragraph without reaching for the toolbar.
+        TextFormatting::exitHandRolledList(cursor);
         return true;
     }
-
-    cursor.insertBlock();
-    list->add(cursor.block());
-    return true;
+    return TextFormatting::continueHandRolledList(cursor);
 }
 
 bool DocumentHandler::tryAutoConvertListShorthand(int cursorPosition)
@@ -952,11 +922,25 @@ QRectF DocumentHandler::tableRect(int position) const
     QTextDocument *document = m_document->textDocument();
     QTextCursor cursor(document);
     cursor.setPosition(position);
-    QTextTable *table = cursor.currentTable();
-    if (!table)
+
+    // A pipe table has no QTextFrame to ask for a bounding rect, so the rect is
+    // the union of its own lines' block rects. Same result, one layer down: the
+    // toolbar only uses this to anchor its column-options popup.
+    const MarkdownTable::Region region =
+        MarkdownTable::regionAt(document, cursor.block().blockNumber());
+    if (!region.isValid())
         return QRectF();
 
-    return document->documentLayout()->frameBoundingRect(table);
+    QRectF rect;
+    for (int i = region.firstBlockNumber; i <= region.lastBlockNumber; ++i) {
+        const QTextBlock block = document->findBlockByNumber(i);
+        if (!block.isValid())
+            continue;
+        // blockBoundingRect() is also what forces the block to actually be laid
+        // out — see TextFormatting::checkboxMarkerRect's own note on this.
+        rect = rect.united(document->documentLayout()->blockBoundingRect(block));
+    }
+    return rect;
 }
 
 QRectF DocumentHandler::checkboxRectAt(int position) const

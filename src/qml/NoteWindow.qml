@@ -73,6 +73,17 @@ Window {
     // formatting call mutates the document without moving the selection at
     // all (see docHandler's onFormattingChanged — e.g. clicking Bold on a
     // held selection).
+    // Runs an inline toggle and puts the selection back over the same text.
+    // Without the reselect, the marker inserted at the selection's end lands
+    // INSIDE it ("bold me**"), which both looks wrong and makes the toolbar's
+    // own bold/italic indicator read false right after it was turned on.
+    function applyInlineToggle(fn) {
+        const result = fn({start: editor.selectionStart, end: editor.selectionEnd})
+        if (result)
+            editor.select(result.start, result.end)
+        refreshFormatState()
+    }
+
     function refreshFormatState() {
         const start = editor.selectionStart
         const end = editor.selectionEnd
@@ -335,15 +346,15 @@ Window {
         // multiple open notes never fight over the same key press.
         Shortcut {
             sequence: settings.shortcutBold
-            onActivated: docHandler.toggleBold(editor.selectionStart, editor.selectionEnd)
+            onActivated: noteWindow.applyInlineToggle(r => docHandler.toggleBold(r.start, r.end))
         }
         Shortcut {
             sequence: settings.shortcutItalic
-            onActivated: docHandler.toggleItalic(editor.selectionStart, editor.selectionEnd)
+            onActivated: noteWindow.applyInlineToggle(r => docHandler.toggleItalic(r.start, r.end))
         }
         Shortcut {
             sequence: settings.shortcutStrikethrough
-            onActivated: docHandler.toggleStrikethrough(editor.selectionStart, editor.selectionEnd)
+            onActivated: noteWindow.applyInlineToggle(r => docHandler.toggleStrikethrough(r.start, r.end))
         }
         Shortcut {
             sequence: settings.shortcutHeading1
@@ -1180,19 +1191,30 @@ Window {
                     // explicitly cleared, or every ordinary Up/Down press
                     // gets swallowed here and never reaches TextEdit's own
                     // default line-to-line cursor movement underneath.
+                    // cursorRectangle.y is the cursor's TOP edge, which sits
+                    // exactly on the boundary between this visual line and the
+                    // one above — so positionAt() at that y can resolve to the
+                    // line above instead of the cursor's own (bug found live:
+                    // Down on a last line directly beneath a blank line jumped
+                    // UP into the blank line rather than to its own end).
+                    // Probing the cursor's vertical CENTRE is unambiguous: it
+                    // can only ever fall inside the cursor's own line.
+                    function cursorLineY() {
+                        return cursorRectangle.y + cursorRectangle.height / 2
+                    }
                     Keys.onUpPressed: (event) => {
                         if (positionToRectangle(0).y < cursorRectangle.y) {
                             event.accepted = false
                             return
                         }
-                        moveCursorToBoundary(positionAt(0, cursorRectangle.y), event)
+                        moveCursorToBoundary(positionAt(0, cursorLineY()), event)
                     }
                     Keys.onDownPressed: (event) => {
                         if (positionToRectangle(length).y > cursorRectangle.y) {
                             event.accepted = false
                             return
                         }
-                        moveCursorToBoundary(positionAt(width, cursorRectangle.y), event)
+                        moveCursorToBoundary(positionAt(width, cursorLineY()), event)
                     }
 
                     // Shared tail of the two boundary jumps above. Shift+Up /

@@ -978,7 +978,7 @@ Window {
             contentItem: ToolbarButtonLabel {}
             checkable: true
             checked: bar.noteWindow ? bar.noteWindow.currentBold : false
-            onClicked: bar.runAction(() => bar.noteWindow.docHandler.toggleBold(bar.noteWindow.editor.selectionStart, bar.noteWindow.editor.selectionEnd))
+            onClicked: bar.runAction(() => bar.noteWindow.applyInlineToggle(r => bar.noteWindow.docHandler.toggleBold(r.start, r.end)))
             ToolbarButtonTip { id: boldButtonTip; text: "Bold" }
         }
         ToolButton {
@@ -993,7 +993,7 @@ Window {
             contentItem: ToolbarButtonLabel {}
             checkable: true
             checked: bar.noteWindow ? bar.noteWindow.currentItalic : false
-            onClicked: bar.runAction(() => bar.noteWindow.docHandler.toggleItalic(bar.noteWindow.editor.selectionStart, bar.noteWindow.editor.selectionEnd))
+            onClicked: bar.runAction(() => bar.noteWindow.applyInlineToggle(r => bar.noteWindow.docHandler.toggleItalic(r.start, r.end)))
             ToolbarButtonTip { id: italicButtonTip; text: "Italic" }
         }
         ToolButton {
@@ -1008,7 +1008,7 @@ Window {
             contentItem: ToolbarButtonLabel {}
             checkable: true
             checked: bar.noteWindow ? bar.noteWindow.currentStrikethrough : false
-            onClicked: bar.runAction(() => bar.noteWindow.docHandler.toggleStrikethrough(bar.noteWindow.editor.selectionStart, bar.noteWindow.editor.selectionEnd))
+            onClicked: bar.runAction(() => bar.noteWindow.applyInlineToggle(r => bar.noteWindow.docHandler.toggleStrikethrough(r.start, r.end)))
             ToolbarButtonTip { id: strikethroughButtonTip; text: "Strikethrough" }
         }
         ToolButton {

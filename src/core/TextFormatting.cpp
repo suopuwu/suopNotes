@@ -1,15 +1,19 @@
 #include "TextFormatting.h"
 
+#include "MarkdownList.h"
+#include "MarkdownTable.h"
+
 #include <QAbstractTextDocumentLayout>
-#include <QFontMetricsF>
+#include <QFont>
+#include <QList>
+#include <QPair>
 #include <QRegularExpression>
-#include <QTextBlockFormat>
+#include <QStringList>
+#include <QTextBlock>
 #include <QTextCharFormat>
 #include <QTextDocument>
 #include <QTextLayout>
-#include <QTextList>
-#include <QTextTable>
-#include <QTextTableFormat>
+#include <QTextLine>
 
 namespace TextFormatting
 {
@@ -17,449 +21,7 @@ namespace TextFormatting
 namespace
 {
 
-// Qt's default list indent (QTextListFormat::indent() == 1, times
-// QTextDocument::indentWidth()'s default of 40px) pushes the marker itself
-// ~40px right of the paragraph's own left edge — an "indentation before the
-// number" nobody asked for. Sizing indentWidth to just fit a two-digit
-// marker instead keeps the marker flush against the text's natural left
-// edge while leaving Qt's own hanging-indent mechanism intact, so wrapped
-// continuation lines still line up under the text after the marker rather
-// than collapsing flush left with it (confirmed empirically: indent level 0
-// clips the marker entirely, so a small nonzero indentWidth — not indent 0
-// — is what "no indentation before the number" actually needs). Bullet
-// lists are the only remaining QTextList-based kind (see toggleNumberedList
-// below for why numbered/checkbox lists no longer are), so this only ever
-// runs for them now.
-void tightenListIndent(const QTextCursor &cursor)
-{
-    if (QTextDocument *document = cursor.document()) {
-        const QFontMetricsF metrics(cursor.charFormat().font());
-        document->setIndentWidth(metrics.horizontalAdvance(QStringLiteral("99.")) + 4);
-    }
-}
-
-// Numbered and checkbox lists don't use QTextList at all — see
-// toggleNumberedList's own header comment (TextFormatting.h) for why. A
-// block's membership is tracked instead via this custom QTextBlockFormat
-// property; "the list" for any given block is the maximal run of adjacent
-// blocks sharing the same one, mirroring how QTextList's own
-// cursor.currentList() concept works via block adjacency in the same list
-// object.
-enum class HandRolledKind { None = 0, Numbered = 1, Checkbox = 2 };
-constexpr int HandRolledKindProperty = QTextFormat::UserProperty + 1;
-
-// The two literal marker prefixes hand-rolled checkbox blocks carry as
-// real, selectable text — a genuine checkbox glyph (☐/☑, feature request)
-// rather than literal "- [ ] "/"- [x] " GFM task-list syntax, which read as
-// raw markdown rather than an actual checkbox. Unlike the numbered marker
-// below, this is NOT valid markdown verbatim, so it needs an explicit
-// translation back to real GFM syntax on save — see
-// MarkdownSerialization's own use of handRolledBlockMarkdownText — the
-// inverse of convertNativeListsToHandRolled's own checkbox branch, which
-// converts the other way on load.
-const QString &uncheckedMarker()
-{
-    static const QString marker = QStringLiteral("☐ "); // "☐ "
-    return marker;
-}
-const QString &checkedMarker()
-{
-    static const QString marker = QStringLiteral("☑ "); // "☑ "
-    return marker;
-}
-constexpr int checkboxMarkerLength = 2; // both markers above are the same length
-
-// QTextCursor::mergeBlockFormat() merges: a property ABSENT from the
-// argument format is left completely untouched on the destination, so
-// "clearing" a property via QTextBlockFormat::clearProperty() then merging
-// that (now-absent-again) format is a no-op — it never actually removes
-// anything already set. Explicitly setting the property to None's own
-// value (0) instead, which the merge DOES carry over, is what actually
-// clears it; handRolledKind()'s HandRolledKind::None case is written to
-// treat an explicit 0 exactly the same as a wholly absent property, so
-// this is safe either way a fresh block arrives.
-void setHandRolledKind(QTextCursor cursor, HandRolledKind kind)
-{
-    QTextBlockFormat format = cursor.blockFormat();
-    format.setProperty(HandRolledKindProperty, static_cast<int>(kind));
-    cursor.mergeBlockFormat(format);
-}
-
-const QRegularExpression &numberedMarkerPattern()
-{
-    static const QRegularExpression pattern(QStringLiteral("^(\\d+)\\. "));
-    return pattern;
-}
-
-bool isCheckedMarkerText(const QString &text)
-{
-    return text.startsWith(checkedMarker());
-}
-
-bool isHandRolledCheckboxText(const QString &text)
-{
-    return text.startsWith(uncheckedMarker()) || isCheckedMarkerText(text);
-}
-
-// Length of the marker prefix a block of the given kind actually has right
-// now (0 if it doesn't start with one at all).
-int markerLength(HandRolledKind kind, const QString &text)
-{
-    if (kind == HandRolledKind::Numbered) {
-        const auto match = numberedMarkerPattern().match(text);
-        return match.hasMatch() ? match.capturedLength(0) : 0;
-    }
-    if (kind == HandRolledKind::Checkbox)
-        return isHandRolledCheckboxText(text) ? checkboxMarkerLength : 0;
-    return 0;
-}
-
-HandRolledKind handRolledKind(const QTextBlock &block)
-{
-    const QVariant value = block.blockFormat().property(HandRolledKindProperty);
-    if (!value.isValid())
-        return HandRolledKind::None;
-    const auto kind = static_cast<HandRolledKind>(value.toInt());
-    if (kind == HandRolledKind::None)
-        return HandRolledKind::None;
-    // The property alone isn't authoritative: QTextCursor::insertBlock()
-    // copies the CURRENT block's format — this property included — onto
-    // any newly split block, even one that was never actually given real
-    // marker text (e.g. a plain new paragraph split off from a list item
-    // by some code path other than continueHandRolledList/exitHandRolledList,
-    // which are the only two places that manage this property AND the
-    // literal marker text together). Requiring the marker to actually be
-    // there too is what stops such a block from being silently absorbed
-    // into the list run it happens to sit next to (confirmed empirically:
-    // without this check, splitting a block right after a list item
-    // silently drags the new, unrelated block into the same list).
-    return markerLength(kind, block.text()) > 0 ? kind : HandRolledKind::None;
-}
-
-// The raw, unvalidated property alone — unlike handRolledKind(), does NOT
-// require the block to actually still carry valid marker text. Meant only
-// for detecting the specific staleness maintainHandRolledListNumbering
-// cleans up: a block that WAS a genuine hand-rolled item (this property set)
-// but no longer qualifies as one (handRolledKind() now reports None), whose
-// leftover hanging-indent format needs clearing.
-HandRolledKind rawHandRolledKind(const QTextBlock &block)
-{
-    const QVariant value = block.blockFormat().property(HandRolledKindProperty);
-    return value.isValid() ? static_cast<HandRolledKind>(value.toInt()) : HandRolledKind::None;
-}
-
-// The bold/size-adjustment char format a block at the given heading level
-// should have — shared by setHeadingLevel (which applies it explicitly) and
-// maintainHeadingCharFormatAfterMerge (which only re-applies it where a
-// block-merge left it stale — see that function's own comment). See
-// setHeadingLevel's own comment for why FontSizeAdjustment (not an absolute
-// point size) is what encodes the size half of this.
-QTextCharFormat headingCharFormat(int level)
-{
-    QTextCharFormat format;
-    format.setFontWeight(level > 0 ? QFont::Bold : QFont::Normal);
-    int adjustment = 0;
-    if (level == 1)
-        adjustment = 3;
-    else if (level == 2)
-        adjustment = 2;
-    format.setProperty(QTextFormat::FontSizeAdjustment, adjustment);
-    return format;
-}
-
-// Whether an existing char format already carries the same bold/size a
-// heading's char format would apply — the only two properties either of
-// them ever touches, so this is a complete equivalence check for their
-// purposes (an unrelated property like italic is free to differ either way
-// without counting as a mismatch here).
-bool matchesHeadingCharFormat(const QTextCharFormat &format, const QTextCharFormat &expected)
-{
-    return (format.fontWeight() >= QFont::Bold) == (expected.fontWeight() >= QFont::Bold)
-        && format.property(QTextFormat::FontSizeAdjustment).toInt()
-        == expected.property(QTextFormat::FontSizeAdjustment).toInt();
-}
-
-// Whether every fragment inside [rangeStart, rangeEnd) of `block` already
-// matches `expected` — the no-op fast path maintainHeadingCharFormatAfterMerge
-// checks before actually merging anything, so an ordinary merge of two
-// same-level blocks (the overwhelmingly common case: joining two plain
-// paragraphs with Backspace) never touches the undo stack at all.
-bool rangeMatchesHeadingCharFormat(const QTextBlock &block, int rangeStart, int rangeEnd, const QTextCharFormat &expected)
-{
-    for (auto it = block.begin(); !it.atEnd(); ++it) {
-        const QTextFragment fragment = it.fragment();
-        if (fragment.position() + fragment.length() <= rangeStart)
-            continue;
-        if (fragment.position() >= rangeEnd)
-            break;
-        if (!matchesHeadingCharFormat(fragment.charFormat(), expected))
-            return false;
-    }
-    return true;
-}
-
-QTextBlock runStart(QTextBlock block, HandRolledKind kind)
-{
-    while (block.previous().isValid() && handRolledKind(block.previous()) == kind)
-        block = block.previous();
-    return block;
-}
-
-QTextBlock runEnd(QTextBlock block, HandRolledKind kind)
-{
-    while (block.next().isValid() && handRolledKind(block.next()) == kind)
-        block = block.next();
-    return block;
-}
-
-// Walks outward from an already-valid `kind` block in one direction,
-// extending over every immediately-adjacent block that's EITHER already
-// properly tagged as `kind` (the ordinary case) OR still looks like a
-// genuine `kind` marker in its own literal TEXT despite having lost its
-// HandRolledKindProperty tag entirely — e.g. Qt's own multi-block
-// paste/merge machinery synthesizing a fresh block format that doesn't carry
-// custom properties over (reported live: several consecutive items in a
-// pasted-over list "losing their special properties" at once, each only
-// reflowing again once individually re-edited). Retags each such block as it
-// reclaims it, so a single edit anywhere in a still-intact part of the run
-// heals every adjacent lost item in one pass — including ones separated from
-// the edit by other, already-valid items — not just the block the cursor
-// happens to be sitting in. The two cases are interleaved in the SAME walk
-// (not a separate pass over each) so a healed block never blocks the walk
-// from reaching a still-valid block further out. Deliberately only ever
-// extends from an already-recognized block — never bare isolated text
-// elsewhere in the document — so an ordinary paragraph that just happens to
-// start with "3. " on its own is never mistaken for a list item.
-//
-// `healedCount`, if non-null, is incremented once per block healed — the
-// BACKWARD walk's caller needs this to shift its own startNumber back (see
-// renumberRun), since every healed predecessor slots in BEFORE whatever
-// number was computed from the pre-healing block, and would otherwise
-// collide with the numbers already assigned to the run it just joined.
-QTextBlock walkRunHealing(QTextBlock block, HandRolledKind kind, bool forward, int *healedCount)
-{
-    for (;;) {
-        const QTextBlock candidate = forward ? block.next() : block.previous();
-        if (!candidate.isValid())
-            break;
-        if (handRolledKind(candidate) == kind) {
-            block = candidate;
-            continue;
-        }
-        if (rawHandRolledKind(candidate) == HandRolledKind::None && markerLength(kind, candidate.text()) > 0) {
-            setHandRolledKind(QTextCursor(candidate), kind);
-            if (healedCount)
-                ++(*healedCount);
-            block = candidate;
-            continue;
-        }
-        break;
-    }
-    return block;
-}
-
-// The number a numbered-list run currently starts at, read from its own
-// first item's marker (defaulting to 1 if that's ever somehow missing).
-// Irrelevant for checkbox lists (always 1, unused).
-int runStartNumber(const QTextBlock &block, HandRolledKind kind)
-{
-    if (kind != HandRolledKind::Numbered)
-        return 1;
-    const QTextBlock first = runStart(block, kind);
-    const auto match = numberedMarkerPattern().match(first.text());
-    return match.hasMatch() ? match.captured(1).toInt() : 1;
-}
-
-// Re-derives every item's marker text (numbered lists only — checkbox
-// markers keep whatever checked state each item already has, only their
-// shared hanging indent below is ever recomputed) and applies a single
-// hanging-indent width, sized to the run's own widest marker (never a
-// fixed or document-wide amount — see toggleNumberedList's header comment),
-// to every block in the run.
-void renumberRun(const QTextBlock &anyBlockInRun, HandRolledKind kind, int startNumber)
-{
-    const QTextDocument *document = anyBlockInRun.document();
-    if (!document || kind == HandRolledKind::None)
-        return;
-
-    int healedBefore = 0;
-    const QTextBlock first = walkRunHealing(anyBlockInRun, kind, /*forward=*/false, &healedBefore);
-    const QTextBlock last = walkRunHealing(anyBlockInRun, kind, /*forward=*/true, nullptr);
-    // Healed predecessors slot in BEFORE whatever number the caller already
-    // decided `anyBlockInRun` (pre-healing) should start at — see
-    // walkRunHealing's own comment for why the caller's startNumber has to
-    // shift back to make room for them, rather than colliding with it.
-    startNumber -= healedBefore;
-
-    int itemCount = 0;
-    for (QTextBlock b = first; b.isValid(); b = b.next()) {
-        ++itemCount;
-        if (b == last)
-            break;
-    }
-
-    const QString widestMarker = kind == HandRolledKind::Numbered
-        ? QString::number(startNumber + itemCount - 1) + QStringLiteral(". ")
-        : uncheckedMarker();
-    const QFontMetricsF metrics(anyBlockInRun.charFormat().font());
-    const qreal markerWidth = metrics.horizontalAdvance(widestMarker);
-
-    int number = startNumber;
-    QTextBlock block = first;
-    while (block.isValid()) {
-        const QTextBlock next = (block == last) ? QTextBlock() : block.next();
-
-        if (kind == HandRolledKind::Numbered) {
-            const QString text = block.text();
-            const QString newMarker = QString::number(number) + QStringLiteral(". ");
-            ++number;
-            const int oldLength = markerLength(kind, text);
-            if (text.left(oldLength) != newMarker) {
-                QTextCursor editCursor(block);
-                editCursor.setPosition(block.position());
-                editCursor.setPosition(block.position() + oldLength, QTextCursor::KeepAnchor);
-                editCursor.insertText(newMarker);
-            }
-        }
-
-        // Bugfix: a narrower marker (e.g. "9. ", 3 characters) than the
-        // run's widest (e.g. "10. ", 4 characters) used to hang at the SAME
-        // textIndent as every other item — meaning its own first line of
-        // TEXT (right after its own, narrower marker) landed measurably
-        // further left than every wrapped continuation line and every other
-        // item's own first line, all of which sit at the run's widest
-        // width (confirmed empirically — a real misalignment, not
-        // cosmetic). leftMargin stays constant across the whole run (it's
-        // what keeps wrapped continuation lines lined up with each other
-        // regardless of which item they belong to), but textIndent is now
-        // sized to THIS block's own marker width, not the run's shared one:
-        // that pulls a narrower marker's first line further left by exactly
-        // the difference, reserving the same blank space to ITS left that
-        // the wider marker already occupies, so the actual text after every
-        // marker — first line or wrapped — starts at the same spot.
-        const qreal ownMarkerWidth = kind == HandRolledKind::Numbered
-            ? metrics.horizontalAdvance(block.text().left(markerLength(kind, block.text())))
-            : markerWidth;
-
-        // Bugfix: this used to merge unconditionally, even when the block's
-        // margin/indent already matched — renumberRun reruns reactively on
-        // EVERY keystroke typed anywhere inside a numbered list (see
-        // DocumentHandler::maintainListNumbering, called from onTextChanged
-        // in NoteWindow.qml), so a bare majority of those calls have
-        // nothing to actually fix. Each still-unconditional merge became
-        // its own undo-stack entry, so simply typing inside a list item
-        // flooded the undo history with a wall of no-op format merges —
-        // exactly what made Ctrl+Z feel like it was "cycling" instead of
-        // stepping back through real edits. Skipping the merge when
-        // nothing would change makes reactive maintenance passes a true
-        // no-op — nothing to undo — rather than an invisible-but-real edit.
-        const QTextBlockFormat existingFormat = block.blockFormat();
-        if (existingFormat.leftMargin() != markerWidth || existingFormat.textIndent() != -ownMarkerWidth) {
-            QTextBlockFormat format = existingFormat;
-            format.setLeftMargin(markerWidth);
-            format.setTextIndent(-ownMarkerWidth);
-            QTextCursor formatCursor(block);
-            formatCursor.mergeBlockFormat(format);
-        }
-
-        if (block == last)
-            break;
-        block = next;
-    }
-}
-
-// Strips the current block's own hand-rolled marker and tag, reverting it
-// to a plain paragraph, and renumbers whatever remains of the list on
-// either side (the "before" remainder keeps its own original start number;
-// the "after" remainder — only possible when removing from the middle of a
-// list — restarts at 1, the same simplification a real QTextList would
-// need if a mid-list block were ever detached from it independently).
-void detachFromHandRolledList(QTextCursor cursor)
-{
-    const QTextBlock block = cursor.block();
-    const HandRolledKind kind = handRolledKind(block);
-    if (kind == HandRolledKind::None)
-        return;
-
-    const QTextBlock prev = block.previous();
-    const QTextBlock next = block.next();
-    const int length = markerLength(kind, block.text());
-
-    QTextCursor stripCursor(block);
-    stripCursor.setPosition(block.position());
-    stripCursor.setPosition(block.position() + length, QTextCursor::KeepAnchor);
-    stripCursor.removeSelectedText();
-
-    QTextBlockFormat format = stripCursor.blockFormat();
-    format.clearProperty(HandRolledKindProperty);
-    format.setLeftMargin(0);
-    format.setTextIndent(0);
-    stripCursor.mergeBlockFormat(format);
-
-    if (prev.isValid() && handRolledKind(prev) == kind)
-        renumberRun(prev, kind, runStartNumber(prev, kind));
-    if (next.isValid() && handRolledKind(next) == kind)
-        renumberRun(next, kind, 1);
-}
-
-// Shared toggle logic for numbered and checkbox lists: off if the cursor is
-// already on an item of the requested kind; converting in place (stripping
-// whatever hand-rolled marker or QTextList membership is already there)
-// otherwise. Joins an adjacent existing run of the same kind rather than
-// always starting a fresh one, mirroring toggleBulletList's own
-// convert-in-place behavior for a toolbar click mid-list.
-void toggleHandRolled(QTextCursor cursor, HandRolledKind targetKind, int startNumber)
-{
-    const QTextBlock block = cursor.block();
-    const HandRolledKind existing = handRolledKind(block);
-
-    if (existing == targetKind) {
-        detachFromHandRolledList(cursor);
-        return;
-    }
-
-    if (existing != HandRolledKind::None) {
-        detachFromHandRolledList(cursor);
-    } else if (QTextList *list = cursor.currentList()) {
-        QTextBlockFormat blockFormat = cursor.blockFormat();
-        blockFormat.setIndent(0);
-        cursor.mergeBlockFormat(blockFormat);
-        list->remove(cursor.block());
-    }
-
-    int effectiveStart = startNumber;
-    const QTextBlock prev = block.previous();
-    if (targetKind == HandRolledKind::Numbered && prev.isValid() && handRolledKind(prev) == HandRolledKind::Numbered)
-        effectiveStart = runStartNumber(prev, HandRolledKind::Numbered);
-
-    // Tagging BEFORE inserting the marker text (not after) matters: this
-    // insertText() below mutates the live document the QML editor is bound
-    // to, which synchronously re-enters DocumentHandler::
-    // tryAutoConvertListShorthand (TextArea.onTextChanged) before this very
-    // call even returns (confirmed empirically — the nested call runs
-    // fully inside this insertText() frame, not after it). If the tag
-    // weren't already in place by then, that nested call would see
-    // list-like text with no tag yet, fail its own already-a-list check,
-    // and reprocess/re-strip/re-insert the very same marker all over again
-    // — a genuine unbounded recursion (confirmed: a real stack overflow,
-    // not just a cosmetic one-bounce reentry) rather than the single
-    // harmless extra pass every other shorthand conversion relies on.
-    setHandRolledKind(QTextCursor(block), targetKind);
-    QTextCursor insertCursor(block);
-    insertCursor.setPosition(block.position());
-    insertCursor.insertText(targetKind == HandRolledKind::Numbered
-        ? QString::number(effectiveStart) + QStringLiteral(". ")
-        : uncheckedMarker());
-
-    renumberRun(block, targetKind, effectiveStart);
-}
-
-// --- Inline emphasis, as literal markdown markers -----------------------
-//
-// Emphasis used to be a QTextCharFormat merge over the selection. Under the
-// plain-text buffer there is no character formatting to carry it: bold IS the
-// two asterisks, and the highlighter re-derives the look from them. So every
-// toggle below is a text edit, and every query below is a text scan.
+// --- Headings ----------------------------------------------------------
 
 // A line's heading level: the number of leading "#" characters, but only when
 // they're followed by whitespace. GFM requires that space, so "#hashtag" is
@@ -475,6 +37,13 @@ int leadingHashCount(const QString &text)
         return 0;
     return hashes;
 }
+
+// --- Inline emphasis, as literal markdown markers -----------------------
+//
+// Emphasis used to be a QTextCharFormat merge over the selection. Under the
+// plain-text buffer there is no character formatting to carry it: bold IS the
+// two asterisks, and the highlighter re-derives the look from them. So every
+// toggle below is a text edit, and every query below is a text scan.
 
 QString boldMarker()
 {
@@ -553,7 +122,14 @@ bool isDoubledAround(const QTextCursor &cursor, const QString &marker)
     return isWrappedOutside(cursor, doubled) || isWrappedInside(cursor, doubled);
 }
 
-void removeMarkersOutside(QTextCursor cursor, const QString &marker)
+// Each of these returns the [start, end) range the content occupies once the
+// edit is done, so a caller can put the selection back over the same TEXT. Qt
+// adjusts an existing selection for them automatically, but asymmetrically: the
+// marker inserted at the selection's end gets swallowed INTO the selection
+// while the one at its start merely pushes it along — leaving "bold me**"
+// selected, which is both visibly wrong and makes isBold() read false on the
+// very selection it just emboldened.
+QPair<int, int> removeMarkersOutside(QTextCursor cursor, const QString &marker)
 {
     const int start = cursor.selectionStart();
     const int end = cursor.selectionEnd();
@@ -568,9 +144,10 @@ void removeMarkersOutside(QTextCursor cursor, const QString &marker)
     edit.setPosition(start, QTextCursor::KeepAnchor);
     edit.removeSelectedText();
     edit.endEditBlock();
+    return qMakePair(start - marker.size(), end - marker.size());
 }
 
-void removeMarkersInside(QTextCursor cursor, const QString &marker)
+QPair<int, int> removeMarkersInside(QTextCursor cursor, const QString &marker)
 {
     const int start = cursor.selectionStart();
     const int end = cursor.selectionEnd();
@@ -583,21 +160,18 @@ void removeMarkersInside(QTextCursor cursor, const QString &marker)
     edit.setPosition(start + marker.size(), QTextCursor::KeepAnchor);
     edit.removeSelectedText();
     edit.endEditBlock();
+    return qMakePair(start, end - 2 * marker.size());
 }
 
-void toggleInlineMarker(QTextCursor cursor, const QString &marker)
+QPair<int, int> toggleInlineMarker(QTextCursor cursor, const QString &marker)
 {
     if (!cursor.document())
-        return;
+        return qMakePair(cursor.selectionStart(), cursor.selectionEnd());
 
-    if (isWrappedOutside(cursor, marker)) {
-        removeMarkersOutside(cursor, marker);
-        return;
-    }
-    if (isWrappedInside(cursor, marker)) {
-        removeMarkersInside(cursor, marker);
-        return;
-    }
+    if (isWrappedOutside(cursor, marker))
+        return removeMarkersOutside(cursor, marker);
+    if (isWrappedInside(cursor, marker))
+        return removeMarkersInside(cursor, marker);
 
     const int start = cursor.selectionStart();
     const int end = cursor.selectionEnd();
@@ -610,206 +184,352 @@ void toggleInlineMarker(QTextCursor cursor, const QString &marker)
     edit.setPosition(start);
     edit.insertText(marker);
     edit.endEditBlock();
+    return qMakePair(start + marker.size(), end + marker.size());
 }
 
-}
+// --- Lists -------------------------------------------------------------
+//
+// Every list operation is now "rewrite this line's leading marker text".
+// The old implementation tagged each block with a custom format property and
+// needed a whole "healing" pass to re-stamp blocks whose tag Qt's paste/merge
+// machinery had silently dropped while leaving the text intact. With the text
+// as the only truth, that entire class of desync is gone — nothing to lose.
 
-void toggleBold(QTextCursor cursor)
+// The blocks a selection touches. Collected up front because the edits below
+// rewrite line prefixes, which shifts the positions of later blocks.
+QList<QTextBlock> selectedBlocks(const QTextCursor &cursor)
 {
-    toggleInlineMarker(cursor, boldMarker());
+    QList<QTextBlock> blocks;
+    QTextDocument *document = cursor.document();
+    if (!document)
+        return blocks;
+
+    const int start = cursor.selectionStart();
+    const int end = cursor.selectionEnd();
+    const QTextBlock firstBlock = document->findBlock(start);
+    // end - 1 when there's a real selection: a selection ending exactly at the
+    // start of the next block (i.e. it only swallowed the previous block's
+    // trailing newline) shouldn't pull that next, unselected block in too.
+    const QTextBlock lastBlock = document->findBlock(end > start ? end - 1 : end);
+
+    for (QTextBlock b = firstBlock; b.isValid(); b = b.next()) {
+        blocks.append(b);
+        if (b.blockNumber() == lastBlock.blockNumber())
+            break;
+    }
+    return blocks;
 }
 
-void toggleItalic(QTextCursor cursor)
+// Swaps `block`'s existing list marker (if any) for `marker` — an empty
+// `marker` just strips it. `edit` must already be inside an edit block.
+void replaceMarker(QTextCursor &edit, const QTextBlock &block, const QString &marker)
 {
-    toggleInlineMarker(cursor, italicMarker());
+    const MarkdownList::Marker existing = MarkdownList::parse(block.text());
+    edit.setPosition(block.position());
+    edit.setPosition(block.position() + existing.length, QTextCursor::KeepAnchor);
+    if (edit.selectedText() == marker) {
+        edit.clearSelection();
+        return;
+    }
+    edit.insertText(marker); // replaces the selection
 }
 
-void toggleStrikethrough(QTextCursor cursor)
+// Renumbers the whole contiguous run of numbered items containing
+// `blockNumber`, counting up from whatever the run's FIRST item says. Keeping
+// the first item's own number (rather than forcing 1) is what lets a list
+// deliberately started at "5." stay at 5.
+//
+// This is the plain-text replacement for the old renumberRun + walkRunHealing
+// pair: a run is just "adjacent lines that parse as numbered", so there is no
+// tag to lose and nothing to heal.
+void renumberRunAt(QTextDocument *document, int blockNumber)
 {
-    toggleInlineMarker(cursor, strikethroughMarker());
+    if (!document)
+        return;
+    const QTextBlock at = document->findBlockByNumber(blockNumber);
+    if (!at.isValid() || MarkdownList::parse(at.text()).kind != MarkdownList::Kind::Numbered)
+        return;
+
+    int first = blockNumber;
+    while (first > 0
+           && MarkdownList::parse(document->findBlockByNumber(first - 1).text()).kind
+               == MarkdownList::Kind::Numbered)
+        --first;
+
+    int last = blockNumber;
+    while (last + 1 < document->blockCount()
+           && MarkdownList::parse(document->findBlockByNumber(last + 1).text()).kind
+               == MarkdownList::Kind::Numbered)
+        ++last;
+
+    const int startNumber = MarkdownList::parse(document->findBlockByNumber(first).text()).number;
+
+    QTextCursor edit(document);
+    edit.beginEditBlock();
+    // Bottom-up: rewriting a marker can change its width ("9. " -> "10. "),
+    // which shifts every later block's position but never an earlier one's.
+    for (int i = last; i >= first; --i) {
+        const QTextBlock block = document->findBlockByNumber(i);
+        replaceMarker(edit, block, MarkdownList::numberedMarker(startNumber + (i - first)));
+    }
+    edit.endEditBlock();
+}
+
+// Applies `kind` across the selection, or strips it if the selection is
+// already entirely that kind — the toggle semantics every list button wants.
+void toggleListKind(QTextCursor cursor, MarkdownList::Kind kind, int startNumber)
+{
+    QTextDocument *document = cursor.document();
+    if (!document)
+        return;
+
+    const QList<QTextBlock> blocks = selectedBlocks(cursor);
+    if (blocks.isEmpty())
+        return;
+
+    bool allAlready = true;
+    for (const QTextBlock &block : blocks) {
+        if (MarkdownList::parse(block.text()).kind != kind) {
+            allAlready = false;
+            break;
+        }
+    }
+
+    QTextCursor edit(document);
+    edit.beginEditBlock();
+    // Bottom-up, same reason as renumberRunAt: marker widths differ, so
+    // rewriting one shifts every block after it.
+    for (int i = blocks.size() - 1; i >= 0; --i) {
+        const QTextBlock &block = blocks.at(i);
+        QString marker;
+        if (!allAlready) {
+            switch (kind) {
+            case MarkdownList::Kind::Bullet:
+                marker = MarkdownList::bulletMarker();
+                break;
+            case MarkdownList::Kind::Numbered:
+                // Sequential from the top of the selection; renumberRunAt
+                // below then reconciles this against any adjacent run.
+                marker = MarkdownList::numberedMarker(startNumber + i);
+                break;
+            case MarkdownList::Kind::Checkbox:
+                marker = MarkdownList::checkboxMarker(false);
+                break;
+            case MarkdownList::Kind::None:
+                break;
+            }
+        }
+        replaceMarker(edit, block, marker);
+    }
+    edit.endEditBlock();
+
+    if (!allAlready && kind == MarkdownList::Kind::Numbered)
+        renumberRunAt(document, blocks.first().blockNumber());
+}
+
+// --- Tables ------------------------------------------------------------
+
+// Rewrites every line of `region` through `transform`, which maps a row's
+// cells to its new cells. `isDelimiter` lets a caller treat the "---" row
+// differently from a content row (a new column needs "---" there, not "").
+void rewriteTableRows(QTextDocument *document, const MarkdownTable::Region &region,
+                      const std::function<QStringList(QStringList, bool)> &transform)
+{
+    QTextCursor edit(document);
+    edit.beginEditBlock();
+    // Bottom-up: rewriting a row changes its length, shifting every row below.
+    for (int i = region.lastBlockNumber; i >= region.firstBlockNumber; --i) {
+        const QTextBlock block = document->findBlockByNumber(i);
+        const bool isDelimiter = MarkdownTable::isDelimiterRow(block.text());
+        const QStringList cells =
+            transform(MarkdownTable::splitCells(block.text()), isDelimiter);
+
+        edit.setPosition(block.position());
+        edit.setPosition(block.position() + block.text().size(), QTextCursor::KeepAnchor);
+        edit.insertText(MarkdownTable::formatRow(cells));
+    }
+    edit.endEditBlock();
+}
+
+// Removes an entire table, including the newline that joined it to the rest of
+// the document. This is the plain-text stand-in for the old implementation's
+// trick of selecting from the QTextFrame's hidden boundary characters
+// (firstPosition() - 1 to lastPosition() + 1), which existed because
+// removeRows()/removeColumns() can never take a QTextTable below 1x1.
+void removeTableRegion(QTextDocument *document, const MarkdownTable::Region &region)
+{
+    const QTextBlock first = document->findBlockByNumber(region.firstBlockNumber);
+    const QTextBlock last = document->findBlockByNumber(region.lastBlockNumber);
+
+    QTextCursor edit(document);
+    edit.setPosition(first.position());
+    // Swallow the trailing newline so the table's removal doesn't leave a
+    // blank line behind; if the table ends the document there's no trailing
+    // newline to take, so take the leading one instead.
+    if (last.next().isValid())
+        edit.setPosition(last.position() + last.length(), QTextCursor::KeepAnchor);
+    else {
+        if (first.previous().isValid())
+            edit.setPosition(first.position() - 1);
+        edit.setPosition(last.position() + last.text().size(), QTextCursor::KeepAnchor);
+    }
+    edit.removeSelectedText();
+}
+
+MarkdownTable::Region regionFor(const QTextCursor &cursor)
+{
+    if (!cursor.document())
+        return {};
+    return MarkdownTable::regionAt(cursor.document(), cursor.block().blockNumber());
+}
+
+int columnFor(const QTextCursor &cursor)
+{
+    const QTextBlock block = cursor.block();
+    return MarkdownTable::columnAt(block.text(), cursor.position() - block.position());
+}
+
+}
+
+QPair<int, int> toggleBold(QTextCursor cursor)
+{
+    return toggleInlineMarker(cursor, boldMarker());
+}
+
+QPair<int, int> toggleItalic(QTextCursor cursor)
+{
+    return toggleInlineMarker(cursor, italicMarker());
+}
+
+QPair<int, int> toggleStrikethrough(QTextCursor cursor)
+{
+    return toggleInlineMarker(cursor, strikethroughMarker());
 }
 
 void toggleBulletList(QTextCursor cursor)
 {
-    // Converting from a hand-rolled numbered/checkbox item: strip its
-    // marker/tag first (renumbering any surviving neighbors), then fall
-    // through to the ordinary QTextList path below.
-    if (handRolledKind(cursor.block()) != HandRolledKind::None)
-        detachFromHandRolledList(cursor);
-
-    if (QTextList *list = cursor.currentList()) {
-        // Only ListDisc ever reaches here now — numbered lists are
-        // hand-rolled (see toggleNumberedList) and already handled above.
-        QTextBlockFormat blockFormat = cursor.blockFormat();
-        blockFormat.setIndent(0);
-        cursor.mergeBlockFormat(blockFormat);
-        list->remove(cursor.block());
-    } else {
-        tightenListIndent(cursor);
-        QTextListFormat format;
-        format.setStyle(QTextListFormat::ListDisc);
-        format.setIndent(1);
-        cursor.createList(format);
-    }
+    toggleListKind(cursor, MarkdownList::Kind::Bullet, 1);
 }
 
 void toggleNumberedList(QTextCursor cursor, int startNumber)
 {
-    toggleHandRolled(cursor, HandRolledKind::Numbered, startNumber);
+    toggleListKind(cursor, MarkdownList::Kind::Numbered, startNumber);
 }
 
 void toggleCheckboxList(QTextCursor cursor)
 {
-    toggleHandRolled(cursor, HandRolledKind::Checkbox, 1);
+    toggleListKind(cursor, MarkdownList::Kind::Checkbox, 1);
 }
 
 bool toggleCheckboxChecked(QTextCursor cursor)
 {
     const QTextBlock block = cursor.block();
-    if (handRolledKind(block) != HandRolledKind::Checkbox)
+    const MarkdownList::Marker marker = MarkdownList::parse(block.text());
+    if (marker.kind != MarkdownList::Kind::Checkbox)
         return false;
 
-    const bool checked = isCheckedMarkerText(block.text());
-    QTextCursor editCursor(block);
-    editCursor.setPosition(block.position());
-    editCursor.setPosition(block.position() + checkboxMarkerLength, QTextCursor::KeepAnchor);
-    editCursor.insertText(checked ? uncheckedMarker() : checkedMarker());
+    QTextCursor edit(cursor.document());
+    edit.setPosition(block.position());
+    edit.setPosition(block.position() + marker.length, QTextCursor::KeepAnchor);
+    edit.insertText(MarkdownList::checkboxMarker(!marker.checked));
     return true;
 }
 
 bool tryToggleCheckboxAtPosition(QTextCursor cursor)
 {
     const QTextBlock block = cursor.block();
-    if (handRolledKind(block) != HandRolledKind::Checkbox)
+    const MarkdownList::Marker marker = MarkdownList::parse(block.text());
+    if (marker.kind != MarkdownList::Kind::Checkbox)
         return false;
+
+    // Only a click on the marker itself toggles — a click in the item's label
+    // should just place the caret. The marker's "- [x] " includes a trailing
+    // space that reads as label padding, so the hit region stops at the
+    // closing bracket rather than covering the whole marker.
     const int offsetInBlock = cursor.position() - block.position();
-    if (offsetInBlock < 0 || offsetInBlock > checkboxMarkerLength)
+    const int bracketEnd = block.text().indexOf(QLatin1Char(']')) + 1;
+    if (offsetInBlock < 0 || bracketEnd <= 0 || offsetInBlock > bracketEnd)
         return false;
+
     return toggleCheckboxChecked(cursor);
 }
 
 bool continueHandRolledList(QTextCursor cursor)
 {
-    const QTextBlock originalBlock = cursor.block();
-    const HandRolledKind kind = handRolledKind(originalBlock);
-    if (kind == HandRolledKind::None)
+    const QTextBlock block = cursor.block();
+    const MarkdownList::Marker marker = MarkdownList::parse(block.text());
+    if (!marker.isValid())
         return false;
 
-    // Pressing Enter AT OR BEFORE the marker itself (not just after it, in
-    // the item's real text) must not split the marker away from its own
-    // item — insertBlock() below splits at the cursor's literal position,
-    // so with no clamp, a cursor sitting inside/before the marker would
-    // carry that whole marker into the new block, which then got ANOTHER
-    // fresh one inserted in front of it (confirmed empirically: pressing
-    // Enter at the very start of "1. some text" produced "0. 1. some
-    // text" — the "1. " travelled into the new block whole, then this
-    // function inserted "0. " ahead of it, none the wiser). Clamping the
-    // effective split point to just past the marker makes Enter anywhere
-    // at or before it behave the same as pressing it right after —
-    // inserting a new blank item, leaving the original text untouched.
-    const int markerEnd = originalBlock.position() + markerLength(kind, originalBlock.text());
-    if (cursor.position() < markerEnd)
-        cursor.setPosition(markerEnd);
+    QString nextMarker;
+    switch (marker.kind) {
+    case MarkdownList::Kind::Bullet:
+        nextMarker = MarkdownList::bulletMarker();
+        break;
+    case MarkdownList::Kind::Numbered:
+        nextMarker = MarkdownList::numberedMarker(marker.number + 1);
+        break;
+    case MarkdownList::Kind::Checkbox:
+        // A continued checkbox always starts unchecked — inheriting the
+        // previous item's checked state would silently pre-tick a brand-new
+        // to-do.
+        nextMarker = MarkdownList::checkboxMarker(false);
+        break;
+    case MarkdownList::Kind::None:
+        return false;
+    }
 
-    // insertBlock() with no arguments copies the CURRENT block's format
-    // (including HandRolledKindProperty and the hanging-indent margins)
-    // onto the new one, splitting text at the cursor same as any plain
-    // Enter — but the marker itself is literal TEXT, not part of that
-    // format, so the new block starts with none at all (empty if Enter was
-    // pressed at the item's end, or "whatever came after the cursor" if
-    // pressed mid-item) until inserted below.
-    cursor.insertBlock();
-    const QTextBlock newBlock = cursor.block();
+    // Clamp the split to at least the end of this item's own marker. Pressing
+    // Enter with the caret at or inside the marker ("1|. text") would otherwise
+    // split the marker itself, leaving a fragment behind and duplicating the
+    // rest — so the line is always split after the marker, which turns the
+    // current item into an empty one and carries its text down to the new item.
+    const int markerEnd = block.position() + marker.length;
+    QTextCursor edit(cursor.document());
+    edit.setPosition(qMax(cursor.position(), markerEnd));
+    edit.beginEditBlock();
+    edit.insertBlock();
+    edit.insertText(nextMarker);
+    edit.endEditBlock();
 
-    QTextCursor insertCursor(newBlock);
-    insertCursor.setPosition(newBlock.position());
-    insertCursor.insertText(kind == HandRolledKind::Numbered ? QStringLiteral("0. ") : uncheckedMarker());
-
-    renumberRun(newBlock, kind, runStartNumber(newBlock, kind));
+    if (marker.kind == MarkdownList::Kind::Numbered)
+        renumberRunAt(cursor.document(), edit.block().blockNumber());
     return true;
 }
 
 void exitHandRolledList(QTextCursor cursor)
 {
-    detachFromHandRolledList(cursor);
+    QTextDocument *document = cursor.document();
+    if (!document)
+        return;
+
+    const QTextBlock block = cursor.block();
+    const MarkdownList::Marker marker = MarkdownList::parse(block.text());
+    if (!marker.isValid())
+        return;
+
+    const int blockNumber = block.blockNumber();
+    QTextCursor edit(document);
+    edit.beginEditBlock();
+    replaceMarker(edit, block, QString());
+    edit.endEditBlock();
+
+    // The run this item used to belong to now stops short of it, so whatever
+    // is left below has to start counting again from its own first item.
+    if (marker.kind == MarkdownList::Kind::Numbered && blockNumber + 1 < document->blockCount())
+        renumberRunAt(document, blockNumber + 1);
 }
 
 bool isHandRolledListItemEmpty(QTextCursor cursor)
 {
-    const QTextBlock block = cursor.block();
-    const HandRolledKind kind = handRolledKind(block);
-    if (kind == HandRolledKind::None)
-        return false;
-    return block.text().length() == markerLength(kind, block.text());
+    const QString text = cursor.block().text();
+    const MarkdownList::Marker marker = MarkdownList::parse(text);
+    return marker.isValid() && text.mid(marker.length).trimmed().isEmpty();
 }
 
 void maintainHandRolledListNumbering(QTextCursor cursor)
 {
-    const QTextBlock block = cursor.block();
-    const HandRolledKind kind = handRolledKind(block);
-
-    if (kind == HandRolledKind::None) {
-        // The block's HandRolledKindProperty tag can outlive its own marker
-        // text through perfectly ordinary editing that never goes through
-        // detachFromHandRolledList/exitHandRolledList at all — e.g. clicking
-        // at the very start of a list item and typing plain prose there,
-        // which pushes the marker away from position 0 and breaks
-        // numberedMarkerPattern's own "^" requirement (handRolledKind()
-        // above already accounts for this). Left alone, though, the block's
-        // hanging-indent format (leftMargin/textIndent, sized for the
-        // marker that's no longer actually there) survives right along with
-        // the stale tag, silently indenting every WRAPPED continuation line
-        // of what is now just an ordinary paragraph, forever (confirmed
-        // empirically — a real bug, reported live). Only the first line
-        // looks fine, since textIndent cancels leftMargin there.
-        if (rawHandRolledKind(block) != HandRolledKind::None) {
-            QTextBlockFormat format = block.blockFormat();
-            format.setProperty(HandRolledKindProperty, static_cast<int>(HandRolledKind::None));
-            format.setLeftMargin(0);
-            format.setTextIndent(0);
-            cursor.mergeBlockFormat(format);
-        }
-        return;
-    }
-
-    if (kind != HandRolledKind::Numbered)
-        return; // checkbox markers never need renumbering, only their (constant) shared width
-    renumberRun(block, kind, runStartNumber(block, kind));
-}
-
-void maintainHeadingCharFormatAfterMerge(QTextCursor cursor)
-{
-    const QTextBlock block = cursor.block();
-    const int level = block.blockFormat().headingLevel();
-    const QTextCharFormat expected = headingCharFormat(level);
-
-    const int blockEnd = block.position() + block.length() - 1; // -1: exclude the block separator itself
-    const int rangeStart = cursor.position();
-
-    // The merge point sits at (or past) the block's own end — nothing of
-    // either side's text actually landed in this block after `rangeStart`
-    // (e.g. an empty line got backspaced away entirely). The block itself
-    // can still be a genuinely empty, freshly-surviving heading/paragraph
-    // whose own (invisible until typed-into) blockCharFormat() is stale —
-    // same bug, same fix, as setHeadingLevel's own empty-block bugfix above.
-    if (rangeStart >= blockEnd) {
-        if (block.length() <= 1 && !matchesHeadingCharFormat(block.charFormat(), expected))
-            QTextCursor(block).mergeBlockCharFormat(expected);
-        return;
-    }
-
-    // No-op fast path (see rangeMatchesHeadingCharFormat's own comment):
-    // merging two blocks that already agree on heading level — by far the
-    // most common case, e.g. joining two plain paragraphs with Backspace —
-    // needs nothing fixed and must not create an undo-stack entry for doing
-    // nothing.
-    if (rangeMatchesHeadingCharFormat(block, rangeStart, blockEnd, expected))
-        return;
-
-    QTextCursor formatCursor(cursor.document());
-    formatCursor.setPosition(rangeStart);
-    formatCursor.setPosition(blockEnd, QTextCursor::KeepAnchor);
-    formatCursor.mergeCharFormat(expected);
+    renumberRunAt(cursor.document(), cursor.block().blockNumber());
 }
 
 void setHeadingLevel(QTextCursor cursor, int level)
@@ -822,30 +542,16 @@ void setHeadingLevel(QTextCursor cursor, int level)
     // char format, no size/weight to apply. That single fact deletes the whole
     // machinery this function used to need: setting HeadingLevel had no visual
     // effect on its own, so it also had to merge a bold/FontSizeAdjustment char
-    // format over the selection, then re-merge it as a *block* char format so
-    // an empty line wouldn't keep a stale one, and maintainHeadingCharFormatAfterMerge
+    // format over the selection, then re-merge it as a *block* char format so an
+    // empty line wouldn't keep a stale one, and maintainHeadingCharFormatAfterMerge
     // existed purely to repair the desync when two blocks merged. The
     // highlighter re-derives all of it from the "#" characters instead.
-    const int rangeStart = cursor.selectionStart();
-    const int rangeEnd = cursor.selectionEnd();
-    const QTextBlock firstBlock = document->findBlock(rangeStart);
-    // rangeEnd - 1 when there's a real selection: a selection ending exactly at
-    // the start of the next block (i.e. it only swallowed the previous block's
-    // trailing newline) shouldn't pull that next, unselected block in too.
-    const QTextBlock lastBlock =
-        document->findBlock(rangeEnd > rangeStart ? rangeEnd - 1 : rangeEnd);
+    const QList<QTextBlock> blocks = selectedBlocks(cursor);
 
     QTextCursor edit(document);
     edit.beginEditBlock();
-    // Bottom-up: rewriting a block's prefix shifts the positions of every block
-    // after it, but never of those before it, so walking backwards keeps each
-    // remaining block's cached position valid without re-finding it.
-    QList<QTextBlock> blocks;
-    for (QTextBlock b = firstBlock; b.isValid(); b = b.next()) {
-        blocks.append(b);
-        if (b.blockNumber() == lastBlock.blockNumber())
-            break;
-    }
+    // Bottom-up: a prefix edit shifts the positions of every block after it,
+    // but never of those before it.
     for (int i = blocks.size() - 1; i >= 0; --i) {
         const QTextBlock block = blocks.at(i);
         const QString text = block.text();
@@ -866,8 +572,10 @@ void setHeadingLevel(QTextCursor cursor, int level)
 
         edit.setPosition(block.position());
         edit.setPosition(block.position() + prefixLength, QTextCursor::KeepAnchor);
-        if (edit.selectedText() == replacement)
+        if (edit.selectedText() == replacement) {
+            edit.clearSelection();
             continue;
+        }
         edit.insertText(replacement); // replaces the selection
     }
     edit.endEditBlock();
@@ -875,100 +583,162 @@ void setHeadingLevel(QTextCursor cursor, int level)
 
 void insertTabSpaces(QTextCursor cursor)
 {
+    // A plain text insert now. The old comment here explained that TextEdit's
+    // own insert() had to be avoided because MarkdownText mode renormalized
+    // whitespace and silently dropped a pure-whitespace insertion — with no
+    // live markdown reparsing left, there is nothing to drop it.
     cursor.insertText(QStringLiteral("    "));
 }
 
 void insertTable(QTextCursor cursor)
 {
-    // If the cursor is sitting on an already-empty line (the common case:
-    // the user pressed Enter to get a fresh line, then inserted a table),
-    // QTextCursor::insertTable() does NOT consume that empty block — it
-    // inserts the table's frame right after it, leaving the empty line
-    // behind as an orphan blank paragraph between the preceding text and
-    // the table. Collapsing it first (merging back into the previous
-    // block, exactly like the cursor would sit if the user had inserted
-    // the table without pressing Enter at all) avoids that phantom gap;
-    // inserting at the true end of a non-empty block never has this
-    // problem, which is why only "text, Enter, then table" showed it.
-    if (cursor.atBlockStart() && cursor.atBlockEnd())
-        cursor.deletePreviousChar();
+    QTextDocument *document = cursor.document();
+    if (!document)
+        return;
 
-    // Qt's markdown writer always renders a QTextTable's first row as the
-    // GFM header row (with the "---" delimiter line right after it) — there
-    // is no separate "is this the header" flag to set, so placeholder text
-    // in row 0 is what marks it as a header once round-tripped through
-    // toMarkdown().
-    QTextTableFormat format;
-    format.setBorder(1);
-    format.setCellPadding(4);
-    QTextTable *table = cursor.insertTable(2, 2, format);
-    table->cellAt(0, 0).firstCursorPosition().insertText(QStringLiteral("Header 1"));
-    table->cellAt(0, 1).firstCursorPosition().insertText(QStringLiteral("Header 2"));
+    // Placeholder header text, kept from the pre-rewrite implementation: an
+    // all-empty header row reads as a broken table, and these give the user
+    // something to select and type over. (Their old structural purpose — being
+    // the only thing that marked row 0 as a header across a round-trip — is
+    // gone: the "---" delimiter row says so outright now.)
+    const QString table =
+        MarkdownTable::formatRow({QStringLiteral("Header 1"), QStringLiteral("Header 2")})
+        + QLatin1Char('\n') + MarkdownTable::delimiterRow(2) + QLatin1Char('\n')
+        + MarkdownTable::formatRow({QString(), QString()});
+
+    QTextCursor edit(document);
+    edit.setPosition(cursor.position());
+    edit.beginEditBlock();
+    // Reuse the current line if it's already blank — the common case is the
+    // user pressing Enter for a fresh line and then inserting a table, and
+    // leaving that now-empty line above the table reads as a stray blank
+    // paragraph.
+    if (!edit.block().text().isEmpty()) {
+        edit.movePosition(QTextCursor::EndOfBlock);
+        edit.insertBlock();
+    }
+    edit.insertText(table);
+    edit.endEditBlock();
 }
 
 void insertTableRow(QTextCursor cursor)
 {
-    QTextTable *table = cursor.currentTable();
-    if (!table)
+    const MarkdownTable::Region region = regionFor(cursor);
+    if (!region.isValid())
         return;
-    const int row = table->cellAt(cursor).row();
-    // insertRows(pos, ...) inserts BEFORE pos, so row + 1 lands the new row
-    // directly after the one the cursor is in.
-    table->insertRows(row + 1, 1);
+
+    QStringList cells;
+    for (int i = 0; i < region.columnCount; ++i)
+        cells.append(QString());
+
+    // A new row always lands below a *content* row. With the caret on the
+    // header or the delimiter, that means directly under the delimiter — a row
+    // inserted between the header and the delimiter would break the table.
+    int afterBlock = cursor.block().blockNumber();
+    if (afterBlock <= region.firstBlockNumber + 1)
+        afterBlock = region.firstBlockNumber + 1;
+
+    const QTextBlock block = cursor.document()->findBlockByNumber(afterBlock);
+    QTextCursor edit(cursor.document());
+    edit.setPosition(block.position() + block.text().size());
+    edit.beginEditBlock();
+    edit.insertBlock();
+    edit.insertText(MarkdownTable::formatRow(cells));
+    edit.endEditBlock();
 }
 
 void deleteTableRow(QTextCursor cursor)
 {
-    QTextTable *table = cursor.currentTable();
-    if (!table)
+    QTextDocument *document = cursor.document();
+    const MarkdownTable::Region region = regionFor(cursor);
+    if (!region.isValid())
         return;
-    if (table->rows() <= 1) {
-        deleteTable(cursor);
+
+    // A table that is only a header (plus its delimiter) has no row left to
+    // give: removing that last one removes the table, mirroring the old
+    // QTextTable behaviour where a table could never be left with zero rows.
+    if (region.bodyRowCount() == 0) {
+        removeTableRegion(document, region);
         return;
     }
-    const int row = table->cellAt(cursor).row();
-    table->removeRows(row, 1);
+
+    const int blockNumber = cursor.block().blockNumber();
+    if (blockNumber <= region.firstBlockNumber + 1) {
+        // Deleting the header: promote the first body row into it, rather than
+        // removing the header line itself — that would leave the delimiter as
+        // line 1 and stop the run parsing as a table at all.
+        const QTextBlock header = document->findBlockByNumber(region.firstBlockNumber);
+        const QTextBlock firstBody = document->findBlockByNumber(region.firstBlockNumber + 2);
+
+        QTextCursor edit(document);
+        edit.beginEditBlock();
+        // Bottom-up again: replacing the header first would shift the body
+        // row's position out from under this cursor.
+        edit.setPosition(firstBody.position());
+        edit.setPosition(firstBody.position() + firstBody.length(), QTextCursor::KeepAnchor);
+        const QString promoted = firstBody.text();
+        edit.removeSelectedText();
+        edit.setPosition(header.position());
+        edit.setPosition(header.position() + header.text().size(), QTextCursor::KeepAnchor);
+        edit.insertText(promoted);
+        edit.endEditBlock();
+        return;
+    }
+
+    const QTextBlock block = document->findBlockByNumber(blockNumber);
+    QTextCursor edit(document);
+    edit.setPosition(block.position());
+    edit.setPosition(block.position() + block.length(), QTextCursor::KeepAnchor);
+    edit.removeSelectedText();
 }
 
 void insertTableColumn(QTextCursor cursor)
 {
-    QTextTable *table = cursor.currentTable();
-    if (!table)
+    const MarkdownTable::Region region = regionFor(cursor);
+    if (!region.isValid())
         return;
-    const int column = table->cellAt(cursor).column();
-    table->insertColumns(column + 1, 1);
+
+    const int column = columnFor(cursor);
+    const int insertAt = qBound(0, column + 1, region.columnCount);
+    rewriteTableRows(cursor.document(), region,
+                     [insertAt](QStringList cells, bool isDelimiter) {
+                         cells.insert(qMin(insertAt, cells.size()),
+                                      isDelimiter ? QStringLiteral("---") : QString());
+                         return cells;
+                     });
 }
 
 void deleteTableColumn(QTextCursor cursor)
 {
-    QTextTable *table = cursor.currentTable();
-    if (!table)
+    QTextDocument *document = cursor.document();
+    const MarkdownTable::Region region = regionFor(cursor);
+    if (!region.isValid())
         return;
-    if (table->columns() <= 1) {
-        deleteTable(cursor);
+
+    // Same reasoning as deleteTableRow's last row: a table can't be left with
+    // zero columns, so removing the only one removes the table.
+    if (region.columnCount <= 1) {
+        removeTableRegion(document, region);
         return;
     }
-    const int column = table->cellAt(cursor).column();
-    table->removeColumns(column, 1);
+
+    const int column = columnFor(cursor);
+    if (column < 0)
+        return;
+
+    rewriteTableRows(document, region, [column](QStringList cells, bool) {
+        if (column < cells.size())
+            cells.removeAt(column);
+        return cells;
+    });
 }
 
 void deleteTable(QTextCursor cursor)
 {
-    QTextTable *table = cursor.currentTable();
-    if (!table)
+    const MarkdownTable::Region region = regionFor(cursor);
+    if (!region.isValid())
         return;
-
-    // A QTextFrame (QTextTable's base) is delimited in the document's
-    // underlying character stream by one hidden "frame start" character
-    // right before firstPosition() and one "frame end" character right
-    // after lastPosition() — selecting exactly that span and removing it
-    // deletes the frame itself, not just the rows/cells inside it (which
-    // is all removeRows()/removeColumns() alone would ever manage, since
-    // QTextTable refuses to go below 1x1).
-    QTextCursor removeCursor(table->document());
-    removeCursor.setPosition(table->firstPosition() - 1);
-    removeCursor.setPosition(table->lastPosition() + 1, QTextCursor::KeepAnchor);
-    removeCursor.removeSelectedText();
+    removeTableRegion(cursor.document(), region);
 }
 
 bool isBold(QTextCursor cursor)
@@ -1010,56 +780,39 @@ int headingLevel(QTextCursor cursor)
 
 bool isBulletList(QTextCursor cursor)
 {
-    QTextList *list = cursor.currentList();
-    return list && list->format().style() == QTextListFormat::ListDisc;
+    return MarkdownList::parse(cursor.block().text()).kind == MarkdownList::Kind::Bullet;
 }
 
 bool isNumberedList(QTextCursor cursor)
 {
-    return handRolledKind(cursor.block()) == HandRolledKind::Numbered;
+    return MarkdownList::parse(cursor.block().text()).kind == MarkdownList::Kind::Numbered;
 }
 
 bool isCheckboxList(QTextCursor cursor)
 {
-    return handRolledKind(cursor.block()) == HandRolledKind::Checkbox;
+    return MarkdownList::parse(cursor.block().text()).kind == MarkdownList::Kind::Checkbox;
 }
 
 bool isCheckboxChecked(QTextCursor cursor)
 {
-    const QTextBlock block = cursor.block();
-    if (handRolledKind(block) != HandRolledKind::Checkbox)
-        return false;
-    return isCheckedMarkerText(block.text());
+    const MarkdownList::Marker marker = MarkdownList::parse(cursor.block().text());
+    return marker.kind == MarkdownList::Kind::Checkbox && marker.checked;
 }
 
 bool isInTable(QTextCursor cursor)
 {
-    return cursor.currentTable() != nullptr;
-}
-
-bool isHandRolledListBlock(const QTextBlock &block)
-{
-    return handRolledKind(block) != HandRolledKind::None;
-}
-
-QString handRolledBlockMarkdownText(const QTextBlock &block)
-{
-    if (handRolledKind(block) == HandRolledKind::Checkbox) {
-        const QString text = block.text();
-        const bool checked = isCheckedMarkerText(text);
-        return (checked ? QStringLiteral("- [x] ") : QStringLiteral("- [ ] "))
-            + text.mid(checkboxMarkerLength);
-    }
-    return block.text();
+    return regionFor(cursor).isValid();
 }
 
 QRectF checkboxMarkerRect(QTextCursor cursor)
 {
     const QTextBlock block = cursor.block();
-    if (handRolledKind(block) != HandRolledKind::Checkbox)
+    const MarkdownList::Marker marker = MarkdownList::parse(block.text());
+    if (marker.kind != MarkdownList::Kind::Checkbox)
         return QRectF();
+
     const int offsetInBlock = cursor.position() - block.position();
-    if (offsetInBlock < 0 || offsetInBlock > checkboxMarkerLength)
+    if (offsetInBlock < 0 || offsetInBlock > marker.length)
         return QRectF();
 
     const QTextDocument *document = block.document();
@@ -1075,89 +828,16 @@ QRectF checkboxMarkerRect(QTextCursor cursor)
     if (!layout || layout->lineCount() == 0)
         return QRectF();
 
-    // The marker is always on the block's own first visual line — a
-    // checkbox item's marker never wraps, however long its label text
-    // runs on afterward.
+    // The marker is always on the block's own first visual line — a checkbox
+    // item's marker never wraps, however long its label text runs on
+    // afterward. The rect covers "- [x]" but not its trailing space, matching
+    // the hit region tryToggleCheckboxAtPosition accepts.
+    const int bracketEnd = block.text().indexOf(QLatin1Char(']')) + 1;
     const QTextLine line = layout->lineAt(0);
     const qreal startX = line.cursorToX(0);
-    const qreal endX = line.cursorToX(checkboxMarkerLength);
+    const qreal endX = line.cursorToX(bracketEnd);
     return QRectF(blockRect.left() + qMin(startX, endX), blockRect.top() + line.y(),
                   qAbs(endX - startX), line.height());
-}
-
-void convertNativeListsToHandRolled(QTextDocument *document)
-{
-    if (!document)
-        return;
-
-    for (QTextBlock block = document->begin(); block.isValid(); block = block.next()) {
-        QTextList *list = block.textList();
-        if (!list)
-            continue;
-
-        const QTextListFormat::Style style = list->format().style();
-        const QTextBlockFormat::MarkerType marker = block.blockFormat().marker();
-        if (style == QTextListFormat::ListDecimal) {
-            // Qt's own parser fully consumes "N. " into the QTextList
-            // structure — nothing of the marker survives in block.text() —
-            // so the real displayed number has to be read back from the
-            // list itself before detaching.
-            const int number = list->format().start() + list->itemNumber(block);
-            list->remove(block);
-            // list->remove() detaches list MEMBERSHIP but does not reset
-            // the block's own indent() LEVEL (a separate, additive property
-            // — Qt sets indent()==1 on every real list item it parses) —
-            // left alone, that stacked on top of the leftMargin/textIndent
-            // renumberRun sets below, producing extra unwanted left margin
-            // on every note that had been through a save/reload cycle
-            // (confirmed empirically; toggleBulletList's own bullet-removal
-            // path already clears this for the same reason).
-            {
-                QTextBlockFormat format = block.blockFormat();
-                format.setIndent(0);
-                QTextCursor(block).mergeBlockFormat(format);
-            }
-
-            // Tag before inserting the marker text — see toggleHandRolled's
-            // own comment for why that order matters (harmless here, since
-            // this runs on a throwaway scratch QTextDocument with no QML
-            // editor bound to it to reenter, but kept consistent anyway).
-            setHandRolledKind(QTextCursor(block), HandRolledKind::Numbered);
-            QTextCursor insertCursor(block);
-            insertCursor.setPosition(block.position());
-            insertCursor.insertText(QString::number(number) + QStringLiteral(". "));
-            renumberRun(block, HandRolledKind::Numbered, runStartNumber(block, HandRolledKind::Numbered));
-        } else if (style == QTextListFormat::ListDisc && marker != QTextBlockFormat::MarkerType::NoMarker) {
-            // Qt 6.4+ actually does have native GFM task-list *parsing*
-            // support after all (contrary to this project's own earlier
-            // research) — it fully consumes "[ ]"/"[x]" into this
-            // QTextBlockFormat::marker() property, leaving nothing of it in
-            // block.text() either, exactly like the numbered case above.
-            // Its WRITER, however, only ever emits "- [ ] "/"- [x] " syntax
-            // for a block that's STILL part of a real QTextList (confirmed
-            // empirically: setting marker() alone, with no list, writes a
-            // plain paragraph, the marker silently ignored) — since this
-            // app's hand-rolled representation deliberately drops QTextList
-            // membership (see toggleNumberedList's own comment for why), a
-            // marker has to be restored by hand here, same as the numbered
-            // case restores "N. " — but a real "☐"/"☑" checkbox glyph
-            // (feature request) rather than literal "- [ ] "/"- [x] "
-            // syntax; handRolledBlockMarkdownText translates it back to
-            // that syntax on save.
-            const bool checked = marker == QTextBlockFormat::MarkerType::Checked;
-            list->remove(block);
-            {
-                QTextBlockFormat format = block.blockFormat();
-                format.setIndent(0);
-                QTextCursor(block).mergeBlockFormat(format);
-            }
-            setHandRolledKind(QTextCursor(block), HandRolledKind::Checkbox);
-            QTextCursor insertCursor(block);
-            insertCursor.setPosition(block.position());
-            insertCursor.insertText(checked ? checkedMarker() : uncheckedMarker());
-            renumberRun(block, HandRolledKind::Checkbox, 1);
-        }
-    }
 }
 
 }

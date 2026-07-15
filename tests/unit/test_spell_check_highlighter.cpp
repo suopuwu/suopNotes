@@ -222,9 +222,9 @@ SCENARIO("When the backend has no working dictionary, nothing gets flagged even 
     }
 }
 
-SCENARIO("A hand-rolled numbered-list marker is not tokenized or flagged as a word", "[spell_check_highlighter]")
+SCENARIO("A numbered-list marker is not tokenized or flagged as a word", "[spell_check_highlighter]")
 {
-    GIVEN("a hand-rolled numbered-list block whose text (after the marker) contains a misspelled word")
+    GIVEN("a numbered-list block whose text (after the marker) contains a misspelled word")
     {
         QTextDocument doc;
         doc.setPlainText("mistaek in the list");
@@ -232,7 +232,6 @@ SCENARIO("A hand-rolled numbered-list marker is not tokenized or flagged as a wo
         TextFormatting::toggleNumberedList(cursor, 9);
 
         REQUIRE(doc.begin().text() == "9. mistaek in the list");
-        REQUIRE(TextFormatting::isHandRolledListBlock(doc.begin()));
 
         FakeSpellCheckerBackend backend(true, {"mistaek"});
 
@@ -262,17 +261,18 @@ SCENARIO("A hand-rolled numbered-list marker is not tokenized or flagged as a wo
     }
 }
 
-SCENARIO("A hand-rolled checkbox-list marker is not tokenized or flagged as a word", "[spell_check_highlighter]")
+SCENARIO("A checkbox-list marker is not tokenized or flagged as a word", "[spell_check_highlighter]")
 {
-    GIVEN("a hand-rolled checkbox-list block whose text (after the marker) contains a misspelled word")
+    GIVEN("a checkbox-list block whose text (after the marker) contains a misspelled word")
     {
         QTextDocument doc;
         doc.setPlainText("mistaek task");
         QTextCursor cursor(&doc);
         TextFormatting::toggleCheckboxList(cursor);
 
-        REQUIRE(doc.begin().text() == QStringLiteral("☐ mistaek task"));
-        REQUIRE(TextFormatting::isHandRolledListBlock(doc.begin()));
+        // Literal GFM, not a ☐ glyph: the buffer now holds exactly what gets
+        // saved (see MarkdownList::checkboxMarker).
+        REQUIRE(doc.begin().text() == QStringLiteral("- [ ] mistaek task"));
 
         FakeSpellCheckerBackend backend(true, {"mistaek"});
 
@@ -281,18 +281,18 @@ SCENARIO("A hand-rolled checkbox-list marker is not tokenized or flagged as a wo
             SpellCheckHighlighter highlighter(&doc, &backend);
             highlighter.rehighlight(); // see comment in the first scenario above
 
-            THEN("the \"☐ \" checkbox marker carries no SpellCheckUnderline formatting")
+            THEN("the \"- [ ] \" checkbox marker carries no SpellCheckUnderline formatting")
             {
                 const QTextBlock block = doc.begin();
-                CHECK_FALSE(isFlaggedMisspelled(block, 0)); // the glyph itself
-                CHECK_FALSE(isFlaggedMisspelled(block, 1)); // the space after it
+                for (int i = 0; i < 6; ++i) // "- [ ] "
+                    CHECK_FALSE(isFlaggedMisspelled(block, i));
             }
 
             THEN("the misspelled word after the marker is still flagged")
             {
                 const QTextBlock block = doc.begin();
                 const int start = block.text().indexOf("mistaek");
-                REQUIRE(start == 2);
+                REQUIRE(start == 6);
                 for (int i = start; i < start + 7; ++i) {
                     CHECK(isFlaggedMisspelled(block, i));
                 }

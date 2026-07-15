@@ -392,7 +392,7 @@ Item {
             // paragraph break (the same load path NoteWindow itself uses,
             // and confirmed elsewhere to produce lineCount === 2) is what
             // actually renders two distinct lines to click between.
-            win.docHandler.setMarkdown("line one\n\nline two\n")
+            win.docHandler.setMarkdown("line one\n\nline two")
             wait(50)
 
             const lastLineStart = editor.text.lastIndexOf("line two")
@@ -413,7 +413,7 @@ Item {
             const editor = win.editor
             const flick = win.editorFlick
 
-            win.docHandler.setMarkdown("line one\n\nline two\n")
+            win.docHandler.setMarkdown("line one\n\nline two")
             wait(50)
 
             mouseClick(flick, flick.width - 2, flick.height - 5, Qt.LeftButton)
@@ -427,7 +427,7 @@ Item {
             const win = instantiator.objectAt(0)
             const editor = win.editor
 
-            win.docHandler.setMarkdown("line one\n\nline two\n")
+            win.docHandler.setMarkdown("line one\n\nline two")
             wait(50)
 
             editor.cursorPosition = editor.text.indexOf("one")
@@ -455,8 +455,9 @@ Item {
             const win = instantiator.objectAt(0)
             const editor = win.editor
 
-            win.docHandler.setMarkdown("line one\n\nline two\n")
+            win.docHandler.setMarkdown("line one\n\nline two")
             wait(50)
+
 
             editor.cursorPosition = editor.text.indexOf("two")
             win.requestActivate()
@@ -481,7 +482,7 @@ Item {
             const win = instantiator.objectAt(0)
             const editor = win.editor
 
-            win.docHandler.setMarkdown("line one\n\nline two\n")
+            win.docHandler.setMarkdown("line one\n\nline two")
             wait(50)
 
             const startPos = editor.text.indexOf("one")
@@ -505,7 +506,7 @@ Item {
             const win = instantiator.objectAt(0)
             const editor = win.editor
 
-            win.docHandler.setMarkdown("line one\n\nline two\n")
+            win.docHandler.setMarkdown("line one\n\nline two")
             wait(50)
 
             const startPos = editor.text.indexOf("two")
@@ -535,7 +536,7 @@ Item {
             const win = instantiator.objectAt(0)
             const editor = win.editor
 
-            win.docHandler.setMarkdown("line one\n\nline two\n")
+            win.docHandler.setMarkdown("line one\n\nline two")
             wait(50)
 
             editor.cursorPosition = editor.text.indexOf("two")
@@ -558,7 +559,7 @@ Item {
             const win = instantiator.objectAt(0)
             const editor = win.editor
 
-            win.docHandler.setMarkdown("line one\n\nline two\n")
+            win.docHandler.setMarkdown("line one\n\nline two")
             wait(50)
 
             const startPos = editor.text.indexOf("one")
@@ -586,7 +587,7 @@ Item {
             const win = instantiator.objectAt(0)
             const editor = win.editor
 
-            win.docHandler.setMarkdown("line one\n\nline two\n")
+            win.docHandler.setMarkdown("line one\n\nline two")
             wait(50)
 
             const startPos = editor.text.indexOf("two")
@@ -612,7 +613,7 @@ Item {
             const win = instantiator.objectAt(0)
             const editor = win.editor
 
-            win.docHandler.setMarkdown("line one\n\nline two\n")
+            win.docHandler.setMarkdown("line one\n\nline two")
             wait(50)
 
             const startPos = editor.text.indexOf("one")
@@ -687,7 +688,7 @@ Item {
             const win = instantiator.objectAt(0)
             const editor = win.editor
 
-            win.docHandler.setMarkdown("- one\n- this list item is long enough that it should wrap across two visual lines in the note\n")
+            win.docHandler.setMarkdown("- one\n- this list item is long enough that it should wrap across two visual lines in the note")
             wait(50)
 
             editor.cursorPosition = editor.length
@@ -722,7 +723,7 @@ Item {
             const editor = win.editor
             const flick = win.editorFlick
 
-            win.docHandler.setMarkdown("line one\n\nline two\n")
+            win.docHandler.setMarkdown("line one\n\nline two")
             wait(50)
 
             const lastLineStart = editor.text.lastIndexOf("line two")
@@ -746,7 +747,7 @@ Item {
             const editor = win.editor
             const flick = win.editorFlick
 
-            win.docHandler.setMarkdown("line one\n\nline two\n")
+            win.docHandler.setMarkdown("line one\n\nline two")
             wait(50)
 
             const lastLineStart = editor.text.lastIndexOf("line two")
@@ -773,7 +774,7 @@ Item {
             const editor = win.editor
             const flick = win.editorFlick
 
-            win.docHandler.setMarkdown("line one\n\nline two\n")
+            win.docHandler.setMarkdown("line one\n\nline two")
             wait(50)
 
             const lastLineStart = editor.text.lastIndexOf("line two")
@@ -794,7 +795,7 @@ Item {
             const editor = win.editor
             const flick = win.editorFlick
 
-            win.docHandler.setMarkdown("line one\n\nline two\n")
+            win.docHandler.setMarkdown("line one\n\nline two")
             wait(50)
 
             const lastLineStart = editor.text.lastIndexOf("line two")
@@ -1245,7 +1246,7 @@ Item {
             const win = instantiator.objectAt(0)
             const editor = win.editor
 
-            win.docHandler.setMarkdown("- item one\n")
+            win.docHandler.setMarkdown("- item one")
             wait(50)
 
             editor.cursorPosition = editor.length
@@ -1271,7 +1272,7 @@ Item {
             const win = instantiator.objectAt(0)
             const editor = win.editor
 
-            win.docHandler.setMarkdown("- item one\n")
+            win.docHandler.setMarkdown("- item one")
             wait(50)
 
             editor.cursorPosition = editor.length
@@ -1445,7 +1446,7 @@ Item {
             const win = instantiator.objectAt(0)
             const editor = win.editor
 
-            win.docHandler.setMarkdown("1. item one\n")
+            win.docHandler.setMarkdown("1. item one")
             wait(50)
 
             editor.cursorPosition = editor.length
@@ -1467,7 +1468,7 @@ Item {
             const win = instantiator.objectAt(0)
             const editor = win.editor
 
-            win.docHandler.setMarkdown("1. item one\n")
+            win.docHandler.setMarkdown("1. item one")
             wait(50)
 
             editor.cursorPosition = editor.length
@@ -1508,7 +1509,7 @@ Item {
             const win = instantiator.objectAt(0)
             const editor = win.editor
 
-            win.docHandler.setMarkdown("1. item one\n")
+            win.docHandler.setMarkdown("1. item one")
             wait(50)
 
             editor.cursorPosition = editor.length
@@ -1536,7 +1537,7 @@ Item {
             const win = instantiator.objectAt(0)
             const editor = win.editor
 
-            win.docHandler.setMarkdown("- [ ] item one\n")
+            win.docHandler.setMarkdown("- [ ] item one")
             wait(50)
 
             editor.cursorPosition = editor.length
@@ -1558,7 +1559,7 @@ Item {
             const win = instantiator.objectAt(0)
             const editor = win.editor
 
-            win.docHandler.setMarkdown("- [ ] item one\n")
+            win.docHandler.setMarkdown("- [ ] item one")
             wait(50)
 
             editor.cursorPosition = editor.length
@@ -1584,7 +1585,7 @@ Item {
             const win = instantiator.objectAt(0)
             const editor = win.editor
 
-            win.docHandler.setMarkdown("- [ ] milk\n")
+            win.docHandler.setMarkdown("- [ ] milk")
             wait(50)
 
             // The displayed marker is "☐ " (2 characters — a real checkbox
@@ -1608,7 +1609,7 @@ Item {
             const win = instantiator.objectAt(0)
             const editor = win.editor
 
-            win.docHandler.setMarkdown("- [ ] milk\n")
+            win.docHandler.setMarkdown("- [ ] milk")
             wait(50)
             win.requestActivate()
             tryCompare(win, "active", true)
@@ -1639,7 +1640,7 @@ Item {
             const win = instantiator.objectAt(0)
             const editor = win.editor
 
-            win.docHandler.setMarkdown("1. milk\n")
+            win.docHandler.setMarkdown("1. milk")
             wait(50)
 
             editor.select(0, 2) // "1."
@@ -1684,7 +1685,7 @@ Item {
             const win = instantiator.objectAt(0)
             const editor = win.editor
 
-            win.docHandler.setMarkdown("bold me\n")
+            win.docHandler.setMarkdown("bold me")
             wait(50)
 
             win.requestActivate()
@@ -1707,7 +1708,7 @@ Item {
             const win = instantiator.objectAt(0)
             const editor = win.editor
 
-            win.docHandler.setMarkdown("copy me\n")
+            win.docHandler.setMarkdown("copy me")
             wait(50)
 
             win.requestActivate()
@@ -1742,7 +1743,7 @@ Item {
             const win = instantiator.objectAt(0)
             const editor = win.editor
 
-            win.docHandler.setMarkdown("copy the whole note\n")
+            win.docHandler.setMarkdown("copy the whole note")
             wait(50)
 
             win.requestActivate()
@@ -1774,7 +1775,7 @@ Item {
             const win = instantiator.objectAt(0)
             const editor = win.editor
 
-            win.docHandler.setMarkdown("copy me\n")
+            win.docHandler.setMarkdown("copy me")
             wait(50)
             editor.select(0, "copy me".length)
 
@@ -1841,7 +1842,7 @@ Item {
             // own delimiter line mistaken for spacer content. Real content
             // in the surviving row sidesteps that entirely, and is more
             // representative of an actual table anyway.
-            win.docHandler.setMarkdown("| A | B |\n| --- | --- |\n| 1 | 2 |\n| 3 | 4 |\n")
+            win.docHandler.setMarkdown("| A | B |\n| --- | --- |\n| 1 | 2 |\n| 3 | 4 |")
             wait(50)
             const rowsBefore = win.docHandler.toMarkdown().split("\n").filter(l => l.startsWith("|")).length
 
@@ -1941,7 +1942,7 @@ Item {
             // editor.text (tried initially, both via .length to place the
             // table and via .indexOf("Header 1") to find it afterward)
             // drifted out of range instead.
-            win.docHandler.setMarkdown("| Header 1 | Header 2 |\n| --- | --- |\n|  |  |\n\nintro\n")
+            win.docHandler.setMarkdown("| Header 1 | Header 2 |\n| --- | --- |\n|  |  |\n\nintro")
             wait(50)
             verify(win.docHandler.toMarkdown().indexOf("Header 1") !== -1, "precondition: the table exists")
 
@@ -2016,7 +2017,7 @@ Item {
             compare(win.misspelledWordStart, -1)
             compare(win.misspelledWordEnd, -1)
 
-            win.docHandler.setMarkdown("hello world\n")
+            win.docHandler.setMarkdown("hello world")
             wait(50)
 
             const rect = editor.positionToRectangle(2)
@@ -2031,7 +2032,7 @@ Item {
             const win = instantiator.objectAt(0)
             const editor = win.editor
 
-            win.docHandler.setMarkdown("teh normal\n")
+            win.docHandler.setMarkdown("teh normal")
             wait(50)
 
             // Tap into the middle of "teh" (position 1). try/finally so a
@@ -2142,7 +2143,7 @@ Item {
             const win = instantiator.objectAt(0)
             const editor = win.editor
 
-            win.docHandler.setMarkdown("teh normal\n")
+            win.docHandler.setMarkdown("teh normal")
             wait(50)
 
             let capturedStart = null
@@ -2184,7 +2185,7 @@ Item {
             const originalMax = settings.spellcheckMaxSuggestions
 
             try {
-                win.docHandler.setMarkdown("teh normal\n")
+                win.docHandler.setMarkdown("teh normal")
                 wait(50)
                 verify(win.docHandler.suggestionsForWordAt(1).length > 3,
                        "this test only proves anything if the real dictionary returns MORE than 3 raw suggestions for \"teh\", got: "
@@ -2213,7 +2214,7 @@ Item {
             const win = instantiator.objectAt(0)
             const editor = win.editor
 
-            win.docHandler.setMarkdown("hello world\n")
+            win.docHandler.setMarkdown("hello world")
             wait(50)
 
             // Simulate a suggestion already being shown (as tap-to-suggest
@@ -2265,7 +2266,7 @@ Item {
         // than a fake backend.
         function test_a_misspelled_word_with_no_suggestions_still_reports_misspelled() {
             const win = instantiator.objectAt(0)
-            win.docHandler.setMarkdown("thisisdefinitelymisspelledxyz normal\n")
+            win.docHandler.setMarkdown("thisisdefinitelymisspelledxyz normal")
             wait(50)
 
             verify(win.docHandler.isWordMisspelledAt(5),
@@ -2276,7 +2277,7 @@ Item {
 
         function test_a_misspelled_word_with_real_suggestions_reports_them() {
             const win = instantiator.objectAt(0)
-            win.docHandler.setMarkdown("teh normal\n")
+            win.docHandler.setMarkdown("teh normal")
             wait(50)
 
             verify(win.docHandler.isWordMisspelledAt(1), "\"teh\" must be reported as misspelled")
@@ -2295,7 +2296,7 @@ Item {
         // recompute above) and the on-demand path, which must agree.
         function test_suggestionsForWordAt_matches_the_precached_suggestions_for_the_same_word() {
             const win = instantiator.objectAt(0)
-            win.docHandler.setMarkdown("teh normal\n")
+            win.docHandler.setMarkdown("teh normal")
             wait(50)
 
             try {
@@ -2325,7 +2326,7 @@ Item {
         // language/dictionary change.
         function test_suggestionsForWordAt_still_returns_correct_suggestions_after_rehighlightSpellcheck() {
             const win = instantiator.objectAt(0)
-            win.docHandler.setMarkdown("teh normal\n")
+            win.docHandler.setMarkdown("teh normal")
             wait(50)
 
             try {
@@ -2346,7 +2347,7 @@ Item {
 
         function test_a_correctly_spelled_word_is_not_misspelled() {
             const win = instantiator.objectAt(0)
-            win.docHandler.setMarkdown("hello world\n")
+            win.docHandler.setMarkdown("hello world")
             wait(50)
 
             verify(!win.docHandler.isWordMisspelledAt(1), "\"hello\" must not be reported as misspelled")
@@ -2376,7 +2377,7 @@ Item {
         // which is why that specific case is what got noticed live.
         function test_isWordMisspelledAt_detects_a_misspelled_word_at_its_own_right_edge() {
             const win = instantiator.objectAt(0)
-            win.docHandler.setMarkdown("teh normal\n")
+            win.docHandler.setMarkdown("teh normal")
             wait(50)
 
             try {
@@ -2407,7 +2408,7 @@ Item {
         // has no precedent for pixel-comparison tests elsewhere).
         function test_misspelledWordRanges_reports_exactly_the_misspelled_words_range() {
             const win = instantiator.objectAt(0)
-            win.docHandler.setMarkdown("teh normal\n")
+            win.docHandler.setMarkdown("teh normal")
             wait(50)
 
             const ranges = win.docHandler.misspelledWordRanges
@@ -2440,7 +2441,7 @@ Item {
             // stripped during markdown reserialization (the same class of
             // issue TextFormatting::insertTabSpaces' own comment documents
             // elsewhere).
-            win.docHandler.setMarkdown("normal x here\n")
+            win.docHandler.setMarkdown("normal x here")
             wait(50)
 
             try {
@@ -2474,7 +2475,7 @@ Item {
         // selected word is simply never a candidate for exclusion.
         function test_misspelledWordRanges_never_excludes_a_merely_selected_word() {
             const win = instantiator.objectAt(0)
-            win.docHandler.setMarkdown("teh normal\n")
+            win.docHandler.setMarkdown("teh normal")
             wait(50)
 
             try {
@@ -2508,7 +2509,7 @@ Item {
         // from rehighlightSpellcheck()) that has to catch exactly this case.
         function test_misspelledWordRanges_recomputes_after_a_word_is_added_to_the_user_dictionary() {
             const win = instantiator.objectAt(0)
-            win.docHandler.setMarkdown("someuniquetestword normal\n")
+            win.docHandler.setMarkdown("someuniquetestword normal")
             wait(50)
 
             try {
@@ -2549,7 +2550,7 @@ Item {
         // returning the SAME object across the edit.
         function test_editing_earlier_text_shifts_underline_delegates_without_recreating_them() {
             const win = instantiator.objectAt(0)
-            win.docHandler.setMarkdown("teh two normal words thisisdefinitelymisspelledxyz\n")
+            win.docHandler.setMarkdown("teh two normal words thisisdefinitelymisspelledxyz")
             wait(50)
             // setMarkdown() leaves editor.cursorPosition at the very end of
             // the freshly-inserted text (see NoteWindow.qml's own
@@ -2583,11 +2584,19 @@ Item {
                 // Inserting a character at the very start of the document
                 // shifts every misspelled word's absolute start/end after
                 // it — including the garbled word's — without changing how
-                // many misspelled words there are. Cursor is parked back
-                // in "two" again afterward for the same reason as above —
-                // insert() moves it to just past the inserted text, which
-                // would otherwise sit right at "Xteh"'s own start.
-                win.editor.insert(0, "X")
+                // many misspelled words there are.
+                //
+                // A SPACE, deliberately — this test is about a shift-only
+                // edit, and a space is the only thing that shifts every
+                // following word without altering any word itself. Inserting a
+                // letter here instead merges into "teh" and makes it a
+                // different word ("Xteh"), which the spellcheck debounce then
+                // correctly withholds as "the word currently being typed" —
+                // dropping it from the list and back again, destroying the very
+                // delegates this test exists to prove get reused.
+                win.editor.insert(0, " ")
+                // Parked in "two" for the same reason as above: insert()
+                // leaves the cursor just past the inserted text.
                 win.editor.cursorPosition = 7
                 wait(50)
 
@@ -2626,7 +2635,7 @@ Item {
         // x-position assertion meaningless).
         function test_deleting_earlier_text_moves_the_underline_delegate_to_its_new_position() {
             const win = instantiator.objectAt(0)
-            win.docHandler.setMarkdown("hello teh normal words here\n")
+            win.docHandler.setMarkdown("hello teh normal words here")
             wait(50)
             // Parked in "normal", safely away from "teh".
             win.editor.cursorPosition = 12
@@ -2707,7 +2716,7 @@ Item {
             // during markdown reserialization: replaceRange() below only
             // ever inserts "xyznotaword" itself (no whitespace of its own
             // at either end), never touching the separating space.
-            win.docHandler.setMarkdown("hi teh normal words here\n")
+            win.docHandler.setMarkdown("hi teh normal words here")
             wait(50)
             // Parked in "normal", safely away from both "hi" and "teh".
             win.editor.cursorPosition = 9
@@ -2781,7 +2790,7 @@ Item {
         function test_typing_text_one_keystroke_at_a_time_before_a_misspelled_word_keeps_its_underline_correct() {
             const win = instantiator.objectAt(0)
             const editor = win.editor
-            win.docHandler.setMarkdown("teh normal words here\n")
+            win.docHandler.setMarkdown("teh normal words here")
             wait(50)
 
             win.requestActivate()
@@ -2964,7 +2973,7 @@ Item {
             // — nowhere near "teh" — so "teh" itself is never excluded,
             // never destroyed, just shifted: the exact scenario the flash
             // bug actually happened in.
-            win.docHandler.setMarkdown("hi teh normal words here\n")
+            win.docHandler.setMarkdown("hi teh normal words here")
             wait(50)
             win.requestActivate()
             tryCompare(win, "active", true)

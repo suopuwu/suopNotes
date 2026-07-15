@@ -112,18 +112,22 @@ public:
     Q_INVOKABLE QString toMarkdown() const;
     Q_INVOKABLE void setMarkdown(const QString &markdown);
 
-    Q_INVOKABLE void toggleBold(int selectionStart, int selectionEnd);
-    Q_INVOKABLE void toggleItalic(int selectionStart, int selectionEnd);
-    Q_INVOKABLE void toggleStrikethrough(int selectionStart, int selectionEnd);
+    // Each returns the toggled content's resulting range as
+    // {"start": int, "end": int}, so the caller can reselect the same TEXT.
+    // Qt's own selection adjustment can't be relied on here: the marker
+    // inserted at the selection's END gets swallowed into it while the one at
+    // its start merely shifts it, so "bold me" comes back as "bold me**" —
+    // visibly wrong, and it makes isBold() report false on the very selection
+    // that was just emboldened. See SelectionToolbar.qml's applyInlineToggle().
+    Q_INVOKABLE QVariantMap toggleBold(int selectionStart, int selectionEnd);
+    Q_INVOKABLE QVariantMap toggleItalic(int selectionStart, int selectionEnd);
+    Q_INVOKABLE QVariantMap toggleStrikethrough(int selectionStart, int selectionEnd);
     Q_INVOKABLE void toggleBulletList(int selectionStart, int selectionEnd);
     Q_INVOKABLE void toggleNumberedList(int selectionStart, int selectionEnd);
     Q_INVOKABLE void toggleCheckboxList(int selectionStart, int selectionEnd);
     Q_INVOKABLE void setHeadingLevel(int selectionStart, int selectionEnd, int level);
     // Tab (feature request): four literal spaces at `position`, replacing
-    // any selection. Routed through TextFormatting::insertTabSpaces (a
-    // direct QTextCursor mutation) rather than TextArea's own insert() QML
-    // method — see that function's own comment for why: MarkdownText mode
-    // silently drops a pure-whitespace insert() call.
+    // any selection.
     Q_INVOKABLE void insertTabSpaces(int selectionStart, int selectionEnd);
     Q_INVOKABLE void insertTable(int position);
     Q_INVOKABLE void insertTableRow(int position);
@@ -325,14 +329,6 @@ private:
     bool m_pendingEditActive = false;
     QTimer *m_pendingEditDebounce = nullptr;
     void onContentsChange(int from, int charsRemoved, int charsAdded);
-    // The document's own blockCount() as of the end of the last
-    // onContentsChange call — compared against the CURRENT blockCount at the
-    // start of the next one to detect a block merge (see that function's own
-    // comment on why a merge specifically needs
-    // TextFormatting::maintainHeadingCharFormatAfterMerge). Reset to the
-    // fresh document's own count in setDocument() so opening a note doesn't
-    // register as "N blocks merged into 1" on its very first edit.
-    int m_lastKnownBlockCount = 1;
     // Per-word (not per-position) cache: a misspelled word's suggestions
     // depend only on its own text, not where it sits, so every occurrence
     // of the same misspelled word across the whole document shares one

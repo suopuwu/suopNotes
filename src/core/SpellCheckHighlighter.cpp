@@ -1,7 +1,7 @@
 #include "SpellCheckHighlighter.h"
 
+#include "MarkdownList.h"
 #include "SpellChecker.h"
-#include "TextFormatting.h"
 
 #include <QHash>
 #include <QRegularExpression>
@@ -9,26 +9,6 @@
 
 namespace
 {
-
-// Hand-rolled list markers this editor writes as literal block-leading text
-// (see TextFormatting.h's own comment on toggleNumberedList/
-// toggleCheckboxList for why these are real text rather than QTextList
-// decoration). TextFormatting.cpp keeps its own copies of the checkbox
-// glyphs and the numbered-marker pattern, but both are file-local (anonymous
-// namespace, no header declaration) — nothing public exposes them, so they
-// are re-declared here rather than shared.
-const QRegularExpression &numberedMarkerPattern()
-{
-    static const QRegularExpression pattern(QStringLiteral("^(\\d+\\.\\s+)"));
-    return pattern;
-}
-
-const QRegularExpression &checkboxMarkerPattern()
-{
-    // "☐ " / "☑ " — the literal Unicode ballot-box glyphs, not ASCII.
-    static const QRegularExpression pattern(QStringLiteral("^(\\x{2610}\\s|\\x{2611}\\s)"));
-    return pattern;
-}
 
 // Word-like tokens: runs of Unicode letters plus internal apostrophes
 // ("don't", "it's"). Punctuation (markdown or otherwise) simply isn't
@@ -85,14 +65,13 @@ QList<QPair<int, int>> SpellCheckHighlighter::wordRangesInBlock(const QTextBlock
     QList<QPair<int, int>> ranges;
     const QString text = block.text();
 
-    int searchStart = 0;
-    if (TextFormatting::isHandRolledListBlock(block)) {
-        QRegularExpressionMatch match = numberedMarkerPattern().match(text);
-        if (!match.hasMatch())
-            match = checkboxMarkerPattern().match(text);
-        if (match.hasMatch())
-            searchStart = match.capturedLength(1);
-    }
+    // Skip any list marker so its own characters are never offered up as a
+    // misspelled word. Delegated to MarkdownList rather than re-matched here:
+    // this file used to keep private copies of the marker patterns, which is
+    // one more place for them to disagree with TextFormatting about where a
+    // marker ends — and a disagreement shows up as a marker underlined as a
+    // typo.
+    const int searchStart = MarkdownList::parse(text).length;
 
     QRegularExpressionMatchIterator it = wordPattern().globalMatch(text, searchStart);
     while (it.hasNext()) {

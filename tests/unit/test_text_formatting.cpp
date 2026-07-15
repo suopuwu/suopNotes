@@ -3,6 +3,7 @@
 
 #include <QFontMetricsF>
 #include <QRegularExpression>
+#include <QTextBlock>
 #include <QTextBlockFormat>
 #include <QTextCursor>
 #include <QTextDocument>
@@ -18,6 +19,27 @@ QTextCursor selectAll(QTextDocument &doc)
 {
     QTextCursor cursor(&doc);
     cursor.select(QTextCursor::Document);
+    return cursor;
+}
+
+// The document as one line per block. Assertions below compare against this
+// rather than a single string: the buffer IS the markdown source now, so
+// spelling out the expected lines is both the clearest way to read a test and
+// an exact statement of what would land on disk.
+QStringList plainLines(const QTextDocument &doc)
+{
+    QStringList result;
+    for (QTextBlock b = doc.begin(); b.isValid(); b = b.next())
+        result << b.text();
+    return result;
+}
+
+// A cursor `offsetInLine` characters into the given line.
+QTextCursor cursorAtLine(QTextDocument &doc, int lineNumber, int offsetInLine)
+{
+    const QTextBlock block = doc.findBlockByNumber(lineNumber);
+    QTextCursor cursor(&doc);
+    cursor.setPosition(block.position() + qMin(offsetInLine, block.text().size()));
     return cursor;
 }
 }
@@ -136,146 +158,39 @@ SCENARIO("Setting a heading level on the current block", "[text_formatting]")
     }
 }
 
-SCENARIO("Setting a heading level actually changes how it looks, not just how it saves", "[text_formatting]")
+SCENARIO("Merging a heading with the line below it needs no repair pass", "[text_formatting]")
 {
-    // Feature request / bug: headingLevel alone has NO visual effect when
-    // applied via the API directly — Qt's markdown PARSER bakes heading
-    // appearance (bold + a scaled font size) into the actual CHAR format
-    // only when building a heading fresh from "# " syntax; toggling
-    // headingLevel through the toolbar bypassed that, so it saved
-    // correctly but looked identical to plain text on screen.
-    GIVEN("a document with a single paragraph at a known base font size")
-    {
-        QTextDocument doc;
-        doc.setDefaultFont(QFont(QStringLiteral("Sans"), 14));
-        doc.setPlainText("Section Title");
-        const qreal baseSize = QTextCursor(&doc).charFormat().font().pointSizeF();
-
-        WHEN("heading level 1 is applied")
-        {
-            QTextCursor cursor(&doc);
-            TextFormatting::setHeadingLevel(cursor, 1);
-
-            THEN("the line is bold and twice the base size, matching Qt's own h1 scaling")
-            {
-                QTextCursor checkCursor(&doc);
-                checkCursor.select(QTextCursor::LineUnderCursor);
-                const QFont font = checkCursor.charFormat().font();
-                CHECK(font.bold());
-                CHECK(font.pointSizeF() == Catch::Approx(baseSize * 2.0));
-            }
-        }
-
-        WHEN("heading level 2 is applied")
-        {
-            QTextCursor cursor(&doc);
-            TextFormatting::setHeadingLevel(cursor, 2);
-
-            THEN("the line is bold and 1.5x the base size, matching Qt's own h2 scaling")
-            {
-                QTextCursor checkCursor(&doc);
-                checkCursor.select(QTextCursor::LineUnderCursor);
-                const QFont font = checkCursor.charFormat().font();
-                CHECK(font.bold());
-                CHECK(font.pointSizeF() == Catch::Approx(baseSize * 1.5));
-            }
-        }
-
-        WHEN("heading level 1 is applied, then cleared back to level 0")
-        {
-            QTextCursor cursor(&doc);
-            TextFormatting::setHeadingLevel(cursor, 1);
-            TextFormatting::setHeadingLevel(cursor, 0);
-
-            THEN("the size and weight are restored exactly, not left scaled up")
-            {
-                QTextCursor checkCursor(&doc);
-                checkCursor.select(QTextCursor::LineUnderCursor);
-                const QFont font = checkCursor.charFormat().font();
-                CHECK_FALSE(font.bold());
-                CHECK(font.pointSizeF() == Catch::Approx(baseSize));
-            }
-        }
-
-        // Bug found live: pressing Enter at the end of a heading line (as
-        // DocumentHandler::tryResetHeadingOnReturn does — insertBlock(),
-        // then setHeadingLevel(0) on the brand new, still-empty block)
-        // looked like the heading style carried onto the new line, and
-        // still-bold text survived a reload even though the new block's
-        // headingLevel itself correctly came back 0. Reproduces that exact
-        // sequence directly against TextFormatting rather than through
-        // DocumentHandler/QML.
-        WHEN("heading level 1 is applied, Enter is pressed (insertBlock), and the new empty block is reset to level 0")
-        {
-            QTextCursor cursor(&doc);
-            TextFormatting::setHeadingLevel(cursor, 1);
-
-            cursor.movePosition(QTextCursor::EndOfBlock);
-            cursor.insertBlock();
-            TextFormatting::setHeadingLevel(cursor, 0);
-
-            THEN("text subsequently typed into that new, still-empty block is not bold or heading-sized")
-            {
-                cursor.insertText("plain body text");
-
-                QTextCursor checkCursor(&doc);
-                checkCursor.movePosition(QTextCursor::End);
-                checkCursor.select(QTextCursor::LineUnderCursor);
-                const QFont font = checkCursor.charFormat().font();
-                CHECK_FALSE(font.bold());
-                CHECK(font.pointSizeF() == Catch::Approx(baseSize));
-            }
-        }
-    }
-}
-
-SCENARIO("A merged block's char format is reconciled to its own (post-merge) heading level", "[text_formatting]")
-{
-    // Bug found live: deleting the newline between a plain paragraph and a
-    // heading (Backspace at the start of one, Delete at the end of the
-    // other) merges them into a single block whose headingLevel is exactly
-    // as if it had always been that way — QTextCursor::mergeBlockFormat
-    // resolves cleanly to the surviving block's own format — but each side's
-    // bold/size CHAR format is untouched by the merge, since that's a
-    // per-character property, not a block one. The merged line visibly
-    // disagreed with its own heading level until the next full markdown
-    // round-trip (reload), which re-derives char format from headingLevel +
-    // text fresh via Qt's own parser. maintainHeadingCharFormatAfterMerge is
-    // what DocumentHandler::onContentsChange calls the instant it detects a
-    // real block merge (blockCount going down), so the fix lands
-    // immediately instead of only on reload.
     GIVEN("a heading followed by a plain paragraph")
     {
         QTextDocument doc;
-        const qreal baseSize = QTextCursor(&doc).charFormat().font().pointSizeF();
-        QTextCursor cursor(&doc);
-        TextFormatting::setHeadingLevel(cursor, 1);
-        cursor.insertText("Header Text");
-        cursor.insertBlock();
-        TextFormatting::setHeadingLevel(cursor, 0);
-        cursor.insertText("plain text");
+        doc.setPlainText("# Title\nplain body");
 
-        WHEN("the newline between them is deleted (Backspace at the start of the plain line), merging it into the heading")
+        WHEN("the newline between them is deleted, merging the two lines")
         {
-            const int mergePoint = doc.begin().next().position();
-            QTextCursor deleteSeparator(&doc);
-            deleteSeparator.setPosition(mergePoint - 1);
-            deleteSeparator.setPosition(mergePoint, QTextCursor::KeepAnchor);
-            deleteSeparator.removeSelectedText(); // the actual Qt-default merge, format untouched
+            QTextCursor cursor(&doc);
+            cursor.setPosition(QStringLiteral("# Title").size());
+            cursor.deleteChar();
 
-            QTextCursor mergeCursor(&doc);
-            mergeCursor.setPosition(mergePoint - 1); // where the separator used to be — contentsChange's own `from`
-            TextFormatting::maintainHeadingCharFormatAfterMerge(mergeCursor);
-
-            THEN("the whole merged line — including the text absorbed from the plain paragraph — is bold and heading-sized")
+            THEN("the surviving line is exactly the two texts joined")
             {
                 REQUIRE(doc.blockCount() == 1);
-                CHECK(doc.begin().text() == "Header Textplain text");
-                QTextCursor checkCursor(&doc);
-                checkCursor.select(QTextCursor::Document);
-                const QFont font = checkCursor.charFormat().font();
-                CHECK(font.bold());
-                CHECK(font.pointSizeF() == Catch::Approx(baseSize * 2));
+                CHECK(doc.begin().text() == QStringLiteral("# Titleplain body"));
+            }
+
+            THEN("it is still an H1, because the '#' is simply still there")
+            {
+                // This scenario replaces one that used to drive
+                // maintainHeadingCharFormatAfterMerge, a function that existed
+                // only to repair a merge. Back then a heading's LOOK lived in a
+                // char format while its heading-NESS lived in a block format,
+                // and a merge resolved the two differently — so absorbed text
+                // didn't look like the heading it had joined, until a reload
+                // re-derived everything. There is now only one source of truth:
+                // the text. A merge can't desync it from itself, so the repair
+                // pass has nothing left to repair and is gone.
+                QTextCursor at(&doc);
+                at.setPosition(1);
+                CHECK(TextFormatting::headingLevel(at) == 1);
             }
         }
     }
@@ -283,70 +198,21 @@ SCENARIO("A merged block's char format is reconciled to its own (post-merge) hea
     GIVEN("a plain paragraph followed by a heading")
     {
         QTextDocument doc;
-        const qreal baseSize = QTextCursor(&doc).charFormat().font().pointSizeF();
-        QTextCursor cursor(&doc);
-        cursor.insertText("plain text");
-        cursor.insertBlock();
-        TextFormatting::setHeadingLevel(cursor, 1);
-        cursor.insertText("Header Text");
+        doc.setPlainText("intro\n# Title");
 
-        WHEN("the newline between them is deleted (Backspace at the start of the heading), demoting the merged line to a plain paragraph")
+        WHEN("the two are merged")
         {
-            const int mergePoint = doc.begin().next().position();
-            QTextCursor deleteSeparator(&doc);
-            deleteSeparator.setPosition(mergePoint - 1);
-            deleteSeparator.setPosition(mergePoint, QTextCursor::KeepAnchor);
-            deleteSeparator.removeSelectedText(); // the actual Qt-default merge, format untouched
+            QTextCursor cursor(&doc);
+            cursor.setPosition(QStringLiteral("intro").size());
+            cursor.deleteChar();
 
-            QTextCursor mergeCursor(&doc);
-            mergeCursor.setPosition(mergePoint - 1); // where the separator used to be — contentsChange's own `from`
-            TextFormatting::maintainHeadingCharFormatAfterMerge(mergeCursor);
-
-            THEN("the former heading text is no longer bold or oversized — it reads as ordinary text, matching its now-plain block")
+            THEN("the result is NOT a heading — the '#' no longer starts the line")
             {
                 REQUIRE(doc.blockCount() == 1);
-                CHECK(doc.begin().text() == "plain textHeader Text");
-                QTextCursor checkCursor(&doc);
-                checkCursor.select(QTextCursor::Document);
-                const QFont font = checkCursor.charFormat().font();
-                CHECK_FALSE(font.bold());
-                CHECK(font.pointSizeF() == Catch::Approx(baseSize));
-            }
-        }
-    }
-
-    GIVEN("two plain paragraphs, one with a deliberately bolded word in it (an unrelated toggleBold, not heading-driven)")
-    {
-        QTextDocument doc;
-        QTextCursor cursor(&doc);
-        cursor.insertText("plain start word");
-        const int boldStart = doc.begin().text().indexOf("word");
-        QTextCursor boldCursor(&doc);
-        boldCursor.setPosition(boldStart);
-        boldCursor.setPosition(boldStart + 4, QTextCursor::KeepAnchor);
-        TextFormatting::toggleBold(boldCursor);
-        cursor.insertBlock();
-        cursor.insertText("second block");
-
-        WHEN("the newline between the two plain blocks is deleted, merging them")
-        {
-            const int mergePoint = doc.begin().next().position();
-            QTextCursor deleteSeparator(&doc);
-            deleteSeparator.setPosition(mergePoint - 1);
-            deleteSeparator.setPosition(mergePoint, QTextCursor::KeepAnchor);
-            deleteSeparator.removeSelectedText();
-
-            QTextCursor mergeCursor(&doc);
-            mergeCursor.setPosition(mergePoint - 1);
-            TextFormatting::maintainHeadingCharFormatAfterMerge(mergeCursor);
-
-            THEN("the deliberately-bolded word survives untouched — only the merge boundary was ever in scope")
-            {
-                REQUIRE(doc.blockCount() == 1);
-                QTextCursor checkCursor(&doc);
-                checkCursor.setPosition(boldStart);
-                checkCursor.setPosition(boldStart + 4, QTextCursor::KeepAnchor);
-                CHECK(checkCursor.charFormat().font().bold());
+                CHECK(doc.begin().text() == QStringLiteral("intro# Title"));
+                QTextCursor at(&doc);
+                at.setPosition(1);
+                CHECK(TextFormatting::headingLevel(at) == 0);
             }
         }
     }
@@ -453,7 +319,10 @@ SCENARIO("Toggling a numbered list on the current block", "[text_formatting]")
 
             THEN("the same block converts in place to a dash bullet, not numbered")
             {
-                CHECK(doc.begin().text() == "Buy milk"); // QTextList bullet marker isn't part of .text()
+                // The bullet marker is real text now, so it shows up in the
+                // block's own text — it used to be QTextList decoration, which
+                // had no character position at all.
+                CHECK(doc.begin().text() == "- Buy milk");
                 CHECK(TextFormatting::isBulletList(cursor));
                 CHECK_FALSE(TextFormatting::isNumberedList(cursor));
             }
@@ -522,28 +391,6 @@ SCENARIO("Toggling a numbered list on the current block", "[text_formatting]")
             {
                 CHECK(doc.findBlockByNumber(0).text() == "1. ");
                 CHECK(doc.findBlockByNumber(1).text() == "2. second item");
-            }
-        }
-    }
-}
-
-SCENARIO("Creating a bullet list tightens the document's indent width so the marker sits near the text's own left edge", "[text_formatting]")
-{
-    GIVEN("a document using Qt's oversized default indentWidth")
-    {
-        QTextDocument doc;
-        doc.setPlainText("Buy milk");
-        CHECK(doc.indentWidth() == 40.0); // Qt's default, confirms the fixture predates the fix
-
-        WHEN("a bullet list is created")
-        {
-            QTextCursor cursor(&doc);
-            TextFormatting::toggleBulletList(cursor);
-
-            THEN("indentWidth shrinks to fit the marker instead of Qt's oversized 40px default")
-            {
-                CHECK(doc.indentWidth() < 40.0);
-                CHECK(doc.indentWidth() > 0.0);
             }
         }
     }
@@ -645,305 +492,6 @@ SCENARIO("Deleting an item from the middle of a numbered list renumbers what's l
                 for (QTextBlock b = doc.begin(); b.isValid(); b = b.next())
                     blockTexts << b.text();
                 CHECK(blockTexts == QStringList{"1. first", "2. third"});
-            }
-        }
-    }
-}
-
-SCENARIO("A numbered list's hanging-indent buffer is sized per-list, to its own widest marker", "[text_formatting]")
-{
-    // Feature request: the buffer used to be a single value shared by the
-    // WHOLE document (Qt's own indentWidth, sized to fit a two-digit
-    // marker no matter what), so a document with any double-digit list
-    // anywhere gave every single-digit list the same wide buffer too, and
-    // it didn't persist across save/reload at all. Numbered markers are
-    // literal text now (see TextFormatting.h), so the buffer is just a
-    // per-block hanging indent (leftMargin/textIndent) sized from that
-    // list's own actual widest marker — nothing document-wide involved.
-    GIVEN("a document with only single-digit numbered items")
-    {
-        QTextDocument doc;
-        QTextCursor cursor(&doc);
-        TextFormatting::toggleNumberedList(cursor, 1);
-        cursor.insertBlock();
-        TextFormatting::toggleNumberedList(cursor);
-
-        THEN("the reserved buffer is sized for a single-digit marker, not two")
-        {
-            const QTextBlockFormat format = doc.begin().blockFormat();
-            const QFontMetricsF metrics(doc.begin().charFormat().font());
-            const qreal oneDigitWidth = metrics.horizontalAdvance(QStringLiteral("2. "));
-            const qreal twoDigitWidth = metrics.horizontalAdvance(QStringLiteral("12. "));
-            CHECK(format.leftMargin() < twoDigitWidth);
-            CHECK(format.leftMargin() >= oneDigitWidth - 1.0); // small float slack
-        }
-    }
-
-    GIVEN("a document with a double-digit numbered item")
-    {
-        QTextDocument doc;
-        QTextCursor cursor(&doc);
-        TextFormatting::toggleNumberedList(cursor, 11);
-
-        THEN("the reserved buffer grows to fit the two-digit marker")
-        {
-            const QTextBlockFormat format = doc.begin().blockFormat();
-            const QFontMetricsF metrics(doc.begin().charFormat().font());
-            const qreal oneDigitWidth = metrics.horizontalAdvance(QStringLiteral("2. "));
-            CHECK(format.leftMargin() > oneDigitWidth);
-        }
-    }
-
-    GIVEN("two SEPARATE single-digit lists, elsewhere in the same document a double-digit list also exists")
-    {
-        QTextDocument doc;
-        QTextCursor cursor(&doc);
-        cursor.insertText("first list:");
-        cursor.insertBlock();
-        TextFormatting::toggleNumberedList(cursor, 1);
-        cursor.insertBlock();
-        cursor.insertText("between the two lists");
-        cursor.insertBlock();
-        TextFormatting::toggleNumberedList(cursor, 11); // starts double-digit immediately
-
-        THEN("the single-digit list's own buffer is unaffected by the unrelated double-digit list")
-        {
-            const QTextBlockFormat firstListFormat = doc.findBlockByNumber(1).blockFormat();
-            const QTextBlockFormat secondListFormat = doc.findBlockByNumber(3).blockFormat();
-            CHECK(firstListFormat.leftMargin() < secondListFormat.leftMargin());
-        }
-    }
-
-    // Bugfix: growing a list from 9 to 10 items widens every item's own
-    // marker-width buffer ("9. " -> "10. "), continueHandRolledList calls
-    // renumberRun on every item as it's added — including item 9, every
-    // time a later item joins the run. Regression coverage for item 9
-    // specifically getting left behind at the old, narrower buffer.
-    GIVEN("a numbered list grown one item at a time up to 10 items")
-    {
-        QTextDocument doc;
-        QTextCursor cursor(&doc);
-        TextFormatting::toggleNumberedList(cursor, 1);
-        cursor.insertText("item 1");
-        for (int i = 2; i <= 10; ++i) {
-            TextFormatting::continueHandRolledList(cursor);
-            cursor.insertText(QStringLiteral("item %1").arg(i));
-        }
-
-        THEN("every item, including item 9, ends up with the same widened leftMargin as item 10")
-        {
-            const QTextBlockFormat item9Format = doc.findBlockByNumber(8).blockFormat();
-            const QTextBlockFormat item10Format = doc.findBlockByNumber(9).blockFormat();
-            CHECK(doc.findBlockByNumber(8).text() == "9. item 9");
-            CHECK(doc.findBlockByNumber(9).text() == "10. item 10");
-            CHECK(item9Format.leftMargin() == item10Format.leftMargin());
-        }
-    }
-}
-
-SCENARIO("A numbered list reserves the same space for every item's marker, regardless of its own digit count", "[text_formatting]")
-{
-    // Bugfix: the hanging-indent leftMargin (previous scenario) is shared
-    // across the whole run, sized to the widest marker ("10. ") — that
-    // alone is enough to line up every WRAPPED continuation line and every
-    // OTHER item's own first line, but item 9's own marker is still just
-    // "9. " (one character narrower than "10. "). Since a block's first line
-    // renders at leftMargin+textIndent while every wrapped line renders at
-    // leftMargin alone, sharing the same textIndent as the rest of the run
-    // put item 9's own first-line text one marker's-worth of width further
-    // left than everything else — reported live, described as "the whole
-    // line should be preindented, leaving some space to the left of the 9".
-    // Sizing each block's own textIndent to ITS OWN marker's actual width
-    // (not the run's shared one) reserves exactly as much blank space to
-    // the left of a narrower marker as the wider one already occupies, so
-    // the real text after the marker — first line or wrapped — always
-    // starts at the same spot.
-    GIVEN("a ten-item numbered list")
-    {
-        QTextDocument doc;
-        QTextCursor cursor(&doc);
-        TextFormatting::toggleNumberedList(cursor, 1);
-        cursor.insertText("item 1");
-        for (int i = 2; i <= 10; ++i) {
-            TextFormatting::continueHandRolledList(cursor);
-            cursor.insertText(QStringLiteral("item %1").arg(i));
-        }
-
-        THEN("marker text itself is untouched — no literal padding characters")
-        {
-            CHECK(doc.findBlockByNumber(0).text() == "1. item 1");
-            CHECK(doc.findBlockByNumber(8).text() == "9. item 9");
-            CHECK(doc.findBlockByNumber(9).text() == "10. item 10");
-        }
-
-        THEN("every item shares the same leftMargin, but item 9 gets a narrower (less negative) textIndent than item 10")
-        {
-            const QTextBlockFormat item1Format = doc.findBlockByNumber(0).blockFormat();
-            const QTextBlockFormat item9Format = doc.findBlockByNumber(8).blockFormat();
-            const QTextBlockFormat item10Format = doc.findBlockByNumber(9).blockFormat();
-
-            CHECK(item1Format.leftMargin() == item9Format.leftMargin());
-            CHECK(item9Format.leftMargin() == item10Format.leftMargin());
-            // item 10's own marker IS the run's widest, so its first line
-            // still sits flush left, same as before this fix.
-            CHECK(item10Format.leftMargin() == -item10Format.textIndent());
-            // item 9's marker is one character narrower — its first line
-            // is pulled left by less than the full leftMargin, leaving a
-            // sliver of blank space to its own left that item 10 doesn't
-            // have.
-            CHECK(-item9Format.textIndent() < item9Format.leftMargin());
-        }
-
-        THEN("every item's actual text (after its own marker) starts at the same pixel position")
-        {
-            // The marker itself starts at leftMargin+textIndent — that's
-            // where a narrower item's marker is deliberately pulled right
-            // to leave blank space to ITS left (previous THEN). What must
-            // line up across every item (and match the leftMargin every
-            // wrapped continuation line hangs at) is where the real TEXT
-            // right after the marker begins: marker-start + the marker's
-            // own on-screen width.
-            const QFontMetricsF metrics(doc.begin().charFormat().font());
-            qreal contentStartX = -1;
-            for (QTextBlock b = doc.begin(); b.isValid(); b = b.next()) {
-                const QTextBlockFormat format = b.blockFormat();
-                const QRegularExpressionMatch match =
-                    QRegularExpression(QStringLiteral("^\\d+\\. ")).match(b.text());
-                REQUIRE(match.hasMatch());
-                const qreal ownMarkerWidth = metrics.horizontalAdvance(match.captured(0));
-                const qreal markerStart = format.leftMargin() + format.textIndent();
-                const qreal thisContentStart = markerStart + ownMarkerWidth;
-                if (contentStartX < 0)
-                    contentStartX = thisContentStart;
-                else
-                    CHECK(thisContentStart == Catch::Approx(contentStartX));
-            }
-        }
-    }
-
-    GIVEN("a single-item list starting above 1 (e.g. \"2. \" shorthand) — nothing to reconcile")
-    {
-        QTextDocument doc;
-        QTextCursor cursor(&doc);
-        TextFormatting::toggleNumberedList(cursor, 2);
-        cursor.insertText("only item");
-
-        THEN("its own marker is the run's only (hence widest) one, so it sits flush left as usual")
-        {
-            const QTextBlockFormat format = doc.begin().blockFormat();
-            CHECK(doc.begin().text() == "2. only item");
-            CHECK(-format.textIndent() == format.leftMargin());
-        }
-    }
-}
-
-SCENARIO("A block that stops being a valid numbered/checkbox item loses its leftover hanging indent", "[text_formatting]")
-{
-    // Bugfix, reported live: clicking at the very start of a numbered item
-    // (right before its "N. " marker) and typing ordinary prose there pushes
-    // the marker away from position 0, so it no longer matches
-    // numberedMarkerPattern's own "^" requirement — handRolledKind() then
-    // correctly reports the block as a plain paragraph (isNumberedList false)
-    // — but nothing had ever cleared the block's own leftMargin/textIndent,
-    // set back when it WAS a genuine list item. That stale hanging indent
-    // survived, silently indenting every WRAPPED continuation line of what
-    // now reads as one ordinary (if oddly reformatted) paragraph — the first
-    // line looked fine, since textIndent cancels leftMargin there, which is
-    // exactly why the bug went unnoticed until the paragraph was long enough
-    // to wrap. maintainHandRolledListNumbering (called reactively after
-    // every edit, from DocumentHandler::maintainListNumbering) now cleans
-    // this up as soon as it sees a block whose tag says it should be a list
-    // item but whose marker text says otherwise.
-    GIVEN("a numbered item, then plain prose typed directly before its own marker")
-    {
-        QTextDocument doc;
-        QTextCursor cursor(&doc);
-        TextFormatting::toggleNumberedList(cursor, 2);
-        cursor.insertText("lksjdflksdjf");
-
-        QTextCursor typeCursor(&doc);
-        typeCursor.setPosition(doc.begin().position());
-        typeCursor.insertText("some regular text before the marker ");
-
-        WHEN("maintainHandRolledListNumbering runs (as it does after every keystroke)")
-        {
-            TextFormatting::maintainHandRolledListNumbering(QTextCursor(doc.begin()));
-
-            THEN("the block is a plain paragraph with no leftover margin/indent")
-            {
-                const QTextBlockFormat format = doc.begin().blockFormat();
-                CHECK_FALSE(TextFormatting::isNumberedList(QTextCursor(doc.begin())));
-                CHECK(format.leftMargin() == 0);
-                CHECK(format.textIndent() == 0);
-            }
-        }
-    }
-}
-
-SCENARIO("A numbered/checkbox block that loses its tag but keeps its marker text heals from a single nearby edit", "[text_formatting]")
-{
-    // Bugfix, reported live: occasionally a block in the middle of an
-    // otherwise-intact numbered list loses its HandRolledKindProperty tag
-    // outright (its marker TEXT is untouched — this is the mirror image of
-    // the previous scenario, where the text broke but the tag survived) —
-    // e.g. through Qt's own multi-block paste/merge machinery synthesizing a
-    // fresh block format that doesn't carry custom properties over. Before
-    // this fix, the only way to bring such a block back was to individually
-    // re-edit ITS OWN marker (e.g. delete a digit and retype it, which
-    // re-triggers the "N. " shorthand auto-conversion) — tedious one line at
-    // a time for a whole run of lost items. renumberRun (already re-run
-    // reactively after every edit — see DocumentHandler::maintainListNumbering)
-    // now heals any adjacent block that still LOOKS like a marker, so a
-    // single edit anywhere touching an intact part of the run cascades to
-    // every lost item next to it, including ones on the far side of a lost
-    // item from where the edit actually happened.
-    GIVEN("a 3-item numbered list where the MIDDLE item has silently lost its tag")
-    {
-        QTextDocument doc;
-        QTextCursor cursor(&doc);
-        TextFormatting::toggleNumberedList(cursor, 1);
-        cursor.insertText("item one");
-        TextFormatting::continueHandRolledList(cursor);
-        cursor.insertText("item two");
-        TextFormatting::continueHandRolledList(cursor);
-        cursor.insertText("item three");
-
-        // Simulate the tag getting silently dropped from item two (its
-        // marker TEXT is untouched) — not reachable through any of this
-        // file's own public functions, so reproduced directly the way an
-        // external Qt mechanism (e.g. a paste that synthesizes a fresh block
-        // format) would leave it.
-        const QTextBlock lostBlock = doc.findBlockByNumber(1);
-        REQUIRE(lostBlock.text() == "2. item two");
-        QTextBlockFormat strippedFormat = lostBlock.blockFormat();
-        strippedFormat.setProperty(QTextFormat::UserProperty + 1, static_cast<int>(0)); // HandRolledKindProperty -> None
-        QTextCursor(lostBlock).setBlockFormat(strippedFormat);
-        REQUIRE_FALSE(TextFormatting::isNumberedList(QTextCursor(lostBlock)));
-
-        WHEN("maintainHandRolledListNumbering runs from an edit on item ONE (not adjacent to the lost item)")
-        {
-            TextFormatting::maintainHandRolledListNumbering(QTextCursor(doc.findBlockByNumber(0)));
-
-            THEN("item two is healed back to a real numbered item, in the right place in the sequence")
-            {
-                CHECK(TextFormatting::isNumberedList(QTextCursor(doc.findBlockByNumber(1))));
-                CHECK(doc.findBlockByNumber(0).text() == "1. item one");
-                CHECK(doc.findBlockByNumber(1).text() == "2. item two");
-                CHECK(doc.findBlockByNumber(2).text() == "3. item three");
-            }
-
-            THEN("item three (already intact, on the far side of the healed item) keeps its own correct number")
-            {
-                CHECK(doc.findBlockByNumber(2).text() == "3. item three");
-            }
-
-            THEN("all three items share the same hanging-indent buffer")
-            {
-                const QTextBlockFormat item1 = doc.findBlockByNumber(0).blockFormat();
-                const QTextBlockFormat item2 = doc.findBlockByNumber(1).blockFormat();
-                const QTextBlockFormat item3 = doc.findBlockByNumber(2).blockFormat();
-                CHECK(item1.leftMargin() == item2.leftMargin());
-                CHECK(item2.leftMargin() == item3.leftMargin());
             }
         }
     }
@@ -1107,48 +655,56 @@ SCENARIO("Querying whether a bullet/numbered list is active at the cursor", "[te
 
 SCENARIO("Toggling a checkbox list on the current block", "[text_formatting]")
 {
-    GIVEN("a document with a single paragraph")
+    GIVEN("a plain line")
     {
         QTextDocument doc;
         doc.setPlainText("Buy milk");
 
-        WHEN("checkbox list is toggled on")
+        WHEN("a checkbox list is toggled on")
         {
-            QTextCursor cursor(&doc);
-            TextFormatting::toggleCheckboxList(cursor);
+            TextFormatting::toggleCheckboxList(selectAll(doc));
 
-            THEN("the block's own text carries a literal, real-checkbox-glyph \"☐ \" marker")
+            THEN("the line gains a literal, unchecked GFM checkbox marker")
             {
-                CHECK(doc.begin().text() == QStringLiteral("☐ Buy milk"));
-                CHECK(TextFormatting::isCheckboxList(cursor));
-                CHECK_FALSE(TextFormatting::isCheckboxChecked(cursor));
+                // Literal "- [ ] " text, not a ☐ glyph: what's in the buffer is
+                // exactly what gets saved. The pre-rewrite editor stored ☐ and
+                // translated it to GFM only on save.
+                CHECK(doc.begin().text() == QStringLiteral("- [ ] Buy milk"));
+            }
+
+            THEN("the cursor reports it as an unchecked checkbox item")
+            {
+                QTextCursor at(&doc);
+                at.setPosition(8);
+                CHECK(TextFormatting::isCheckboxList(at));
+                CHECK_FALSE(TextFormatting::isCheckboxChecked(at));
             }
         }
 
-        WHEN("checkbox list is toggled on, then off again")
+        WHEN("it is toggled on and then off again")
         {
-            QTextCursor cursor(&doc);
-            TextFormatting::toggleCheckboxList(cursor);
-            TextFormatting::toggleCheckboxList(cursor);
+            TextFormatting::toggleCheckboxList(selectAll(doc));
+            TextFormatting::toggleCheckboxList(selectAll(doc));
 
-            THEN("it is a plain paragraph again, marker text and all")
+            THEN("the original line is restored exactly")
             {
-                CHECK(doc.begin().text() == "Buy milk");
-                CHECK_FALSE(TextFormatting::isCheckboxList(cursor));
+                CHECK(doc.begin().text() == QStringLiteral("Buy milk"));
             }
         }
+    }
 
-        WHEN("numbered list is toggled on while a checkbox list is already active")
+    GIVEN("an existing bullet item")
+    {
+        QTextDocument doc;
+        doc.setPlainText("- Buy milk");
+
+        WHEN("a checkbox list is toggled on")
         {
-            QTextCursor cursor(&doc);
-            TextFormatting::toggleCheckboxList(cursor);
-            TextFormatting::toggleNumberedList(cursor);
+            TextFormatting::toggleCheckboxList(selectAll(doc));
 
-            THEN("the same block converts in place to numbered, not a checkbox")
+            THEN("its bullet marker is replaced, not stacked on top of")
             {
-                CHECK(doc.begin().text() == "1. Buy milk");
-                CHECK(TextFormatting::isNumberedList(cursor));
-                CHECK_FALSE(TextFormatting::isCheckboxList(cursor));
+                CHECK(doc.begin().text() == QStringLiteral("- [ ] Buy milk"));
             }
         }
     }
@@ -1159,161 +715,206 @@ SCENARIO("Toggling a checkbox item's checked state", "[text_formatting]")
     GIVEN("an unchecked checkbox item")
     {
         QTextDocument doc;
+        doc.setPlainText("- [ ] Buy milk");
         QTextCursor cursor(&doc);
-        TextFormatting::toggleCheckboxList(cursor);
-        cursor.insertText("Buy milk");
+        cursor.setPosition(8);
 
         WHEN("its checked state is toggled")
         {
-            const bool toggled = TextFormatting::toggleCheckboxChecked(cursor);
+            const bool handled = TextFormatting::toggleCheckboxChecked(cursor);
 
-            THEN("it flips to checked, marker text and all")
+            THEN("only the marker changes — the item's own text is untouched")
             {
-                CHECK(toggled);
-                CHECK(doc.begin().text() == QStringLiteral("☑ Buy milk"));
-                CHECK(TextFormatting::isCheckboxChecked(cursor));
+                CHECK(handled);
+                CHECK(doc.begin().text() == QStringLiteral("- [x] Buy milk"));
             }
 
-            WHEN("it's toggled again")
+            THEN("it now reports as checked")
             {
-                TextFormatting::toggleCheckboxChecked(cursor);
+                CHECK(TextFormatting::isCheckboxChecked(cursor));
+            }
+        }
 
-                THEN("it flips back to unchecked")
-                {
-                    CHECK(doc.begin().text() == QStringLiteral("☐ Buy milk"));
-                    CHECK_FALSE(TextFormatting::isCheckboxChecked(cursor));
-                }
+        WHEN("it is toggled twice")
+        {
+            TextFormatting::toggleCheckboxChecked(cursor);
+            TextFormatting::toggleCheckboxChecked(cursor);
+
+            THEN("it is back to exactly its original text")
+            {
+                CHECK(doc.begin().text() == QStringLiteral("- [ ] Buy milk"));
             }
         }
     }
 
-    GIVEN("a plain paragraph, not a checkbox item at all")
+    GIVEN("a line that isn't a checkbox item at all")
     {
         QTextDocument doc;
-        doc.setPlainText("just some text");
+        doc.setPlainText("just text");
+        QTextCursor cursor(&doc);
+        cursor.setPosition(2);
 
         WHEN("a checked-state toggle is attempted")
         {
-            QTextCursor cursor(&doc);
-            const bool toggled = TextFormatting::toggleCheckboxChecked(cursor);
+            const bool handled = TextFormatting::toggleCheckboxChecked(cursor);
 
-            THEN("nothing happens — there's no checkbox to toggle")
+            THEN("it declines and leaves the line alone")
             {
-                CHECK_FALSE(toggled);
-                CHECK(doc.begin().text() == "just some text");
+                CHECK_FALSE(handled);
+                CHECK(doc.begin().text() == QStringLiteral("just text"));
             }
         }
     }
 }
 
-SCENARIO("Click-to-toggle hit-tests against the checkbox glyph itself", "[text_formatting]")
+SCENARIO("Click-to-toggle hit-tests against the checkbox marker itself", "[text_formatting]")
 {
-    GIVEN("a checkbox item, \"☐ Buy milk\"")
+    GIVEN("an unchecked checkbox item, '- [ ] Buy milk'")
     {
         QTextDocument doc;
-        QTextCursor cursor(&doc);
-        TextFormatting::toggleCheckboxList(cursor);
-        cursor.insertText("Buy milk");
+        doc.setPlainText("- [ ] Buy milk");
 
-        WHEN("the position is within the glyph itself (anywhere in \"☐ \")")
+        WHEN("the click lands on the marker's brackets")
         {
-            QTextCursor hitCursor(&doc);
-            hitCursor.setPosition(1); // inside "☐ ", between the glyph and the space
+            QTextCursor cursor(&doc);
+            cursor.setPosition(3); // inside "[ ]"
 
-            THEN("it toggles the checkbox")
+            THEN("it toggles")
             {
-                CHECK(TextFormatting::tryToggleCheckboxAtPosition(hitCursor));
-                CHECK(doc.begin().text() == QStringLiteral("☑ Buy milk"));
+                CHECK(TextFormatting::tryToggleCheckboxAtPosition(cursor));
+                CHECK(doc.begin().text() == QStringLiteral("- [x] Buy milk"));
             }
         }
 
-        WHEN("the position is past the glyph, in the item's real text")
+        WHEN("the click lands in the item's label text instead")
         {
-            QTextCursor missCursor(&doc);
-            missCursor.setPosition(doc.begin().position() + 4); // inside "Buy milk"
+            QTextCursor cursor(&doc);
+            cursor.setPosition(9); // inside "Buy milk"
 
-            THEN("it does not toggle — a click there should just place the cursor")
+            THEN("it does NOT toggle — a click there should just place the caret")
             {
-                CHECK_FALSE(TextFormatting::tryToggleCheckboxAtPosition(missCursor));
-                CHECK(doc.begin().text() == QStringLiteral("☐ Buy milk"));
+                CHECK_FALSE(TextFormatting::tryToggleCheckboxAtPosition(cursor));
+                CHECK(doc.begin().text() == QStringLiteral("- [ ] Buy milk"));
+            }
+        }
+    }
+
+    GIVEN("a line that isn't a checkbox item")
+    {
+        QTextDocument doc;
+        doc.setPlainText("plain line");
+
+        WHEN("a click-toggle is attempted on it")
+        {
+            QTextCursor cursor(&doc);
+            cursor.setPosition(1);
+
+            THEN("nothing happens")
+            {
+                CHECK_FALSE(TextFormatting::tryToggleCheckboxAtPosition(cursor));
+                CHECK(doc.begin().text() == QStringLiteral("plain line"));
             }
         }
     }
 }
 
-SCENARIO("checkboxMarkerRect locates the checkbox glyph for a hover highlight", "[text_formatting]")
+SCENARIO("checkboxMarkerRect locates the checkbox marker for a hover highlight", "[text_formatting]")
 {
-    GIVEN("a checkbox item, \"☐ Buy milk\"")
+    GIVEN("a checkbox item")
     {
         QTextDocument doc;
-        QTextCursor cursor(&doc);
-        TextFormatting::toggleCheckboxList(cursor);
-        cursor.insertText("Buy milk");
-        // Forces Qt to actually lay out the block's QTextLine(s) — a bare
-        // QTextDocument with no view/width set never runs its line-breaking
-        // pass otherwise, leaving block.layout()->lineCount() at 0.
-        doc.setTextWidth(300);
+        doc.setPlainText("- [ ] Buy milk");
 
-        WHEN("queried at a position within the glyph itself")
-        {
-            QTextCursor hitCursor(&doc);
-            hitCursor.setPosition(1);
-
-            THEN("it returns a real, non-empty rect")
-            {
-                const QRectF rect = TextFormatting::checkboxMarkerRect(hitCursor);
-                CHECK(rect.width() > 0);
-                CHECK(rect.height() > 0);
-            }
-        }
-
-        WHEN("queried past the glyph, in the item's real text")
-        {
-            QTextCursor missCursor(&doc);
-            missCursor.setPosition(doc.begin().position() + 4);
-
-            THEN("it returns an empty rect — nothing to highlight there")
-            {
-                CHECK(TextFormatting::checkboxMarkerRect(missCursor).isEmpty());
-            }
-        }
-    }
-
-    GIVEN("a plain paragraph, not a checkbox item at all")
-    {
-        QTextDocument doc;
-        doc.setPlainText("just some text");
-
-        WHEN("queried anywhere in it")
+        WHEN("the marker's rect is queried from a position on the marker")
         {
             QTextCursor cursor(&doc);
-            cursor.setPosition(2);
+            cursor.setPosition(3);
+            const QRectF rect = TextFormatting::checkboxMarkerRect(cursor);
 
-            THEN("it returns an empty rect")
+            THEN("a real, non-empty rect is returned at the line's left edge")
+            {
+                CHECK_FALSE(rect.isEmpty());
+                CHECK(rect.width() > 0.0);
+                CHECK(rect.height() > 0.0);
+                CHECK(rect.left() >= 0.0);
+            }
+        }
+
+        WHEN("the rect is queried from a position out in the label text")
+        {
+            QTextCursor cursor(&doc);
+            cursor.setPosition(10);
+
+            THEN("no rect is returned — there is no marker to highlight there")
             {
                 CHECK(TextFormatting::checkboxMarkerRect(cursor).isEmpty());
             }
+        }
+    }
+
+    GIVEN("a line that isn't a checkbox item")
+    {
+        QTextDocument doc;
+        doc.setPlainText("plain line");
+
+        THEN("no rect is returned")
+        {
+            QTextCursor cursor(&doc);
+            cursor.setPosition(1);
+            CHECK(TextFormatting::checkboxMarkerRect(cursor).isEmpty());
         }
     }
 }
 
 SCENARIO("Inserting a starter table at the cursor", "[text_formatting]")
 {
-    GIVEN("an empty document")
+    GIVEN("a note with a paragraph in it")
     {
         QTextDocument doc;
+        doc.setPlainText("intro");
+        QTextCursor cursor(&doc);
+        cursor.movePosition(QTextCursor::End);
 
         WHEN("a table is inserted")
         {
-            QTextCursor cursor(&doc);
             TextFormatting::insertTable(cursor);
 
-            THEN("the markdown serialization is a 2x2 GFM table with a header row")
+            THEN("a 2-column pipe table appears, with placeholder header text to type over")
             {
-                const QString md = doc.toMarkdown();
-                CHECK(md.contains("Header 1"));
-                CHECK(md.contains("Header 2"));
-                CHECK(md.contains("---"));
+                CHECK(plainLines(doc) == QStringList{
+                    QStringLiteral("intro"),
+                    QStringLiteral("| Header 1 | Header 2 |"),
+                    QStringLiteral("| --- | --- |"),
+                    QStringLiteral("|  |  |"),
+                });
+            }
+
+            THEN("the cursor reports as being inside a table")
+            {
+                CHECK(TextFormatting::isInTable(cursorAtLine(doc, 1, 2)));
+            }
+        }
+    }
+
+    GIVEN("a cursor already sitting on a blank line")
+    {
+        QTextDocument doc;
+        doc.setPlainText("intro\n");
+        QTextCursor cursor(&doc);
+        cursor.movePosition(QTextCursor::End);
+
+        WHEN("a table is inserted")
+        {
+            TextFormatting::insertTable(cursor);
+
+            THEN("that blank line is reused rather than left above the table as a stray paragraph")
+            {
+                CHECK(plainLines(doc) == QStringList{
+                    QStringLiteral("intro"),
+                    QStringLiteral("| Header 1 | Header 2 |"),
+                    QStringLiteral("| --- | --- |"),
+                    QStringLiteral("|  |  |"),
+                });
             }
         }
     }
@@ -1321,44 +922,54 @@ SCENARIO("Inserting a starter table at the cursor", "[text_formatting]")
 
 SCENARIO("Inserting a table row", "[text_formatting]")
 {
-    GIVEN("a 2x2 table with the cursor in its first cell")
+    GIVEN("a table with one body row")
     {
-        // Built via QTextCursor::insertTable() directly (not
-        // TextFormatting::insertTable(), which takes its cursor by value —
-        // the mutation that lands it inside the new table happens on that
-        // internal copy, not on the caller's own `cursor`, so a test that
-        // needs `cursor` to genuinely be inside the table afterward has to
-        // put it there itself).
         QTextDocument doc;
-        QTextCursor cursor(&doc);
-        QTextTableFormat format;
-        QTextTable *table = cursor.insertTable(2, 2, format);
-        REQUIRE(table != nullptr);
+        doc.setPlainText("| h1 | h2 |\n| --- | --- |\n| a | b |");
 
-        WHEN("a row is inserted")
+        WHEN("a row is inserted with the caret on the body row")
         {
-            TextFormatting::insertTableRow(cursor);
+            TextFormatting::insertTableRow(cursorAtLine(doc, 2, 2));
 
-            THEN("the table gains a third row")
+            THEN("an empty row appears below it, with the table's own column count")
             {
-                CHECK(table->rows() == 3);
+                CHECK(plainLines(doc) == QStringList{
+                    QStringLiteral("| h1 | h2 |"),
+                    QStringLiteral("| --- | --- |"),
+                    QStringLiteral("| a | b |"),
+                    QStringLiteral("|  |  |"),
+                });
+            }
+        }
+
+        WHEN("a row is inserted with the caret on the header")
+        {
+            TextFormatting::insertTableRow(cursorAtLine(doc, 0, 2));
+
+            THEN("the new row lands below the delimiter, never between it and the header")
+            {
+                CHECK(plainLines(doc) == QStringList{
+                    QStringLiteral("| h1 | h2 |"),
+                    QStringLiteral("| --- | --- |"),
+                    QStringLiteral("|  |  |"),
+                    QStringLiteral("| a | b |"),
+                });
             }
         }
     }
 
-    GIVEN("a document with no table at all")
+    GIVEN("a cursor outside any table")
     {
         QTextDocument doc;
-        doc.setPlainText("just some text");
+        doc.setPlainText("just prose");
 
-        WHEN("a row insertion is attempted at the cursor")
+        WHEN("a table row insert is attempted")
         {
-            QTextCursor cursor(&doc);
-            TextFormatting::insertTableRow(cursor);
+            TextFormatting::insertTableRow(cursorAtLine(doc, 0, 2));
 
-            THEN("nothing changes — there's no table to add a row to")
+            THEN("nothing happens — the operation silently no-ops off-table")
             {
-                CHECK(doc.toPlainText() == "just some text");
+                CHECK(plainLines(doc) == QStringList{QStringLiteral("just prose")});
             }
         }
     }
@@ -1366,32 +977,54 @@ SCENARIO("Inserting a table row", "[text_formatting]")
 
 SCENARIO("Deleting a table row", "[text_formatting]")
 {
-    GIVEN("a 2x2 table with the cursor in its first cell")
+    GIVEN("a table with two body rows")
     {
         QTextDocument doc;
-        QTextCursor cursor(&doc);
-        QTextTableFormat format;
-        QTextTable *table = cursor.insertTable(2, 2, format);
-        REQUIRE(table != nullptr);
+        doc.setPlainText("| h1 | h2 |\n| --- | --- |\n| a | b |\n| c | d |");
 
-        WHEN("the row under the cursor is deleted")
+        WHEN("a body row is deleted")
         {
-            TextFormatting::deleteTableRow(cursor);
+            TextFormatting::deleteTableRow(cursorAtLine(doc, 2, 2));
 
-            THEN("the table drops to a single row and the table itself survives")
+            THEN("just that row goes")
             {
-                CHECK(table->rows() == 1);
+                CHECK(plainLines(doc) == QStringList{
+                    QStringLiteral("| h1 | h2 |"),
+                    QStringLiteral("| --- | --- |"),
+                    QStringLiteral("| c | d |"),
+                });
             }
         }
 
-        WHEN("the table's only remaining row is deleted")
+        WHEN("the header row is deleted")
         {
-            TextFormatting::deleteTableRow(cursor);
-            TextFormatting::deleteTableRow(cursor);
+            TextFormatting::deleteTableRow(cursorAtLine(doc, 0, 2));
 
-            THEN("the whole table is removed rather than left with zero rows")
+            THEN("the first body row is promoted into the header, keeping the table valid")
             {
-                CHECK(cursor.currentTable() == nullptr);
+                // The header line can't simply be removed: that would leave the
+                // delimiter as line 1 and the run would stop parsing as a table.
+                CHECK(plainLines(doc) == QStringList{
+                    QStringLiteral("| a | b |"),
+                    QStringLiteral("| --- | --- |"),
+                    QStringLiteral("| c | d |"),
+                });
+            }
+        }
+    }
+
+    GIVEN("a table down to its last row (header only)")
+    {
+        QTextDocument doc;
+        doc.setPlainText("intro\n| h1 | h2 |\n| --- | --- |");
+
+        WHEN("that last row is deleted")
+        {
+            TextFormatting::deleteTableRow(cursorAtLine(doc, 1, 2));
+
+            THEN("the whole table goes — a table can't be left with zero rows")
+            {
+                CHECK(plainLines(doc) == QStringList{QStringLiteral("intro")});
             }
         }
     }
@@ -1399,21 +1032,22 @@ SCENARIO("Deleting a table row", "[text_formatting]")
 
 SCENARIO("Inserting a table column", "[text_formatting]")
 {
-    GIVEN("a 2x2 table with the cursor in its first cell")
+    GIVEN("a 2-column table")
     {
         QTextDocument doc;
-        QTextCursor cursor(&doc);
-        QTextTableFormat format;
-        QTextTable *table = cursor.insertTable(2, 2, format);
-        REQUIRE(table != nullptr);
+        doc.setPlainText("| h1 | h2 |\n| --- | --- |\n| a | b |");
 
-        WHEN("a column is inserted")
+        WHEN("a column is inserted with the caret in the first column")
         {
-            TextFormatting::insertTableColumn(cursor);
+            TextFormatting::insertTableColumn(cursorAtLine(doc, 0, 2));
 
-            THEN("the table gains a third column")
+            THEN("every line of the table gains a cell, and the delimiter gains a '---'")
             {
-                CHECK(table->columns() == 3);
+                CHECK(plainLines(doc) == QStringList{
+                    QStringLiteral("| h1 |  | h2 |"),
+                    QStringLiteral("| --- | --- | --- |"),
+                    QStringLiteral("| a |  | b |"),
+                });
             }
         }
     }
@@ -1421,32 +1055,38 @@ SCENARIO("Inserting a table column", "[text_formatting]")
 
 SCENARIO("Deleting a table column", "[text_formatting]")
 {
-    GIVEN("a 2x2 table with the cursor in its first cell")
+    GIVEN("a 3-column table")
     {
         QTextDocument doc;
-        QTextCursor cursor(&doc);
-        QTextTableFormat format;
-        QTextTable *table = cursor.insertTable(2, 2, format);
-        REQUIRE(table != nullptr);
+        doc.setPlainText("| h1 | h2 | h3 |\n| --- | --- | --- |\n| a | b | c |");
 
-        WHEN("the column under the cursor is deleted")
+        WHEN("the middle column is deleted")
         {
-            TextFormatting::deleteTableColumn(cursor);
+            TextFormatting::deleteTableColumn(cursorAtLine(doc, 0, 7));
 
-            THEN("the table drops to a single column and the table itself survives")
+            THEN("that cell goes from every line, delimiter included")
             {
-                CHECK(table->columns() == 1);
+                CHECK(plainLines(doc) == QStringList{
+                    QStringLiteral("| h1 | h3 |"),
+                    QStringLiteral("| --- | --- |"),
+                    QStringLiteral("| a | c |"),
+                });
             }
         }
+    }
 
-        WHEN("the table's only remaining column is deleted")
+    GIVEN("a table down to its last column")
+    {
+        QTextDocument doc;
+        doc.setPlainText("intro\n| h1 |\n| --- |\n| a |");
+
+        WHEN("that last column is deleted")
         {
-            TextFormatting::deleteTableColumn(cursor);
-            TextFormatting::deleteTableColumn(cursor);
+            TextFormatting::deleteTableColumn(cursorAtLine(doc, 1, 2));
 
-            THEN("the whole table is removed rather than left with zero columns")
+            THEN("the whole table goes — a table can't be left with zero columns")
             {
-                CHECK(cursor.currentTable() == nullptr);
+                CHECK(plainLines(doc) == QStringList{QStringLiteral("intro")});
             }
         }
     }
@@ -1454,50 +1094,37 @@ SCENARIO("Deleting a table column", "[text_formatting]")
 
 SCENARIO("Deleting a whole table", "[text_formatting]")
 {
-    GIVEN("a paragraph, a 2x2 table, and another paragraph")
+    GIVEN("a table between two paragraphs")
     {
         QTextDocument doc;
-        QTextCursor cursor(&doc);
-        cursor.insertText("intro");
-        cursor.insertBlock();
-        QTextTableFormat format;
-        QTextTable *table = cursor.insertTable(2, 2, format);
-        REQUIRE(table != nullptr);
-        cursor.movePosition(QTextCursor::End);
-        cursor.insertBlock();
-        cursor.insertText("outro");
+        doc.setPlainText("intro\n| h1 | h2 |\n| --- | --- |\n| a | b |\noutro");
 
-        WHEN("the table is deleted from a fresh cursor placed inside it")
+        WHEN("the table is deleted")
         {
-            QTextCursor tableCursor(&doc);
-            tableCursor.setPosition(table->firstPosition());
-            REQUIRE(tableCursor.currentTable() == table);
+            TextFormatting::deleteTable(cursorAtLine(doc, 2, 2));
 
-            TextFormatting::deleteTable(tableCursor);
-
-            THEN("the table is gone but the surrounding paragraphs remain")
+            THEN("every one of its lines goes, leaving the surrounding prose joined up")
             {
-                const QString text = doc.toPlainText();
-                CHECK(text.contains("intro"));
-                CHECK(text.contains("outro"));
-                CHECK(!text.contains("Header"));
+                CHECK(plainLines(doc) == QStringList{
+                    QStringLiteral("intro"),
+                    QStringLiteral("outro"),
+                });
             }
         }
     }
 
-    GIVEN("a document with no table at all")
+    GIVEN("a cursor outside any table")
     {
         QTextDocument doc;
-        doc.setPlainText("just some text");
+        doc.setPlainText("just prose");
 
-        WHEN("a table deletion is attempted at the cursor")
+        WHEN("a table delete is attempted")
         {
-            QTextCursor cursor(&doc);
-            TextFormatting::deleteTable(cursor);
+            TextFormatting::deleteTable(cursorAtLine(doc, 0, 2));
 
-            THEN("nothing changes — there's no table to delete")
+            THEN("nothing happens")
             {
-                CHECK(doc.toPlainText() == "just some text");
+                CHECK(plainLines(doc) == QStringList{QStringLiteral("just prose")});
             }
         }
     }
@@ -1505,66 +1132,100 @@ SCENARIO("Deleting a whole table", "[text_formatting]")
 
 SCENARIO("Querying whether the cursor is inside a table", "[text_formatting]")
 {
-    GIVEN("a paragraph, a 2x2 table, and another paragraph")
+    GIVEN("a paragraph, a table, and another paragraph")
     {
         QTextDocument doc;
-        QTextCursor cursor(&doc);
-        cursor.insertText("intro");
-        cursor.insertBlock();
-        QTextTableFormat format;
-        QTextTable *table = cursor.insertTable(2, 2, format);
-        REQUIRE(table != nullptr);
-        cursor.movePosition(QTextCursor::End);
-        cursor.insertBlock();
-        cursor.insertText("outro");
+        doc.setPlainText("intro\n| h1 | h2 |\n| --- | --- |\n| a | b |\noutro");
 
-        WHEN("the cursor sits inside the table")
+        THEN("a cursor on any of the table's own lines reports true")
         {
-            QTextCursor tableCursor(&doc);
-            tableCursor.setPosition(table->firstPosition());
-
-            THEN("isInTable reports true")
-            {
-                CHECK(TextFormatting::isInTable(tableCursor) == true);
-            }
+            CHECK(TextFormatting::isInTable(cursorAtLine(doc, 1, 2)));
+            CHECK(TextFormatting::isInTable(cursorAtLine(doc, 2, 2)));
+            CHECK(TextFormatting::isInTable(cursorAtLine(doc, 3, 2)));
         }
 
-        WHEN("the cursor sits in the paragraph before the table")
+        THEN("a cursor in the prose on either side reports false")
         {
-            QTextCursor beforeCursor(&doc);
-            beforeCursor.setPosition(0);
-
-            THEN("isInTable reports false")
-            {
-                CHECK(TextFormatting::isInTable(beforeCursor) == false);
-            }
+            CHECK_FALSE(TextFormatting::isInTable(cursorAtLine(doc, 0, 2)));
+            CHECK_FALSE(TextFormatting::isInTable(cursorAtLine(doc, 4, 2)));
         }
+    }
 
-        WHEN("the cursor sits in the paragraph after the table")
+    GIVEN("prose that merely contains pipes, with no delimiter row")
+    {
+        QTextDocument doc;
+        doc.setPlainText("| this is not | a table |\n| nor is this | one |");
+
+        THEN("it is not treated as a table")
         {
-            QTextCursor afterCursor(&doc);
-            afterCursor.setPosition(doc.characterCount() - 1);
+            CHECK_FALSE(TextFormatting::isInTable(cursorAtLine(doc, 0, 2)));
+        }
+    }
+}
 
-            THEN("isInTable reports false")
-            {
-                CHECK(TextFormatting::isInTable(afterCursor) == false);
+
+
+
+
+
+
+SCENARIO("A note's markdown round-trips byte-for-byte through the buffer", "[text_formatting]")
+{
+    // The reason this whole rewrite exists. The old path parsed markdown into a
+    // block/list/table object model and regenerated the text on save, which
+    // could not tell one blank line between paragraphs from none — so a note
+    // came back subtly different from what was typed. The buffer now IS the
+    // markdown, and these cases pin that down.
+    GIVEN("content whose exact blank-line counts carry meaning")
+    {
+        const QStringList cases = {
+            QStringLiteral("one\n\ntwo"),
+            QStringLiteral("one\ntwo"),
+            QStringLiteral("one\n\n\n\ntwo"),
+            QStringLiteral("trailing\n"),
+            QStringLiteral("\nleading"),
+            QStringLiteral("# Heading\n\n- a\n- b\n\n| h | h2 |\n| --- | --- |\n| a | b |"),
+            QStringLiteral("**bold** and *italic* and `code`"),
+            QStringLiteral("- [ ] todo\n- [x] done"),
+            QStringLiteral("1. one\n2. two\n3. three"),
+        };
+
+        THEN("each survives a load/save cycle unchanged, character for character")
+        {
+            for (const QString &original : cases) {
+                QTextDocument doc;
+                doc.setPlainText(original);
+
+                QString roundTripped = doc.toRawText();
+                roundTripped.replace(QChar::ParagraphSeparator, QLatin1Char('\n'));
+                roundTripped.replace(QChar::LineSeparator, QLatin1Char('\n'));
+
+                CHECK(roundTripped == original);
             }
         }
     }
 
-    GIVEN("a document with no table at all")
+    GIVEN("content containing a no-break space, as pasted from a web page")
     {
-        QTextDocument doc;
-        doc.setPlainText("just some text");
+        // toPlainText() would quietly rewrite U+00A0 to an ordinary space,
+        // corrupting pasted text on save — which is why DocumentHandler's
+        // toMarkdown() uses toRawText() instead. This pins that choice down.
+        const QString original = QStringLiteral("a b");
 
-        WHEN("isInTable is queried anywhere in it")
+        THEN("the no-break space survives the round-trip rather than being flattened")
         {
-            QTextCursor cursor(&doc);
+            QTextDocument doc;
+            doc.setPlainText(original);
 
-            THEN("it reports false")
-            {
-                CHECK(TextFormatting::isInTable(cursor) == false);
-            }
+            QString roundTripped = doc.toRawText();
+            roundTripped.replace(QChar::ParagraphSeparator, QLatin1Char('\n'));
+            roundTripped.replace(QChar::LineSeparator, QLatin1Char('\n'));
+
+            CHECK(roundTripped == original);
+            CHECK(roundTripped.contains(QChar(0x00A0)));
+            // The old path's behaviour, spelled out so the difference is
+            // unmistakable rather than implied.
+            CHECK(doc.toPlainText() != original);
         }
     }
 }

@@ -575,7 +575,7 @@ Item {
         // editor/docHandler — proves the bar is actually wired to whichever
         // note it's tracking, not just visually following it around.
         function test_clicking_bold_toggles_bold_on_the_tracked_notes_selection() {
-            noteA.docHandler.setMarkdown("bold me\n")
+            noteA.docHandler.setMarkdown("bold me")
             wait(50)
             noteA.editor.select(0, "bold me".length)
 
@@ -742,20 +742,24 @@ Item {
         // active at the tracked note's current selection, not just
         // hover/press feedback.
         function test_bold_button_shows_checked_when_the_selection_is_already_bold() {
-            noteA.docHandler.setMarkdown("bold me\n")
+            noteA.docHandler.setMarkdown("bold me")
             wait(50)
             noteA.editor.select(0, "bold me".length)
-            noteA.docHandler.toggleBold(0, "bold me".length)
+            // Via applyInlineToggle, the same path Ctrl+B and the toolbar
+            // button take — it reselects the toggled text afterward, which
+            // calling docHandler.toggleBold() raw would skip.
+            noteA.applyInlineToggle(r => noteA.docHandler.toggleBold(r.start, r.end))
 
             bar.noteWindow = noteA
             wait(20)
+
 
             compare(bar.boldButton.checked, true,
                     "the Bold button should show checked when the selection is already bold")
         }
 
         function test_bold_button_is_not_checked_for_plain_unformatted_text() {
-            noteA.docHandler.setMarkdown("plain text\n")
+            noteA.docHandler.setMarkdown("plain text")
             wait(50)
             noteA.editor.select(0, "plain text".length)
 
@@ -772,7 +776,7 @@ Item {
         // (persistentSelection keeps them exactly where they were; see
         // runAction()'s own comment).
         function test_bold_button_becomes_checked_immediately_after_clicking_it() {
-            noteA.docHandler.setMarkdown("bold me\n")
+            noteA.docHandler.setMarkdown("bold me")
             wait(50)
             noteA.editor.select(0, "bold me".length)
 
@@ -789,10 +793,10 @@ Item {
         // Each formatting button tracks its own, independent state — proves
         // the whole set is wired up, not just Bold.
         function test_italic_and_strikethrough_buttons_track_their_own_independent_state() {
-            noteA.docHandler.setMarkdown("emphasis\n")
+            noteA.docHandler.setMarkdown("emphasis")
             wait(50)
             noteA.editor.select(0, "emphasis".length)
-            noteA.docHandler.toggleItalic(0, "emphasis".length)
+            noteA.applyInlineToggle(r => noteA.docHandler.toggleItalic(r.start, r.end))
 
             bar.noteWindow = noteA
             wait(20)
@@ -806,7 +810,7 @@ Item {
         // removed right-click context menu (see NoteWindow.qml's
         // mouseDragArea, which used to open one on a plain right-click).
         function test_cut_button_disabled_without_a_selection_enabled_with_one() {
-            noteA.docHandler.setMarkdown("hello world\n")
+            noteA.docHandler.setMarkdown("hello world")
             wait(50)
             noteA.editor.cursorPosition = 0
             noteA.editor.deselect()
@@ -823,7 +827,7 @@ Item {
         }
 
         function test_clicking_cut_removes_the_selected_text_and_copies_it_to_the_clipboard() {
-            noteA.docHandler.setMarkdown("hello world\n")
+            noteA.docHandler.setMarkdown("hello world")
             wait(50)
             noteA.editor.select(0, 5)
 
@@ -843,7 +847,7 @@ Item {
         }
 
         function test_clicking_copy_then_paste_round_trips_the_selection() {
-            noteA.docHandler.setMarkdown("copy me\n")
+            noteA.docHandler.setMarkdown("copy me")
             wait(50)
             noteA.editor.select(0, "copy me".length)
 
@@ -911,7 +915,7 @@ Item {
         // right args and close the popup) — not tap-detection itself, which
         // is NoteWindow's own concern to test.
         function test_clicking_a_spelling_suggestion_replaces_the_misspelled_word() {
-            noteA.docHandler.setMarkdown("I teh best\n")
+            noteA.docHandler.setMarkdown("I teh best")
             wait(50)
 
             // "teh" sits at offset 2..5 in "I teh best" (I=0, space=1,
@@ -951,7 +955,7 @@ Item {
         // positions and the list read as jagged/staggered. They should
         // instead all start flush against the same left edge.
         function test_spelling_suggestion_buttons_are_left_aligned_rather_than_centered() {
-            noteA.docHandler.setMarkdown("I teh best\n")
+            noteA.docHandler.setMarkdown("I teh best")
             wait(50)
 
             noteA.currentMisspelledWord = "teh"
@@ -1030,7 +1034,7 @@ Item {
         // misspelledWordStart-changes-first sequence that actually
         // happens live.
         function test_spelling_suggestions_popup_repositions_when_jumping_directly_between_two_misspelled_words() {
-            noteA.docHandler.setMarkdown("teh gud\n")
+            noteA.docHandler.setMarkdown("teh gud")
             wait(50)
 
             noteA.currentSpellingSuggestions = ["the", "ten"]
@@ -1093,7 +1097,7 @@ Item {
         // FINAL revealed state has every one of the second word's
         // suggestions, not a partial count caught mid-wobble.
         function test_spelling_suggestions_popup_reveals_with_the_full_suggestion_list_after_a_fast_word_to_word_jump() {
-            noteA.docHandler.setMarkdown("teh gud\n")
+            noteA.docHandler.setMarkdown("teh gud")
             wait(50)
 
             noteA.currentSpellingSuggestions = ["a"]
@@ -1140,7 +1144,7 @@ Item {
         // forces a reposition unconditionally whenever the newly-tracked
         // note already has a word flagged, independent of that edge.
         function test_spelling_suggestions_popup_repositions_when_the_tracked_note_itself_switches_while_a_word_is_already_flagged() {
-            noteA.docHandler.setMarkdown("teh\n")
+            noteA.docHandler.setMarkdown("teh")
             wait(50)
             noteA.currentSpellingSuggestions = ["the", "ten"]
             noteA.misspelledWordStart = 0
@@ -1152,7 +1156,7 @@ Item {
             const firstX = bar.spellingSuggestionsPopup.x
             const firstY = bar.spellingSuggestionsPopup.y
 
-            noteB.docHandler.setMarkdown("gud\n")
+            noteB.docHandler.setMarkdown("gud")
             wait(50)
             // Simulates the race: noteB's own word is already flagged (as
             // its own TapHandler would do) BEFORE bar.noteWindow ever
@@ -1352,7 +1356,7 @@ Item {
             // End below resolve to real, in-range document positions
             // instead of positionToRectangle() logging a live "position
             // out of range" warning against an empty document.
-            noteA.docHandler.setMarkdown("I teh best\n")
+            noteA.docHandler.setMarkdown("I teh best")
             wait(50)
 
             noteA.currentMisspelledWord = "teh"

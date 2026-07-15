@@ -13,8 +13,8 @@ qt_add_executable(suopNotes_unit_tests
     test_spell_checker.cpp
     test_spell_check_highlighter.cpp
     test_markdown_highlighter.cpp
+    test_markdown_list.cpp
     test_markdown_table.cpp
-    test_markdown_serialization.cpp
     test_kwin_rule_writer.cpp
     test_position_event_service.cpp
     test_note_appearance.cpp

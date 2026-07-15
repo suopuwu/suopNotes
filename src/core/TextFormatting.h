@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QPair>
 #include <QRectF>
 #include <QTextBlock>
 #include <QTextCursor>
@@ -9,53 +10,62 @@ class QTextDocument;
 QT_END_NAMESPACE
 
 // Pure QTextCursor operations behind the editor's formatting toolbar.
-// Deliberately NOT typed-syntax-driven — Qt's MarkdownText mode doesn't
-// live-convert typed "**"/"#" (confirmed in Spike A), so formatting is only
-// ever reachable via these calls (toolbar buttons/shortcuts), never by
-// typing raw markdown. That is what makes the editor genuinely WYSIWYG.
+//
+// Every function here edits the document's LITERAL MARKDOWN TEXT: bold really
+// is inserting two asterisks, a heading really is a leading "# ", a list item
+// really is a "- " prefix. MarkdownHighlighter paints the result, so the
+// buffer and the saved file are always the same bytes. That is the whole point
+// of the plain-text rewrite — there is no parallel structural model (char
+// formats, QTextList, QTextTable, block properties) left to disagree with the
+// text, which removes an entire class of "looks right, saves wrong" bugs.
+//
+// Marker parsing/rendering is deliberately NOT open-coded here — it lives in
+// MarkdownList/MarkdownTable so this file, MarkdownHighlighter and
+// SpellCheckHighlighter cannot disagree about where a marker ends.
 //
 // Each takes the cursor by value (a cheap handle into the QTextDocument it
 // was constructed from) and mutates the underlying document directly.
 namespace TextFormatting
 {
-void toggleBold(QTextCursor cursor);
-void toggleItalic(QTextCursor cursor);
-void toggleStrikethrough(QTextCursor cursor);
+// Each returns the [start, end) range the toggled content occupies afterwards,
+// so a caller can restore the selection over the same TEXT. Qt does adjust an
+// existing selection across these edits, but asymmetrically — the marker
+// inserted at the selection's END is swallowed into it, while the one at its
+// start just shifts it — so a plain "bold me" selection would come back as
+// "bold me**" without this.
+QPair<int, int> toggleBold(QTextCursor cursor);
+QPair<int, int> toggleItalic(QTextCursor cursor);
+QPair<int, int> toggleStrikethrough(QTextCursor cursor);
+// Each list toggle applies its marker across the selection, or strips it if
+// the selection is already entirely that kind. Bullets are ordinary "- " text
+// like every other marker now — they used to be a real QTextList, whose
+// paint-time markers had no character position and so could never be selected
+// or copied.
 void toggleBulletList(QTextCursor cursor);
-// Unlike toggleBulletList (still QTextList-based), numbered-list markers are
-// literal, selectable text ("1. ", "2. ", ...) tagged with a custom block
-// property rather than a QTextList — Qt's own list markers are paint-time
-// decoration with no character position, so they can never be selected or
-// copied, and QTextDocument::indentWidth() (the only knob Qt exposes for
-// marker spacing) is a single document-wide value, not something that can
-// differ per list. Hand-rolling the marker as real text makes both a
-// non-issue: selection works for free, and the reserved space is just
-// whatever that list's own widest marker actually measures.
 // startNumber only applies when creating a brand-new list (e.g. the "5. "
-// shorthand should start counting at 5, not silently reset to 1); toggling
-// off and back on, or converting an existing bullet list to numbered,
-// renumbers from 1.
+// shorthand should start counting at 5, not silently reset to 1). An existing
+// run always keeps counting from its own first item's number.
 void toggleNumberedList(QTextCursor cursor, int startNumber = 1);
-// Same hand-rolled convention as toggleNumberedList, with a literal
-// "☐ "/"☑ " (☐/☑) marker instead of a number — GFM task-list
-// items, displayed as a real checkbox glyph (feature request) rather than
-// literal "- [ ] "/"- [x] " syntax, which read as raw markdown rather than
-// an actual checkbox. See handRolledBlockMarkdownText's own comment for
-// how that syntax still gets written on save.
+// GFM task list items, stored as the literal "- [ ] "/"- [x] " that gets
+// saved. The pre-rewrite editor stored a Unicode ☐/☑ glyph in the document and
+// translated it to GFM only on save — precisely the stored-vs-saved split this
+// rewrite removes. MarkdownHighlighter dims the brackets in place instead.
 void toggleCheckboxList(QTextCursor cursor);
 // Flips an existing checkbox item's checked state in place. Returns false
 // (does nothing) if the cursor isn't on a checkbox item at all.
 bool toggleCheckboxChecked(QTextCursor cursor);
 // Click-to-toggle (feature request): like toggleCheckboxChecked, but only
-// acts when cursor's own position sits within its block's checkbox glyph
-// itself (the leading "☐"/"☑", not the rest of the item's text) — a
-// click anywhere else in a checkbox item should just place the cursor
-// normally, not toggle it.
+// acts when cursor's own position sits within the leading "- [x]" marker
+// itself (up to and including the closing bracket, but not its trailing
+// space, which reads as label padding) — a click anywhere else in a checkbox
+// item should just place the cursor normally, not toggle it.
 bool tryToggleCheckboxAtPosition(QTextCursor cursor);
-// Inserts a new item after the cursor's current hand-rolled list item
-// (numbered or checkbox), inheriting its kind, and renumbers the list.
-// Returns false (does nothing) if the cursor isn't on a hand-rolled list
-// item — the caller's cue to fall through to plain Enter handling.
+// Inserts a new item after the cursor's current list item, inheriting its
+// kind, and renumbers the run. Now covers bullets too (they are marker text
+// like everything else), so callers no longer need a separate QTextList path.
+// A continued checkbox always starts unchecked. Returns false (does nothing)
+// if the cursor isn't on a list item — the caller's cue to fall through to
+// plain Enter handling.
 bool continueHandRolledList(QTextCursor cursor);
 // The other half, mirroring bullet lists' own "Enter on an empty item exits
 // the list" convention: strips the current item's marker, reverting it to a
@@ -64,8 +74,8 @@ bool continueHandRolledList(QTextCursor cursor);
 // callers check isHandRolledListItemEmpty first, same convention
 // DocumentHandler::tryContinueList already follows for bullet lists.
 void exitHandRolledList(QTextCursor cursor);
-// True if the cursor's block is a hand-rolled list item (numbered or
-// checkbox) whose text is empty apart from its own marker.
+// True if the cursor's block is a list item of any kind whose text is empty
+// apart from its own marker.
 bool isHandRolledListItemEmpty(QTextCursor cursor);
 // Re-derives the current item's whole numbered-list run (its sequential
 // numbers and shared marker width) if the cursor is on one — a no-op
@@ -78,33 +88,10 @@ bool isHandRolledListItemEmpty(QTextCursor cursor);
 void maintainHandRolledListNumbering(QTextCursor cursor);
 // level 0 clears heading formatting back to a normal paragraph; 1-6 are h1-h6.
 void setHeadingLevel(QTextCursor cursor, int level);
-// Bug found live: deleting the newline between two blocks (Backspace at the
-// start of one, or Delete at the end of the other — anywhere Qt's own
-// default editing merges two blocks into one) keeps each side's ORIGINAL
-// per-character bold/size format untouched, even though the surviving
-// block's own headingLevel is exactly as if it had always been that way
-// (mergeBlockFormat, unlike char format, always resolves cleanly to a single
-// value across a merge). So text newly absorbed into a heading doesn't LOOK
-// like a heading, and a heading's own text absorbed into a plain paragraph
-// keeps looking like one, until the next full markdown round-trip (a
-// reload) re-derives char format from headingLevel + text fresh via Qt's
-// own markdown parser. `cursor` should be positioned at the merge point
-// (contentsChange's own `from`) — the caller (DocumentHandler::
-// onContentsChange) is what actually detects that a merge just happened
-// (block count went down), since applying this on every ordinary keystroke
-// — not just at an actual merge boundary — would risk overwriting a
-// deliberate partial bold/italic override elsewhere in the same block from
-// an unrelated toggleBold call.
-void maintainHeadingCharFormatAfterMerge(QTextCursor cursor);
 // Tab (feature request): inserts four literal spaces at the cursor,
-// replacing any selection — mirrors toggleBold/etc's own "mutate the
-// QTextCursor directly" convention rather than TextEdit's own insert()
-// QML method, which silently drops a pure-whitespace insertion (confirmed
-// empirically: textFormat: TextEdit.MarkdownText live-renormalizes the
-// text on every edit, and treats leading/otherwise-insignificant
-// whitespace as CommonMark noise to strip, not real content) — a raw
-// QTextCursor::insertText() bypasses that renormalization entirely, same
-// as every other mutation in this file already does.
+// replacing any selection. (The old warning here about TextEdit's own
+// insert() silently dropping pure whitespace applied to MarkdownText mode's
+// live renormalization, which no longer runs.)
 void insertTabSpaces(QTextCursor cursor);
 // Inserts a starter 2x2 table (with a header row) at the cursor's position.
 void insertTable(QTextCursor cursor);
@@ -155,39 +142,7 @@ bool isCheckboxChecked(QTextCursor cursor);
 // entirely rather than showing them as permanent no-ops outside a table.
 bool isInTable(QTextCursor cursor);
 
-// Called once per freshly-parsed markdown chunk (see
-// MarkdownSerialization::insertChunk), after Qt's own markdown importer has
-// built native QTextList-based lists from "1. "/"- [ ] " syntax — converts
-// any numbered-list block into the hand-rolled selectable-marker
-// representation toggleNumberedList uses live, and any bullet-list block
-// whose text is a checkbox pattern into a hand-rolled checkbox item,
-// leaving genuine bullet lists (no checkbox brackets) as real QTextList
-// items, untouched. Idempotent, and safe to call on a document with no
-// lists in it at all.
-void convertNativeListsToHandRolled(QTextDocument *document);
-// True if `block` is a hand-rolled list item (numbered or checkbox).
-// Exposed at the QTextBlock level (not just QTextCursor) for
-// MarkdownSerialization's own run-splitting, which needs it as a run-
-// boundary condition on the SAVE side too: Qt's markdown writer escapes any
-// plain paragraph that merely starts with what looks like list syntax
-// ("1. " -> "1\. ", "- " -> "\- ", confirmed empirically) since it can't
-// know the block was deliberately meant to render as a list marker rather
-// than being coincidental prose — bypassing Qt's writer entirely for a run
-// already known (by construction) to be nothing BUT hand-rolled list
-// blocks sidesteps that unconditionally, without risking unescaping a
-// genuinely-plain paragraph that just happens to look similar.
-bool isHandRolledListBlock(const QTextBlock &block);
 
-// The text MarkdownSerialization should actually write for a hand-rolled
-// list block, in place of block.text() directly. Identical to block.text()
-// for numbered markers (already valid CommonMark syntax verbatim, same as
-// before), but NOT for checkbox markers: those now display as "☐ "/"☑ "
-// (feature request — a real checkbox glyph, not literal "- [ ] "/"- [x] "
-// GFM task-list syntax), so this rewrites just that marker prefix back to
-// what the file format needs, leaving the rest of the line untouched. The
-// save-side inverse of convertNativeListsToHandRolled's own checkbox
-// branch, which converts the other way on load.
-QString handRolledBlockMarkdownText(const QTextBlock &block);
 
 // The screen-space rect (the same document-layout coordinate space
 // DocumentHandler::tableRect() already uses) of the checkbox glyph itself
