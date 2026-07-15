@@ -17,6 +17,10 @@ qt_add_library(suopNotesCore STATIC
     core/SpellChecker.cpp
     core/SpellCheckHighlighter.h
     core/SpellCheckHighlighter.cpp
+    core/MarkdownHighlighter.h
+    core/MarkdownHighlighter.cpp
+    core/MarkdownTable.h
+    core/MarkdownTable.cpp
     core/DocumentHandler.h
     core/DocumentHandler.cpp
     core/EditorDragFilter.h
