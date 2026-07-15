@@ -251,6 +251,7 @@ void DocumentHandler::onContentsChange(int from, int charsRemoved, int charsAdde
         m_pendingEditPosition = from + charsAdded;
         m_pendingEditActive = true;
         m_pendingEditDebounce->start(m_spellcheckDebounceMs);
+        emit contentEdited();
     }
 
     if (m_document && m_document->textDocument()) {

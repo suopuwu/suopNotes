@@ -727,6 +727,49 @@ Window {
                         // own comment for why (avoids a full underline
                         // delegate rebuild on every keystroke).
                         onMisspelledWordRangesChanged: misspelledWordOverlay.syncMisspelledWordsModel()
+
+                        // Debounced + atomic on NoteStore's side (~300ms after
+                        // the last keystroke) — instant-feeling without a
+                        // disk write per keystroke. Used to be TextArea's own
+                        // onTextChanged, gated by comparing its `text`
+                        // property against a last-seen value to filter out
+                        // SpellCheckHighlighter's spurious setFormat()
+                        // re-fires — but that property is Qt's built-in
+                        // MarkdownText serialization, which collapses blank
+                        // lines/trailing newlines, so a bare Enter keystroke
+                        // could produce the exact same string as before and
+                        // get mistaken for a no-op (bug found live: a
+                        // newline wasn't saved until some later, non-newline
+                        // edit happened to change that lossy string too).
+                        // contentEdited() is emitted from C++ off the
+                        // document's own real-edit-vs-formatting-only
+                        // distinction instead (see its own doc comment),
+                        // so it can't be fooled that way.
+                        onContentEdited: {
+                            if (!editor.ready)
+                                return
+
+                            noteWindow.currentMisspelledWord = ""
+                            // Auto-list shorthand (feature request): typing
+                            // "- "/"* "/"1. " at the start of an otherwise-
+                            // plain line converts it into a real list,
+                            // consuming the typed marker. This mutates the
+                            // document, which re-enters onContentEdited
+                            // recursively — harmless and self-terminating,
+                            // since the shorthand text is already gone by
+                            // the second pass, so the regex simply stops
+                            // matching (and a no-op attempt never touches
+                            // the document, so it never re-fires
+                            // contentEdited at all).
+                            docHandler.tryAutoConvertListShorthand(editor.cursorPosition)
+                            // Keeps a numbered list's items sequential after
+                            // ordinary editing that doesn't go through
+                            // tryContinueList/toggleNumberedList at all —
+                            // e.g. backspacing an item away or selecting one
+                            // and deleting it outright (feature request).
+                            docHandler.maintainListNumbering(editor.cursorPosition)
+                            noteStore.saveNoteContent(noteWindow.noteId, docHandler.toMarkdown())
+                        }
                     }
 
                     // Visual underline overlay for misspelled words (bug
@@ -1015,60 +1058,6 @@ Window {
                     onSelectionStartChanged: noteWindow.refreshFormatState()
                     onSelectionEndChanged: noteWindow.refreshFormatState()
 
-                    // Guards onTextChanged below against no-op re-fires — see
-                    // that handler's own comment for why this exists (bug
-                    // found live: SpellCheckHighlighter's setFormat() calls
-                    // during a rehighlight pass, e.g. right after
-                    // editor.select() from the tap-to-suggest TapHandler
-                    // above, spuriously re-trigger TextArea's own
-                    // onTextChanged even though the actual text value never
-                    // changed — a QtQuick TextArea/MarkdownText quirk, not
-                    // something this app's own code does deliberately).
-                    property string _lastKnownText: ""
-
-                    // Debounced + atomic on NoteStore's side (~300ms after the
-                    // last keystroke) — instant-feeling without a disk write per
-                    // keystroke.
-                    onTextChanged: {
-                        if (!ready)
-                            return
-                        // Bug found live: this handler used to run
-                        // unconditionally on every onTextChanged notification,
-                        // but SpellCheckHighlighter's own formatting passes
-                        // (setFormat() on misspelled words) spuriously
-                        // re-trigger this signal with the text value totally
-                        // unchanged — e.g. right after the tap-to-suggest
-                        // TapHandler calls editor.select(), a rehighlight pass
-                        // fires, re-triggers onTextChanged, and immediately
-                        // clears currentMisspelledWord again, closing the
-                        // suggestion popup the instant it opened. It also
-                        // meant every highlighter pass queued a redundant
-                        // noteStore.saveNoteContent() disk write. Comparing
-                        // against the last known real text value filters out
-                        // these no-op re-fires while still catching every
-                        // genuine edit (a real edit always changes the text).
-                        if (text === _lastKnownText)
-                            return
-                        _lastKnownText = text
-
-                        noteWindow.currentMisspelledWord = ""
-                        // Auto-list shorthand (feature request): typing
-                        // "- "/"* "/"1. " at the start of an otherwise-plain
-                        // line converts it into a real list, consuming the
-                        // typed marker. This mutates the document, which
-                        // re-enters onTextChanged recursively — harmless and
-                        // self-terminating, since the shorthand text is
-                        // already gone by the second pass, so the regex
-                        // simply stops matching.
-                        docHandler.tryAutoConvertListShorthand(cursorPosition)
-                        // Keeps a numbered list's items sequential after
-                        // ordinary editing that doesn't go through
-                        // tryContinueList/toggleNumberedList at all — e.g.
-                        // backspacing an item away or selecting one and
-                        // deleting it outright (feature request).
-                        docHandler.maintainListNumbering(cursorPosition)
-                        noteStore.saveNoteContent(noteWindow.noteId, docHandler.toMarkdown())
-                    }
 
                     onCursorRectangleChanged: editorFlick.ensureCursorVisible(cursorRectangle)
 
@@ -1130,35 +1119,52 @@ Window {
                         }
                     }
 
-                    // Up on the topmost (visual, word-wrap-aware) line has
-                    // nowhere else to go, same for Down on the bottommost —
-                    // rather than leaving the cursor stuck at its current
-                    // column, jump it to that line's start/end, same target
-                    // Home/End would resolve to. positionAt() at x=0/width
-                    // on the cursor's own row mirrors belowContentArea's
-                    // reprojectedPosition() above, which relies on the same
-                    // nearest-x hit-testing to land on a line boundary.
+                    // Up on the topmost (visual, word-wrap-aware) line of the
+                    // document has nowhere else to go, same for Down on the
+                    // bottommost — rather than leaving the cursor stuck at
+                    // its current column, jump it to that line's start/end,
+                    // same target Home/End would resolve to. positionAt() at
+                    // x=0/width on the cursor's own row mirrors
+                    // belowContentArea's reprojectedPosition() below, which
+                    // relies on the same nearest-x hit-testing to land on a
+                    // line boundary.
                     //
-                    // "Is there a line above/below" used to be answered by
-                    // comparing cursorRectangle against contentHeight (a
-                    // document-wide aggregate). Bugfix (reported: Down on a
-                    // short, single-visual-line bottom list item landed on
-                    // the line ABOVE instead of staying on its own line —
-                    // wrapped list items were unaffected). Root suspect:
-                    // for a bullet/checkbox/numbered marker's line, the
-                    // marker glyph and the plain-text cursor glyph beside
-                    // it can be laid out with different line heights, so
-                    // cursorRectangle.height + cursorRectangle.y can
-                    // legitimately disagree with contentHeight by a pixel
-                    // or more even on the true last line — only ever on a
-                    // marker's own (first) line, which is why a wrapped
-                    // item's last visual sub-line (plain text throughout)
-                    // never showed this. Comparing two
-                    // positionToRectangle()/cursorRectangle results against
-                    // each other instead — never against contentHeight —
-                    // keeps both sides of the comparison on the same,
-                    // self-consistent per-character metric, immune to
-                    // whatever a marker's own line-height quirk is.
+                    // "Is the cursor on the topmost/bottommost line" is
+                    // answered by asking whether the document's own first (0)
+                    // / last (length) position sits on a different row than
+                    // the cursor. Both of the two previous answers to that
+                    // question are bugs this codebase has already shipped:
+                    //
+                    // - Comparing cursorRectangle against contentHeight, a
+                    //   document-wide aggregate (reported: Down on a short,
+                    //   single-visual-line bottom list item landed on the
+                    //   line ABOVE instead of staying on its own; wrapped
+                    //   items were unaffected). A marker glyph and the
+                    //   plain-text cursor glyph beside it can lay out with
+                    //   different line heights, so cursorRectangle's bottom
+                    //   can disagree with contentHeight by a pixel or more
+                    //   even on the true last line — but only on a marker's
+                    //   own (first) line, which is why a wrapped item's last
+                    //   sub-line (plain text throughout) never showed it.
+                    //
+                    // - Probing one pixel above/below the cursor's own row
+                    //   (reported: Up on the first line of a paragraph
+                    //   landed at that paragraph's start and stuck there —
+                    //   every further Up repeated it, so the paragraph above
+                    //   was unreachable). Paragraphs are laid out with a gap
+                    //   between them (block margins, ~6px), and Qt resolves
+                    //   a hit-test landing in that gap to the start of the
+                    //   block BELOW it — i.e. back onto the cursor's own
+                    //   row, which reads as "nothing above" mid-document.
+                    //   Down never showed this: the gap resolving downward
+                    //   is the direction Down wanted anyway.
+                    //
+                    // Comparing row against row keeps both sides on the same
+                    // self-consistent metric — cursorRectangle and
+                    // positionToRectangle share one code path, so two
+                    // positions on one visual line always report an
+                    // identical y — and never hit-tests a point outside a
+                    // laid-out row, so neither quirk above can resurface.
                     //
                     // event.accepted defaults to true for these per-key
                     // Keys.onXxxPressed handlers (unlike the general
@@ -1167,20 +1173,35 @@ Window {
                     // gets swallowed here and never reaches TextEdit's own
                     // default line-to-line cursor movement underneath.
                     Keys.onUpPressed: (event) => {
-                        const target = positionAt(0, cursorRectangle.y - 1)
-                        if (positionToRectangle(target).y >= cursorRectangle.y) {
-                            cursorPosition = target
-                        } else {
+                        if (positionToRectangle(0).y < cursorRectangle.y) {
                             event.accepted = false
+                            return
                         }
+                        moveCursorToBoundary(positionAt(0, cursorRectangle.y), event)
                     }
                     Keys.onDownPressed: (event) => {
-                        const target = positionAt(width, cursorRectangle.y + cursorRectangle.height + 1)
-                        if (positionToRectangle(target).y <= cursorRectangle.y) {
-                            cursorPosition = target
-                        } else {
+                        if (positionToRectangle(length).y > cursorRectangle.y) {
                             event.accepted = false
+                            return
                         }
+                        moveCursorToBoundary(positionAt(width, cursorRectangle.y), event)
+                    }
+
+                    // Shared tail of the two boundary jumps above. Shift+Up /
+                    // Shift+Down have to keep extending the selection they're
+                    // in the middle of, so the jump can't just assign
+                    // cursorPosition — that drops the anchor and collapses
+                    // any selection (reported: Shift+Down on the bottom line
+                    // threw the selection away and dumped the cursor at the
+                    // note's bottom-right). moveCursorSelection() keeps the
+                    // existing anchor, and starts a fresh selection from the
+                    // cursor when there's nothing selected yet, which is
+                    // exactly what Shift+End would have done on that line.
+                    function moveCursorToBoundary(target, event) {
+                        if (event.modifiers & Qt.ShiftModifier)
+                            moveCursorSelection(target, TextEdit.SelectCharacters)
+                        else
+                            cursorPosition = target
                     }
                 }
             }

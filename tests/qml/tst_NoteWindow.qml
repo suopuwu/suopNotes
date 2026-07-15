@@ -523,6 +523,117 @@ Item {
                    "Up from the last line should land on the line above, not jump straight to the document's start")
         }
 
+        // Sharper than the two guards above, and a regression guard for a
+        // reported bug: Up pressed on the FIRST line of a lower paragraph
+        // used to land at that same paragraph's start and stay there, so no
+        // amount of further Up presses could ever reach the paragraph above
+        // — the cursor was simply stuck. Both guards above were satisfied by
+        // that stuck position (it isn't the start position, and it isn't 0
+        // either), so this one asserts on the thing that actually matters:
+        // Up must leave the row it started on.
+        function test_up_arrow_from_first_line_of_a_paragraph_lands_on_the_row_above() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+
+            win.docHandler.setMarkdown("line one\n\nline two\n")
+            wait(50)
+
+            editor.cursorPosition = editor.text.indexOf("two")
+            win.requestActivate()
+            tryCompare(win, "active", true)
+            editor.forceActiveFocus()
+            tryCompare(editor, "activeFocus", true)
+            const startRow = editor.positionToRectangle(editor.cursorPosition).y
+
+            keyClick(Qt.Key_Up)
+
+            verify(editor.positionToRectangle(editor.cursorPosition).y < startRow,
+                   "Up from the first line of a paragraph should move the cursor onto the row above, not to the start of the row it was already on")
+        }
+
+        // Shift+Up on the topmost line should EXTEND the selection to that
+        // line's start (where Shift+Home would take it) rather than throwing
+        // the selection away — reported alongside the Shift+Down bug below.
+        function test_shift_up_on_top_line_extends_selection_to_start_of_line() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+
+            win.docHandler.setMarkdown("line one\n\nline two\n")
+            wait(50)
+
+            const startPos = editor.text.indexOf("one")
+            editor.cursorPosition = startPos
+            win.requestActivate()
+            tryCompare(win, "active", true)
+            editor.forceActiveFocus()
+            tryCompare(editor, "activeFocus", true)
+
+            keyClick(Qt.Key_Up, Qt.ShiftModifier)
+
+            compare(editor.selectionStart, 0,
+                    "Shift+Up on the first line should extend the selection back to that line's start")
+            compare(editor.selectionEnd, startPos,
+                    "Shift+Up on the first line should leave the anchor where the cursor started")
+        }
+
+        // The other half, and the reported bug itself: Shift+Down on the
+        // bottommost line used to CLEAR the selection and dump the cursor at
+        // the document's end, because the boundary jump assigned
+        // cursorPosition (which collapses any selection) with no regard for
+        // the Shift modifier. It should extend to that line's end instead,
+        // the same as Shift+End.
+        function test_shift_down_on_bottom_line_extends_selection_to_end_of_line() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+
+            win.docHandler.setMarkdown("line one\n\nline two\n")
+            wait(50)
+
+            const startPos = editor.text.indexOf("two")
+            editor.cursorPosition = startPos
+            win.requestActivate()
+            tryCompare(win, "active", true)
+            editor.forceActiveFocus()
+            tryCompare(editor, "activeFocus", true)
+
+            keyClick(Qt.Key_Down, Qt.ShiftModifier)
+
+            compare(editor.selectionStart, startPos,
+                    "Shift+Down on the last line should leave the anchor where the cursor started")
+            compare(editor.selectionEnd, editor.length,
+                    "Shift+Down on the last line should extend the selection on to that line's end")
+        }
+
+        // The boundary jump must also respect a selection that's already
+        // under way rather than only a fresh one: Shift+Down held from the
+        // first line down past the last keeps one continuous selection
+        // anchored where it began, growing to the document's end.
+        function test_shift_down_from_top_line_through_bottom_line_keeps_one_growing_selection() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+
+            win.docHandler.setMarkdown("line one\n\nline two\n")
+            wait(50)
+
+            const startPos = editor.text.indexOf("one")
+            editor.cursorPosition = startPos
+            win.requestActivate()
+            tryCompare(win, "active", true)
+            editor.forceActiveFocus()
+            tryCompare(editor, "activeFocus", true)
+
+            // Enough presses to walk off the bottom of any of the note's
+            // rows, so the last of them lands on the boundary handler.
+            keyClick(Qt.Key_Down, Qt.ShiftModifier)
+            keyClick(Qt.Key_Down, Qt.ShiftModifier)
+            keyClick(Qt.Key_Down, Qt.ShiftModifier)
+
+            compare(editor.selectionStart, startPos,
+                    "walking Shift+Down off the bottom should still be anchored where the selection began")
+            compare(editor.selectionEnd, editor.length,
+                    "walking Shift+Down off the bottom should end up selecting through to the document's end")
+        }
+
         // Regression guard: a bottom-of-document list item short enough to
         // fit on a single visual line used to send Down the WRONG way —
         // onto the end of the line above — instead of leaving the cursor
@@ -1007,6 +1118,51 @@ Item {
                     "a freshly-loaded note's cursor must start at position 0, not ride to the end")
             compare(w.editorFlick.contentY, 0,
                     "a freshly-loaded overflowing note must open scrolled to the top, not the bottom")
+
+            w.destroy()
+        }
+
+        // Regression guard for a reported bug: pressing Enter alone (no
+        // other keystroke following it) used to not persist at all — the
+        // save trigger used to guard on TextArea's own `text` property,
+        // Qt's built-in MarkdownText serialization of the document, which
+        // collapses blank lines/trailing newlines. A bare Enter changes the
+        // document (a new empty block) without necessarily changing that
+        // lossy string, so the guard mistook it for a no-op and skipped the
+        // save — the edit only reached disk once some LATER, non-newline
+        // keystroke changed the string too. Comparing what's on disk
+        // against docHandler.toMarkdown() (the real, blank-line-preserving
+        // serialization straight from the live document) directly checks
+        // that the save reflects the newline itself, not just eventually
+        // catches up once something else is typed.
+        function test_pressing_enter_alone_saves_without_any_further_edit() {
+            const w = restoreOrderTestComponent.createObject(root, {
+                noteId: "newline-save-test",
+                index: 72,
+                noteX: 0,
+                noteY: 0,
+                noteWidth: 260,
+                noteHeight: 260,
+                screenName: "",
+                alwaysOnTop: false,
+            })
+            verify(w !== null)
+            wait(50)
+
+            w.docHandler.setMarkdown("line one")
+            wait(50)
+
+            w.editor.cursorPosition = w.editor.length
+            w.requestActivate()
+            tryCompare(w, "active", true)
+            w.editor.forceActiveFocus()
+            tryCompare(w.editor, "activeFocus", true)
+
+            keyClick(Qt.Key_Return)
+            wait(350) // let NoteStore's ~300ms debounced write flush to disk
+
+            compare(noteStore.loadNoteContent("newline-save-test"), w.docHandler.toMarkdown(),
+                    "a bare Enter press must be persisted to disk on its own, without needing a follow-up edit")
 
             w.destroy()
         }

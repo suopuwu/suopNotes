@@ -226,6 +226,20 @@ signals:
     // selection itself hasn't moved, e.g. right after clicking Bold with a
     // selection still held (see SelectionToolbar.qml's runAction()).
     void formattingChanged();
+    // Emitted from onContentsChange for a genuine insert/delete — never for
+    // a pure formatting-only pass (SpellCheckHighlighter's setFormat() calls
+    // report charsRemoved == charsAdded == 0, same check this signal
+    // reuses from the spellcheck debounce below). Exists so QML's save
+    // trigger doesn't have to detect "did a real edit happen" by comparing
+    // TextArea's own `text` property against its last-seen value — that
+    // property is Qt's built-in MarkdownText serialization of the document,
+    // which collapses blank lines/trailing newlines, so two document states
+    // differing only by a bare Enter keystroke can serialize to the
+    // identical string and be mistaken for a no-op (bug found live: a
+    // newline wasn't saved until some later, non-newline edit happened to
+    // change that lossy string too). This signal is driven off the
+    // document's real edit metadata instead, so it can't be fooled that way.
+    void contentEdited();
 
 private:
     QTextCursor cursorFor(int selectionStart, int selectionEnd) const;
