@@ -426,6 +426,27 @@ private:
     // finish leaving everything consistent) and just no-ops instead.
     bool m_handlingListMutation = false;
 
+    // The buffer's text as of the last maintainListNumbering() pass that did
+    // any work — the gate that keeps that pass reacting to TEXT changes only.
+    //
+    // This is load-bearing for undo, not an optimization. maintainListNumbering
+    // writes list hanging-indent (a QTextBlockFormat, i.e. undoable document
+    // state), and it runs off contentEdited(), which fires for ANY non-zero
+    // contentsChange. A block-format write is not the "pure formatting change"
+    // that onContentsChange's charsRemoved/charsAdded check filters out:
+    // measured, a mergeBlockFormat over a 8-character block reports
+    // contentsChange(0, 8, 8), and so does UNDOING one. Without this gate,
+    // undoing an indent write re-enters the pass, which rewrites the indent,
+    // which is undoable, forever — Ctrl+Z live-locks and never reaches the
+    // user's actual text. (Measured: 200+ undos with the text never reverting.)
+    //
+    // The pre-rewrite editor did not need this only because its reactive hook
+    // was TextArea's own `text` property, which a format change cannot alter —
+    // it was text-pure by construction. Driving maintenance off contentEdited()
+    // instead (commit 5855742, for unrelated and good reasons) silently removed
+    // that property; comparing the text explicitly restores it.
+    QString m_lastMaintainedText;
+
     // Constructed once in the constructor as a stable UserDictionaryFilteringBackend
     // wrapper (its own inner backend may be null, degrading spellcheck to a
     // clean no-op, if built without Sonnet and without a bundled dictionary).

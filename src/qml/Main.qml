@@ -189,25 +189,6 @@ Item {
         openNotesModel.openNote(id)
     }
 
-    // Qt.labs.platform's SystemTrayIcon.DoubleClick reason is unreachable
-    // on Linux: Plasma's tray talks to the app over the freedesktop
-    // StatusNotifierItem D-Bus interface, whose only click-related methods
-    // are Activate/SecondaryActivate/ContextMenu — there's no double-click
-    // concept in that protocol, so Qt's DBus tray backend can never emit
-    // it. Detect it ourselves by timing consecutive Trigger events: a
-    // second Trigger within trayDoubleClickTimer's window cancels the
-    // pending single-click action and creates a note instead. This is a
-    // one-shot timer restarted by real click events, not a poll (see
-    // CLAUDE.md).
-    property double lastTrayTriggerTime: 0
-
-    Timer {
-        id: trayDoubleClickTimer
-        interval: 400
-        repeat: false
-        onTriggered: root.revealAllNotes()
-    }
-
     Platform.SystemTrayIcon {
         visible: true
         // icon.source (not icon.name) once there's at least one open note,
@@ -220,6 +201,18 @@ Item {
         tooltip: "suopNotes"
 
         menu: Platform.Menu {
+            // `visible` on a Qt.labs.platform Menu means "shown as a popup
+            // right now", not "this menu exists" — and it defaults to true,
+            // so at component completion Qt realizes the QMenu that KDE's
+            // platform theme backs this with, parentless, and Wayland
+            // refuses to grab a popup with no transientParent ("Failed to
+            // create grabbing popup"). The QMenu isn't ours to give a parent
+            // to. Harmless to leave false: the tray menu reaches Plasma over
+            // DBusMenu, not this local popup, and nothing here ever calls
+            // open()/popup() — right-click is served by the platform's own
+            // default handling (see onActivated below).
+            visible: false
+
             Platform.MenuItem {
                 text: "New Note"
                 onTriggered: root.createNewNote()
@@ -243,21 +236,17 @@ Item {
         onActivated: (reason) => {
             // Left-click (or its touch equivalent) reveals every open note
             // (req. 3) — the fewest-clicks path to "where did my notes go,"
-            // matching req. 8's fewest-clicks intent. Double-click creates a
-            // new note; see trayDoubleClickTimer above for why this can't
-            // rely on the DoubleClick reason. Right-click reaches the full
-            // menu via the platform's own default handling.
-            if (reason === Platform.SystemTrayIcon.Trigger) {
-                const now = Date.now()
-                if (now - root.lastTrayTriggerTime < trayDoubleClickTimer.interval) {
-                    trayDoubleClickTimer.stop()
-                    root.lastTrayTriggerTime = 0
-                    root.createNewNote()
-                } else {
-                    root.lastTrayTriggerTime = now
-                    trayDoubleClickTimer.restart()
-                }
-            }
+            // matching req. 8's fewest-clicks intent. Middle-click creates a
+            // new note: Plasma's tray talks to the app over the freedesktop
+            // StatusNotifierItem D-Bus interface, whose only click-related
+            // methods are Activate/SecondaryActivate/ContextMenu — Plasma
+            // sends SecondaryActivate on middle-click, which Qt's DBus tray
+            // backend surfaces here as MiddleClick. Right-click reaches the
+            // full menu via the platform's own default handling.
+            if (reason === Platform.SystemTrayIcon.Trigger)
+                root.revealAllNotes()
+            else if (reason === Platform.SystemTrayIcon.MiddleClick)
+                root.createNewNote()
         }
     }
 }

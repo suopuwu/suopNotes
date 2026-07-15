@@ -90,7 +90,15 @@ QString NoteStore::loadNoteContent(const QString &id) const
     return QString::fromUtf8(file.readAll());
 }
 
-QString NoteStore::createNote()
+// The content write here is deliberately synchronous rather than a
+// saveNoteContent() call, which is what a "duplicate note" caller would
+// otherwise reach for. saveNoteContent() debounces ~kSaveDebounceMs before it
+// touches disk, but opening a note causes its window to call loadNoteContent()
+// immediately — so a create-then-save-then-open sequence would read the file
+// back well before the debounce ever fired and reliably open an empty
+// duplicate. Writing here, on the same call stack as the id being minted,
+// means the file is complete by the time createNote() returns.
+QString NoteStore::createNote(const QString &content)
 {
     const QString id = QUuid::createUuid().toString(QUuid::WithoutBraces);
 
@@ -98,13 +106,18 @@ QString NoteStore::createNote()
 
     // Empty content derives to "Untitled" (see NoteFilename); writeNoteToDisk
     // will rename it to something content-derived on the first real save.
-    m_idToFileName.insert(id, uniqueFileName(NoteFilename::deriveBaseName(QString()), id));
+    // Non-empty content (a duplicate) derives its name up front instead, and
+    // uniqueFileName's own " (2)"/" (3)" collision suffix is what keeps a
+    // duplicate of "Groceries" from fighting the original for the same file.
+    m_idToFileName.insert(id, uniqueFileName(NoteFilename::deriveBaseName(content), id));
 
     QSaveFile file(filePathForId(id));
-    if (file.open(QIODevice::WriteOnly))
+    if (file.open(QIODevice::WriteOnly)) {
+        file.write(content.toUtf8());
         file.commit();
+    }
 
-    m_lastWrittenContent[id] = QString();
+    m_lastWrittenContent[id] = content;
     saveIndex();
 
     refreshNoteIds(true);

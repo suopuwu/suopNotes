@@ -5,6 +5,7 @@
 
 #include <QAbstractTextDocumentLayout>
 #include <QFont>
+#include <QFontMetricsF>
 #include <QList>
 #include <QPair>
 #include <QRegularExpression>
@@ -234,6 +235,171 @@ void replaceMarker(QTextCursor &edit, const QTextBlock &block, const QString &ma
     edit.insertText(marker); // replaces the selection
 }
 
+// --- Hanging indent ----------------------------------------------------
+//
+// A wrapped list item's continuation lines should line up under the item's
+// TEXT, not under its marker. That is a QTextBlockFormat leftMargin (where
+// every line of the block starts) plus a negative textIndent (how far the
+// FIRST line is pulled back left, to make room for the marker that lives in
+// the text itself).
+//
+// WHY THIS LIVES IN THE EDIT PATHS AND NOT IN MarkdownHighlighter:
+// a QTextBlockFormat is undoable document state, so writing one from
+// highlightBlock() is unsound, and was tried and reverted. Two concrete
+// failures, both measured:
+//   * Undo live-lock. The highlighter re-runs on EVERY contentsChange —
+//     including the format-only ones (charsAdded == charsRemoved == 0) that a
+//     block-format write itself produces. Undo reverts the format, the
+//     revert re-runs the highlighter, the highlighter rewrites the format,
+//     forever; the user's own typed text never gets reverted at all. Reached
+//     in production by a font change (NoteWindow.qml's onFontChanged ->
+//     rehighlightMarkdown()), which rehighlights with undo ENABLED and no
+//     user edit to attach to.
+//   * A crash on load. setMarkdown()'s setPlainText() emits contentsChange
+//     from inside QTextDocumentPrivate::finishEdit(), so the highlighter ran
+//     reentrantly there and tried to write a block format mid-edit, with the
+//     document's undo stack disabled and no edit block to join.
+// Applying indent from the edit operations instead means each write happens
+// inside the user's own edit, so it is naturally part of exactly one undo
+// entry. Critically, DocumentHandler::onContentsChange only emits
+// contentEdited() (the signal that drives the reactive maintenance pass) when
+// charsRemoved/charsAdded are non-zero — so a format-only write, and undoing
+// one, cannot re-enter this code. That asymmetry is the whole reason the edit
+// paths are safe where the highlighter is not.
+//
+// The cost of that choice, knowingly accepted: indent is sized from the font
+// at edit time, so it goes STALE after the note's font size changes and stays
+// stale until the line is next edited. Re-applying it on font change is
+// exactly the live-lock above.
+
+// The on-screen width of `block`'s own marker, or 0 if it isn't a list item.
+//
+// NOT the width of the literal marker text: MarkdownHighlighter re-renders
+// markers, so what is measured here has to be what actually gets drawn.
+// Per its list switch, a bullet/checkbox keeps exactly two characters — the
+// reserved glyph slot and the marker's trailing space — each at
+// PercentageSpacing 200, i.e. twice its natural advance; everything else in
+// the marker collapses to a 0.01pt font and is close enough to zero to ignore.
+// A numbered marker is deliberately left unformatted and so measures as the
+// ordinary text it is. The doubling is computed here rather than by handing a
+// letter-spaced font to QFontMetricsF, which does not report it.
+qreal renderedMarkerWidth(const QFont &font, const QTextBlock &block)
+{
+    const QString text = block.text();
+    const MarkdownList::Marker marker = MarkdownList::parse(text);
+    if (!marker.isValid())
+        return 0;
+
+    const QFontMetricsF metrics(font);
+    if (marker.kind == MarkdownList::Kind::Numbered)
+        return metrics.horizontalAdvance(text.left(marker.length));
+
+    return 2.0 * metrics.horizontalAdvance(text.mid(marker.glyphStart, marker.glyphLength))
+        + 2.0 * metrics.horizontalAdvance(QStringLiteral(" "));
+}
+
+// Idempotence guard, and it is load-bearing rather than an optimization: this
+// runs reactively after every keystroke anywhere near a list (see
+// maintainHandRolledListNumbering), and the vast majority of those passes have
+// nothing to fix. An unconditional merge would still be a real document edit,
+// so each no-op pass would push its own undo entry — which is what previously
+// flooded the undo stack and made Ctrl+Z feel like it was cycling instead of
+// stepping back through actual edits. Skipping the merge when nothing would
+// change makes a maintenance pass a true no-op with nothing to undo.
+void setBlockIndent(QTextCursor &edit, const QTextBlock &block, qreal leftMargin, qreal textIndent)
+{
+    const QTextBlockFormat existing = block.blockFormat();
+    if (existing.leftMargin() == leftMargin && existing.textIndent() == textIndent)
+        return;
+
+    QTextBlockFormat format;
+    format.setLeftMargin(leftMargin);
+    format.setTextIndent(textIndent);
+    edit.setPosition(block.position());
+    edit.mergeBlockFormat(format);
+}
+
+// Re-derives the hanging indent for every block in [firstBlockNumber,
+// lastBlockNumber], plus any list run those bounds land in the middle of.
+//
+// A "run" is just a maximal stretch of adjacent list-item lines, of any kind —
+// which is what a reader sees as one list, and what therefore has to share one
+// text column. Grouping by contiguity rather than by kind is what lets a
+// checklist with a plain bullet in it, or a list that grows past "9. " into
+// "10. ", keep every item's text starting at the same x.
+void applyListIndentRange(QTextDocument *document, int firstBlockNumber, int lastBlockNumber)
+{
+    if (!document)
+        return;
+
+    int first = qMax(0, firstBlockNumber);
+    int last = qMin(document->blockCount() - 1, lastBlockNumber);
+    if (first > last)
+        return;
+
+    // Widen to whole runs: an edit inside a run changes the width every OTHER
+    // item in it has to reserve (adding a 10th item is the canonical case), and
+    // those items are outside the edited range.
+    const auto isItem = [document](int blockNumber) {
+        return MarkdownList::parse(document->findBlockByNumber(blockNumber).text()).isValid();
+    };
+    while (first > 0 && isItem(first - 1))
+        --first;
+    while (last + 1 < document->blockCount() && isItem(last + 1))
+        ++last;
+
+    const QFont font = document->defaultFont();
+
+    QTextCursor edit(document);
+    edit.beginEditBlock();
+    for (int i = first; i <= last;) {
+        if (!isItem(i)) {
+            // A line that is not (or no longer) a list item must not keep a
+            // hanging indent. Its first line looks fine either way — textIndent
+            // cancels leftMargin there — so a leftover only shows up once the
+            // paragraph is long enough to wrap, which is why this is easy to
+            // miss and worth being explicit about.
+            setBlockIndent(edit, document->findBlockByNumber(i), 0, 0);
+            ++i;
+            continue;
+        }
+
+        int runEnd = i;
+        while (runEnd + 1 <= last && isItem(runEnd + 1))
+            ++runEnd;
+
+        qreal widest = 0;
+        for (int j = i; j <= runEnd; ++j)
+            widest = qMax(widest, renderedMarkerWidth(font, document->findBlockByNumber(j)));
+
+        for (int j = i; j <= runEnd; ++j) {
+            const QTextBlock block = document->findBlockByNumber(j);
+            // leftMargin is the run's shared widest marker — that is what keeps
+            // wrapped continuation lines aligned across the whole run. But
+            // textIndent is this block's OWN marker width, not the run's: a
+            // narrower "9. " sharing "10. "'s textIndent would start its own
+            // first line of text a character further left than everything else.
+            // Sizing it per-block reserves exactly as much blank space to the
+            // left of a narrow marker as a wide one occupies, so text after
+            // every marker — first line or wrapped — starts at the same x.
+            setBlockIndent(edit, block, widest, -renderedMarkerWidth(font, block));
+        }
+        i = runEnd + 1;
+    }
+    edit.endEditBlock();
+}
+
+// The block numbers `cursor`'s selection touches, mirroring selectedBlocks'
+// own end-1 rule for a selection that only swallowed a trailing newline.
+QPair<int, int> selectedBlockNumbers(const QTextCursor &cursor)
+{
+    const QTextDocument *document = cursor.document();
+    const int start = cursor.selectionStart();
+    const int end = cursor.selectionEnd();
+    return {document->findBlock(start).blockNumber(),
+            document->findBlock(end > start ? end - 1 : end).blockNumber()};
+}
+
 // Renumbers the whole contiguous run of numbered items containing
 // `blockNumber`, counting up from whatever the run's FIRST item says. Keeping
 // the first item's own number (rather than forcing 1) is what lets a list
@@ -295,6 +461,15 @@ void toggleListKind(QTextCursor cursor, MarkdownList::Kind kind, int startNumber
         }
     }
 
+    const int firstBlockNumber = blocks.first().blockNumber();
+    const int lastBlockNumber = blocks.last().blockNumber();
+
+    // One outer edit block around the marker rewrite, the renumber and the
+    // indent, so a single Ctrl+Z takes all three back together — the user
+    // pressed one button, so it is one undo step.
+    QTextCursor outer(document);
+    outer.beginEditBlock();
+
     QTextCursor edit(document);
     edit.beginEditBlock();
     // Bottom-up, same reason as renumberRunAt: marker widths differ, so
@@ -324,7 +499,13 @@ void toggleListKind(QTextCursor cursor, MarkdownList::Kind kind, int startNumber
     edit.endEditBlock();
 
     if (!allAlready && kind == MarkdownList::Kind::Numbered)
-        renumberRunAt(document, blocks.first().blockNumber());
+        renumberRunAt(document, firstBlockNumber);
+
+    // After the renumber, never before: renumbering is what settles each
+    // marker's final width, which is what the indent is measured from.
+    applyListIndentRange(document, firstBlockNumber, lastBlockNumber);
+
+    outer.endEditBlock();
 }
 
 // --- Tables ------------------------------------------------------------
@@ -490,10 +671,14 @@ bool continueHandRolledList(QTextCursor cursor)
     edit.beginEditBlock();
     edit.insertBlock();
     edit.insertText(nextMarker);
-    edit.endEditBlock();
 
+    const int newBlockNumber = edit.block().blockNumber();
     if (marker.kind == MarkdownList::Kind::Numbered)
-        renumberRunAt(cursor.document(), edit.block().blockNumber());
+        renumberRunAt(cursor.document(), newBlockNumber);
+    // The new item can be what widens the whole run ("9. " -> "10. "), so this
+    // resizes every item in it, not just the one just inserted.
+    applyListIndentRange(cursor.document(), newBlockNumber, newBlockNumber);
+    edit.endEditBlock();
     return true;
 }
 
@@ -512,12 +697,16 @@ void exitHandRolledList(QTextCursor cursor)
     QTextCursor edit(document);
     edit.beginEditBlock();
     replaceMarker(edit, block, QString());
-    edit.endEditBlock();
 
     // The run this item used to belong to now stops short of it, so whatever
     // is left below has to start counting again from its own first item.
     if (marker.kind == MarkdownList::Kind::Numbered && blockNumber + 1 < document->blockCount())
         renumberRunAt(document, blockNumber + 1);
+    // This block is a plain paragraph now and must lose its own indent; the
+    // runs it used to join on either side are now separate, and each resizes to
+    // its own widest marker.
+    applyListIndentRange(document, blockNumber, blockNumber);
+    edit.endEditBlock();
 }
 
 bool isHandRolledListItemEmpty(QTextCursor cursor)
@@ -529,7 +718,29 @@ bool isHandRolledListItemEmpty(QTextCursor cursor)
 
 void maintainHandRolledListNumbering(QTextCursor cursor)
 {
-    renumberRunAt(cursor.document(), cursor.block().blockNumber());
+    QTextDocument *document = cursor.document();
+    if (!document)
+        return;
+
+    const int blockNumber = cursor.block().blockNumber();
+    QTextCursor edit(document);
+    edit.beginEditBlock();
+    renumberRunAt(document, blockNumber);
+    // The reactive catch-all. Ordinary typing never goes through any of the
+    // dedicated list operations above, yet it can still make a line become a
+    // list item, stop being one (typing prose in front of a marker), or change
+    // a run's widest marker — so the indent is re-derived here too. Both this
+    // and renumberRunAt are no-ops when nothing actually changed, which is what
+    // keeps a per-keystroke pass off the undo stack entirely.
+    applyListIndentRange(document, blockNumber, blockNumber);
+    edit.endEditBlock();
+}
+
+void applyListIndentToDocument(QTextDocument *document)
+{
+    if (!document)
+        return;
+    applyListIndentRange(document, 0, document->blockCount() - 1);
 }
 
 void setHeadingLevel(QTextCursor cursor, int level)
@@ -547,6 +758,8 @@ void setHeadingLevel(QTextCursor cursor, int level)
     // existed purely to repair the desync when two blocks merged. The
     // highlighter re-derives all of it from the "#" characters instead.
     const QList<QTextBlock> blocks = selectedBlocks(cursor);
+    if (blocks.isEmpty())
+        return;
 
     QTextCursor edit(document);
     edit.beginEditBlock();
@@ -578,6 +791,10 @@ void setHeadingLevel(QTextCursor cursor, int level)
         }
         edit.insertText(replacement); // replaces the selection
     }
+    // Prefixing "# " pushes a marker off position 0, so a line that was a list
+    // item stops being one and must drop its indent; clearing the heading back
+    // to level 0 can uncover a marker and make it a list item again.
+    applyListIndentRange(document, blocks.first().blockNumber(), blocks.last().blockNumber());
     edit.endEditBlock();
 }
 

@@ -16,6 +16,7 @@
 #include "core/Settings.h"
 #include "core/SingleInstanceGuard.h"
 #include "core/TrayIconProvider.h"
+#include "core/WindowInputMask.h"
 
 namespace
 {
@@ -86,6 +87,7 @@ int main(int argc, char *argv[])
     noteStore.setNotesFolder(settings.notesFolder());
     OpenNotesModel openNotesModel(&settings);
     BlurEffect blurEffect;
+    WindowInputMask windowInputMask;
     PositionManager positionManager;
     PositionEventService positionEventService(settings);
 
@@ -107,6 +109,7 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty("noteStore", &noteStore);
     engine.rootContext()->setContextProperty("openNotesModel", &openNotesModel);
     engine.rootContext()->setContextProperty("blurEffect", &blurEffect);
+    engine.rootContext()->setContextProperty("windowInputMask", &windowInputMask);
     engine.rootContext()->setContextProperty("positionManager", &positionManager);
     engine.addImageProvider(QStringLiteral("notecount"), new TrayIconProvider);
 

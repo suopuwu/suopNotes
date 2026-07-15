@@ -11,6 +11,8 @@ qt_add_library(suopNotesCore STATIC
     core/BlurRegion.cpp
     core/BlurEffect.h
     core/BlurEffect.cpp
+    core/WindowInputMask.h
+    core/WindowInputMask.cpp
     core/TextFormatting.h
     core/TextFormatting.cpp
     core/SpellChecker.h

@@ -240,7 +240,14 @@ Item {
             compare(flick.contentY, 0, "precondition: the viewport must actually be scrolled to the top")
 
             const cx = editor.width / 2
-            const cy = 20
+            // Clear of the hover HUD, which occupies the top-right corner and
+            // deliberately swallows every button press over itself. It appears
+            // as soon as the pointer enters the note, and at this 260px test
+            // width its icon row reaches past the horizontal centre — so a
+            // press up at y=20 lands on the HUD, not the editor, and autoscroll
+            // never arms. Chosen against the HUD's HEIGHT (26 + 4 margin, fixed)
+            // rather than dodging its width, which grows with each icon added.
+            const cy = 40
 
             mouseClick(editor, cx, cy, Qt.MiddleButton)
             verify(area.middleScrollArmed, "a middle-click should arm autoscroll")
@@ -281,7 +288,14 @@ Item {
             wait(50)
 
             const cx = editor.width / 2
-            const cy = 20
+            // Clear of the hover HUD, which occupies the top-right corner and
+            // deliberately swallows every button press over itself. It appears
+            // as soon as the pointer enters the note, and at this 260px test
+            // width its icon row reaches past the horizontal centre — so a
+            // press up at y=20 lands on the HUD, not the editor, and autoscroll
+            // never arms. Chosen against the HUD's HEIGHT (26 + 4 margin, fixed)
+            // rather than dodging its width, which grows with each icon added.
+            const cy = 40
 
             verify(area.cursorShape !== Qt.SizeAllCursor, "precondition: not the scroll cursor before arming")
 
@@ -327,7 +341,14 @@ Item {
             verify(flick.contentHeight > flick.height, "precondition: content must overflow to scroll at all")
 
             const cx = editor.width / 2
-            const cy = 20
+            // Clear of the hover HUD, which occupies the top-right corner and
+            // deliberately swallows every button press over itself. It appears
+            // as soon as the pointer enters the note, and at this 260px test
+            // width its icon row reaches past the horizontal centre — so a
+            // press up at y=20 lands on the HUD, not the editor, and autoscroll
+            // never arms. Chosen against the HUD's HEIGHT (26 + 4 margin, fixed)
+            // rather than dodging its width, which grows with each icon added.
+            const cy = 40
 
             mousePress(editor, cx, cy, Qt.MiddleButton)
             verify(area.middleScrollArmed, "pressing (not yet releasing) the middle button should arm autoscroll")
@@ -1358,6 +1379,65 @@ Item {
             verify(md.indexOf("plain body text") !== -1)
             verify(md.indexOf("# plain body text") === -1,
                    "the new line must not have been serialized as a heading:\n" + md)
+        }
+
+        // Regression, end-to-end, for the defect that got an earlier attempt
+        // at list hanging-indent reverted: after a FONT CHANGE, Ctrl+Z was
+        // permanently broken on that note.
+        //
+        // List indent is a QTextBlockFormat — undoable document state. A font
+        // change resizes it (it is measured in the note's own font), so it is
+        // the one thing that makes the indent the editor stores disagree with
+        // the indent the code would compute. Anything that reacts to that
+        // disagreement by rewriting the indent fights the user's undo: undo
+        // reverts the write, the revert is itself a change, the change
+        // retriggers the writer, forever — with the user's typed text never
+        // reverting at all (measured at 200+ undos).
+        //
+        // This drives the real path: NoteWindow's onFontChanged ->
+        // docHandler.rehighlightMarkdown(), then real Ctrl+Z key events.
+        // BOUNDED on purpose — a regression here must fail this test, not hang
+        // the test run forever, which is what an unbounded "undo until nothing
+        // is left" loop would do.
+        function test_undo_still_works_on_a_list_note_after_a_font_change() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+            const original = "- first\n- second\n1. one\n2. two"
+
+            win.docHandler.setMarkdown(original)
+            wait(50)
+            win.requestActivate()
+            tryCompare(win, "active", true)
+            editor.forceActiveFocus()
+            tryCompare(editor, "activeFocus", true)
+
+            editor.cursorPosition = editor.length
+            typeText("XYZ")
+            verify(win.docHandler.toMarkdown().indexOf("XYZ") !== -1,
+                   "precondition: the typed text should be in the buffer")
+
+            // The user changes this note's font size in its settings.
+            win.noteAppearance.setFontSizeOverride(win.noteAppearance.fontSize + 8)
+            wait(50)
+
+            // Undo until the stack is empty, capped. The cap is the assertion:
+            // a live-lock keeps manufacturing new undo entries, so canUndo
+            // never goes false no matter how many times Ctrl+Z is pressed.
+            // Checking only "did the typed text come back out" would NOT catch
+            // it — the first Ctrl+Z removes the text either way, and the
+            // live-lock is in the undos AFTER that.
+            let undos = 0
+            while (undos < 40 && editor.canUndo) {
+                keyClick(Qt.Key_Z, Qt.ControlModifier)
+                ++undos
+            }
+            win.noteAppearance.clearFontSizeOverride()
+
+            verify(!editor.canUndo,
+                   "Ctrl+Z live-locked after a font change: still undoable after "
+                   + undos + " undos, because something keeps re-adding undo entries")
+            compare(win.docHandler.toMarkdown().trim(), original,
+                    "undo should walk the buffer back to exactly what was loaded")
         }
 
         // Auto-list shorthand (feature request): typing "- " at the very

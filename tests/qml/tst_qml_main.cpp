@@ -12,12 +12,16 @@
 #include "core/OpenNotesModel.h"
 #include "core/PositionManager.h"
 #include "core/Settings.h"
+#include "core/WindowInputMask.h"
 
 // Injects the context properties every NoteWindow.qml instance expects:
 // a Settings backed by a QTemporaryDir (never a real user config path),
 // a NoteStore/OpenNotesModel pointed at that same temp dir, a real
 // BlurEffect (a no-op off Linux/without KWindowSystem, harmless to call in
-// tests either way), and a real PositionManager (a no-op off Linux/without
+// tests either way), a real WindowInputMask (its setMask() has no observable
+// effect under the offscreen QPA plugin, but it still emits inputMaskApplied,
+// which is what the tests below actually assert on), and a real
+// PositionManager (a no-op off Linux/without
 // kwriteconfig6 — harmless here too; never touches a real kwinrulesrc in
 // this offscreen test environment since it targets the test system's own,
 // if any). Also registers the DocumentHandler and EditorDragFilter QML
@@ -41,6 +45,7 @@ public slots:
     {
         engine->rootContext()->setContextProperty("settings", &m_settings);
         engine->rootContext()->setContextProperty("blurEffect", &m_blurEffect);
+        engine->rootContext()->setContextProperty("windowInputMask", &m_windowInputMask);
         engine->rootContext()->setContextProperty("noteStore", &m_noteStore);
         engine->rootContext()->setContextProperty("openNotesModel", &m_openNotesModel);
         engine->rootContext()->setContextProperty("positionManager", &m_positionManager);
@@ -50,6 +55,7 @@ private:
     QTemporaryDir m_tempDir;
     Settings m_settings;
     BlurEffect m_blurEffect;
+    WindowInputMask m_windowInputMask;
     NoteStore m_noteStore;
     OpenNotesModel m_openNotesModel;
     PositionManager m_positionManager;

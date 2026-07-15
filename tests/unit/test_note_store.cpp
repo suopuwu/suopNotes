@@ -108,6 +108,53 @@ SCENARIO("Creating a new note", "[note_store]")
     }
 }
 
+SCENARIO("Creating a note with initial content (duplicating another note)", "[note_store]")
+{
+    GIVEN("a NoteStore pointed at an empty folder")
+    {
+        QTemporaryDir tempDir;
+        REQUIRE(tempDir.isValid());
+
+        NoteStore store;
+        store.setNotesFolder(tempDir.path());
+
+        WHEN("createNote() is called with content")
+        {
+            const QString id = store.createNote("Grocery list\n\n- milk\n- eggs");
+
+            THEN("the file exists immediately, with no debounce wait, already holding that content")
+            {
+                CHECK(QFile::exists(tempDir.filePath("Grocery list.md")));
+                CHECK(store.loadNoteContent(id) == "Grocery list\n\n- milk\n- eggs");
+            }
+
+            THEN("the filename is derived from the content, not left as 'Untitled'")
+            {
+                CHECK_FALSE(QFile::exists(tempDir.filePath("Untitled.md")));
+            }
+        }
+
+        WHEN("a second note is created with the same content as an existing one")
+        {
+            const QString firstId = store.createNote("Groceries");
+            const QString secondId = store.createNote("Groceries");
+
+            THEN("they get distinct ids and distinct, collision-suffixed filenames")
+            {
+                CHECK(firstId != secondId);
+                CHECK(QFile::exists(tempDir.filePath("Groceries.md")));
+                CHECK(QFile::exists(tempDir.filePath("Groceries (2).md")));
+            }
+
+            THEN("each id's content is reachable independently")
+            {
+                CHECK(store.loadNoteContent(firstId) == "Groceries");
+                CHECK(store.loadNoteContent(secondId) == "Groceries");
+            }
+        }
+    }
+}
+
 SCENARIO("Saving note content is debounced", "[note_store]")
 {
     GIVEN("a note that already exists")

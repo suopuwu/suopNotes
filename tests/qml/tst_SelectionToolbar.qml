@@ -51,6 +51,22 @@ Item {
         signalName: "appliedTo"
     }
 
+    // Shared app-wide the same way blurEffect is (every window in this file
+    // reports through the one object), so the tests below filter
+    // signalArguments by which window an entry is actually about rather than
+    // assuming a single emitter — same convention as blurSpy above.
+    SignalSpy {
+        id: inputMaskSpy
+        target: windowInputMask
+        signalName: "inputMaskApplied"
+    }
+
+    SignalSpy {
+        id: barWidthSpy
+        target: bar
+        signalName: "widthChanged"
+    }
+
     TestCase {
         name: "SelectionToolbar"
         when: windowShown
@@ -80,7 +96,7 @@ Item {
             // gets its own explicit reset instead.
             mouseMove(bar.contentItem, -50, -50)
             mouseMove(bar.columnOptionsPopup.contentItem, -50, -50)
-            wait(20)
+            wait(80)
         }
 
         // The bar is shown exactly once (at startup) and never hidden
@@ -120,7 +136,7 @@ Item {
         // own, always positioned below it.
         function test_toolbar_button_tooltip_is_offset_below_the_button_not_overlapping_it() {
             bar.noteWindow = noteA
-            wait(20)
+            wait(80)
 
             mouseMove(bar.boldButton, bar.boldButton.width / 2, bar.boldButton.height / 2)
             tryCompare(bar.tooltipWindow, "activeButton", bar.boldButton, 2000)
@@ -148,7 +164,7 @@ Item {
         // tooltip's own short text, not the whole toolbar.
         function test_toolbar_button_tooltip_is_a_separate_window_sized_to_its_own_text() {
             bar.noteWindow = noteA
-            wait(20)
+            wait(80)
 
             mouseMove(bar.strikethroughButton, bar.strikethroughButton.width / 2, bar.strikethroughButton.height / 2)
             tryCompare(bar.tooltipWindow, "contentVisible", true, 2000)
@@ -180,7 +196,7 @@ Item {
         // actually stops it from blocking clicks, regardless of size).
         function test_tooltip_window_moves_offscreen_once_hover_ends() {
             bar.noteWindow = noteA
-            wait(20)
+            wait(80)
 
             mouseMove(bar.boldButton, bar.boldButton.width / 2, bar.boldButton.height / 2)
             tryCompare(bar.tooltipWindow, "contentVisible", true, 2000)
@@ -203,7 +219,7 @@ Item {
         // structural checks above it.
         function test_toolbar_button_tooltip_shows_after_hovering_and_stays_shown() {
             bar.noteWindow = noteA
-            wait(20)
+            wait(80)
 
             mouseMove(bar.boldButton, bar.boldButton.width / 2, bar.boldButton.height / 2)
             tryCompare(bar.tooltipWindow, "contentVisible", true, 2000)
@@ -229,7 +245,7 @@ Item {
         function test_column_options_popup_hidden_outside_a_table() {
             bar.noteWindow = noteA
             noteA.currentInTable = false
-            wait(20)
+            wait(80)
 
             compare(bar.columnOptionsPopup.wantsVisible, false)
             compare(bar.columnOptionsPopup.background.visible, false)
@@ -243,19 +259,19 @@ Item {
         function test_column_options_popup_shown_automatically_when_entering_a_table() {
             bar.noteWindow = noteA
             noteA.currentInTable = false
-            wait(20)
+            wait(80)
 
             compare(bar.columnOptionsPopup.wantsVisible, false, "precondition: not shown outside a table")
 
             noteA.currentInTable = true
-            wait(20)
+            wait(80)
 
             compare(bar.columnOptionsPopup.wantsVisible, true)
             compare(bar.columnOptionsPopup.background.visible, true)
             compare(bar.columnOptionsPopup.content.enabled, true)
 
             noteA.currentInTable = false
-            wait(20)
+            wait(80)
             compare(bar.columnOptionsPopup.wantsVisible, false,
                     "leaving the table again should hide it")
         }
@@ -278,7 +294,7 @@ Item {
         function test_column_options_popup_moves_offscreen_when_leaving_a_table() {
             bar.noteWindow = noteA
             noteA.currentInTable = true
-            wait(20)
+            wait(80)
 
             verify(bar.columnOptionsPopup.width > 1, "precondition: the popup has real size while in a table")
             verify(bar.columnOptionsPopup.height > 1, "precondition: the popup has real size while in a table")
@@ -287,7 +303,7 @@ Item {
             verify(screen, "precondition: the tracked note reports a real screen")
 
             noteA.currentInTable = false
-            wait(20)
+            wait(80)
 
             verify(bar.columnOptionsPopup.x > screen.virtualX + screen.width || bar.columnOptionsPopup.y > screen.virtualY + screen.height,
                    "leaving the table should move the still-mapped window off every screen so it stops blocking clicks")
@@ -309,7 +325,7 @@ Item {
             // tst_NoteWindow.qml's own table-editing tests use).
             noteA.editor.cursorPosition = 1
             noteA.currentInTable = true
-            wait(20)
+            wait(80)
 
             const rect = noteA.docHandler.tableRect(noteA.editor.selectionEnd)
             verify(rect.width > 0 && rect.height > 0, "precondition: the table has a real, non-empty rect")
@@ -330,7 +346,7 @@ Item {
 
         function test_content_visible_and_enabled_once_a_note_is_tracked() {
             bar.noteWindow = noteA
-            wait(20)
+            wait(80)
 
             compare(bar.background.visible, true)
             compare(bar.content.visible, true)
@@ -340,7 +356,7 @@ Item {
 
         function test_content_hidden_again_once_the_tracked_note_is_cleared() {
             bar.noteWindow = noteA
-            wait(20)
+            wait(80)
             verify(bar.content.visible)
 
             bar.noteWindow = null
@@ -368,7 +384,7 @@ Item {
         // of size).
         function test_bar_moves_offscreen_once_the_tracked_note_is_cleared() {
             bar.noteWindow = noteA
-            wait(20)
+            wait(80)
 
             verify(bar.width > 1, "precondition: the bar has real size while tracking a note")
             verify(bar.height > 1, "precondition: the bar has real size while tracking a note")
@@ -377,7 +393,7 @@ Item {
             verify(screen, "precondition: the tracked note reports a real screen")
 
             bar.noteWindow = null
-            wait(20)
+            wait(80)
 
             verify(bar.x > screen.virtualX + screen.width || bar.y > screen.virtualY + screen.height,
                    "clearing the tracked note should move the still-mapped bar off every screen so it stops blocking clicks")
@@ -390,7 +406,7 @@ Item {
         // pointer.
         function test_hovered_tracks_whether_the_pointer_is_over_the_toolbar() {
             bar.noteWindow = noteA
-            wait(20)
+            wait(80)
 
             mouseMove(bar.contentItem, bar.width / 2, bar.height / 2)
             tryCompare(bar, "hovered", true)
@@ -408,7 +424,7 @@ Item {
             noteA.noteY = 300
 
             bar.noteWindow = noteA
-            wait(20)
+            wait(80)
 
             verify(bar.y < noteA.noteY, "the bar should default to sitting above the note, not below it")
             compare(bar.y, noteA.noteY - bar.barThickness - 8)
@@ -425,7 +441,7 @@ Item {
             noteA.noteY = noteA.screen.virtualY
 
             bar.noteWindow = noteA
-            wait(20)
+            wait(80)
 
             compare(bar.x, noteA.noteX - bar.width - 8, "with no room above, left is next in priority order")
         }
@@ -439,7 +455,7 @@ Item {
             noteA.noteY = noteA.screen.virtualY
 
             bar.noteWindow = noteA
-            wait(20)
+            wait(80)
 
             compare(bar.x, noteA.noteX + noteA.noteWidth + 8,
                     "with no room above or to the left, right is next in priority order")
@@ -458,7 +474,7 @@ Item {
             noteA.noteY = noteA.screen.virtualY
 
             bar.noteWindow = noteA
-            wait(20)
+            wait(80)
 
             compare(bar.isVertical, true, "left/right placement should switch the bar to a vertical column")
             // content.columns is bound to -1 ("auto") in vertical mode, so
@@ -487,7 +503,7 @@ Item {
             noteA.noteY = noteA.screen.virtualY
 
             bar.noteWindow = noteA
-            wait(20)
+            wait(80)
             verify(bar.isVertical)
 
             const xs = new Set()
@@ -508,7 +524,7 @@ Item {
             noteA.noteY = 300
 
             bar.noteWindow = noteA
-            wait(20)
+            wait(80)
             verify(!bar.isVertical)
 
             const xs = new Set()
@@ -530,7 +546,7 @@ Item {
             noteA.noteY = 300
 
             bar.noteWindow = noteA
-            wait(20)
+            wait(80)
 
             compare(bar.isVertical, false, "top/bottom placement should keep the bar as a horizontal row")
             // columns is capped at "maxButtonsBeforeWrap buttons + grip/
@@ -543,6 +559,259 @@ Item {
                    "the row's column capacity must fit every current child without wrapping")
             compare(bar.width, bar.barLength)
             compare(bar.height, bar.barThickness)
+        }
+
+        // ---- Input regions: not being an invisible click-blocker ----
+
+        // Returns the acceptsInput value of the most recent
+        // inputMaskApplied entry for `win`, or null if there wasn't one —
+        // the spy is shared across every window in this file (see its own
+        // comment above).
+        function lastInputMaskFor(win) {
+            let last = null
+            for (let i = 0; i < inputMaskSpy.count; ++i) {
+                if (inputMaskSpy.signalArguments[i][0] === win)
+                    last = inputMaskSpy.signalArguments[i][1]
+            }
+            return last
+        }
+
+        // Bug found live ("invisible windows blocking input in some
+        // cases"). Every window in this file is permanently mapped and
+        // always-on-top (see SelectionToolbar.qml's Component.onCompleted
+        // for why they can never be unmapped), and a mapped Wayland surface
+        // eats clicks regardless of whether its QML CONTENT is invisible —
+        // so "hidden" content alone is not enough to let a click through to
+        // whatever is underneath.
+        //
+        // Parking the window off-screen is NOT what these tests pin down,
+        // deliberately: that park is asynchronous, unordered, and can no-op
+        // outright (see SelectionToolbar.qml's parkOffscreen comment), so it
+        // cannot be what input correctness rests on. The input region can —
+        // it is applied synchronously, client-side.
+        //
+        // What's checked here is the WIRING (which window is told to stop
+        // accepting input, and when). Whether the compositor then really
+        // routes the click elsewhere is not observable from an offscreen
+        // test — QWindow::setMask has no effect under the offscreen QPA
+        // plugin at all — and belongs to a real Wayland session.
+        function test_the_toolbar_stops_accepting_pointer_input_while_no_note_is_tracked() {
+            bar.noteWindow = noteA
+            wait(80)
+            verify(bar.background.visible, "precondition: the bar is really showing content")
+
+            inputMaskSpy.clear()
+            bar.noteWindow = null
+            wait(80)
+
+            compare(lastInputMaskFor(bar), false,
+                    "an untracked, still-mapped toolbar must stop accepting input rather than silently eat clicks meant for whatever is underneath it")
+        }
+
+        function test_the_toolbar_accepts_pointer_input_again_once_a_note_is_tracked() {
+            bar.noteWindow = null
+            wait(80)
+
+            inputMaskSpy.clear()
+            bar.noteWindow = noteA
+            wait(80)
+
+            compare(lastInputMaskFor(bar), true,
+                    "a tracked toolbar's own buttons must still be clickable")
+        }
+
+        // The column-options popup gets the same treatment, gated on its own
+        // "am I showing anything" flag (the cursor being inside a table)
+        // rather than the bar's.
+        function test_the_column_options_popup_stops_accepting_pointer_input_once_the_cursor_leaves_the_table() {
+            bar.noteWindow = noteA
+            noteA.currentInTable = true
+            wait(80)
+            verify(bar.columnOptionsPopup.background.visible, "precondition: the popup is really showing content")
+
+            inputMaskSpy.clear()
+            noteA.currentInTable = false
+            wait(80)
+
+            compare(lastInputMaskFor(bar.columnOptionsPopup), false,
+                    "a popup that has stopped showing anything must stop accepting input too")
+        }
+
+        // The tooltip window is the most frequent offender of the four —
+        // it toggles on every single hover in and out.
+        function test_the_tooltip_window_stops_accepting_pointer_input_once_hover_ends() {
+            bar.noteWindow = noteA
+            wait(80)
+
+            mouseMove(bar.boldButton, bar.boldButton.width / 2, bar.boldButton.height / 2)
+            tryCompare(bar.tooltipWindow, "contentVisible", true, 2000)
+            compare(lastInputMaskFor(bar.tooltipWindow), true)
+
+            inputMaskSpy.clear()
+            mouseMove(bar.boldButton, -50, -50)
+            tryCompare(bar.tooltipWindow, "contentVisible", false)
+
+            compare(lastInputMaskFor(bar.tooltipWindow), false,
+                    "a dismissed tooltip must stop accepting input rather than keep intercepting clicks where it last appeared")
+        }
+
+        // ---- Orientation: the surface must match the icon layout ----
+
+        // Bug found live ("toolbar/icon layout orientation mismatch, only
+        // one icon visible in the middle"). content.flow is pure client-side
+        // QML and reflows instantly, but this window's SIZE has to survive a
+        // real client<->compositor resize negotiation — and a stale, belated
+        // ack from a PRIOR negotiation can land after a fresher one and
+        // silently clobber the window's real geometry (trace-confirmed on
+        // this platform for a sibling popup; see SelectionToolbar.qml's own
+        // width/height comments). The result is a 436px-wide row of icons
+        // inside a 36px-wide surface, centered and clipped to a single
+        // visible icon in the middle.
+        //
+        // That clobber happens BELOW QML, at the compositor level, so an
+        // offscreen test can never reproduce the race itself. What it CAN
+        // pin down is the guard's own logic — and from QML's point of view a
+        // stale ack looks exactly like an imperative write of the wrong size
+        // to bar.width, which is what these simulate (the trace recorded
+        // `width` itself dropping to 1, so the platform really does write
+        // the property).
+        function test_a_clobbered_window_size_is_re_asserted_from_the_current_orientation() {
+            noteA.noteX = 300
+            noteA.noteY = 300
+            bar.noteWindow = noteA
+            wait(80)
+            verify(!bar.isVertical, "precondition: above-the-note placement lays the bar out as a row")
+
+            // The wait is not incidental: a window's size change reaches QML
+            // via a platform geometry-change event, which is delivered
+            // asynchronously — so the guard fires on the next event-loop
+            // pass, not inside this assignment. (That's the same path the
+            // real stale ack arrives on, which is exactly why the guard
+            // hangs off onWidthChanged rather than trying to intercept the
+            // write itself.)
+            bar.width = 1
+            wait(80)
+            compare(bar.width, bar.barLength,
+                    "a clobbered width must be re-asserted from the current orientation rather than left clipped forever (barLength/barThickness are fixed constants, so nothing else ever recomputes it)")
+
+            bar.height = 1
+            wait(80)
+            compare(bar.height, bar.barThickness,
+                    "the same must hold for height")
+        }
+
+        // The guard corrects by re-installing the orientation binding, not
+        // by writing a bare value — a plain imperative `width = ...` would
+        // DESTROY that binding and freeze the bar at one orientation's size
+        // forever, which is a permanent version of the very bug it's meant
+        // to fix.
+        function test_re_asserting_a_clobbered_size_leaves_the_orientation_binding_live() {
+            verify(noteA.screen !== null, "precondition: the note must be associated with a real screen")
+
+            noteA.noteX = 300
+            noteA.noteY = 300
+            bar.noteWindow = noteA
+            wait(80)
+            verify(!bar.isVertical, "precondition: the bar starts as a row")
+
+            bar.width = 1
+            bar.height = 1
+            wait(80)
+            compare(bar.width, bar.barLength, "precondition: the guard corrected the clobbered size")
+
+            // Now force the other orientation: pinned at the screen's
+            // top-left corner there's no room above or to the left, so the
+            // bar falls back to the right of the note — a column.
+            bar.noteWindow = null
+            wait(80)
+            noteA.noteX = noteA.screen.virtualX
+            noteA.noteY = noteA.screen.virtualY
+            bar.noteWindow = noteA
+            wait(80)
+
+            verify(bar.isVertical, "precondition: left/right placement lays the bar out as a column")
+            compare(bar.width, bar.barThickness,
+                    "width must still track the orientation after the guard re-asserted it")
+            compare(bar.height, bar.barLength,
+                    "height must still track the orientation after the guard re-asserted it")
+        }
+
+        // The guard writes to the very property whose change notification
+        // invokes it, so it has to converge rather than re-trigger itself.
+        function test_the_size_guard_converges_instead_of_re_triggering_itself() {
+            noteA.noteX = 300
+            noteA.noteY = 300
+            bar.noteWindow = noteA
+            wait(80)
+            verify(!bar.isVertical)
+
+            barWidthSpy.clear()
+            bar.width = 1
+            wait(80)
+
+            // Exactly two: the clobber itself, and the guard's single
+            // corrective re-assert. A guard that re-fired on its own write
+            // would keep going well past this.
+            compare(barWidthSpy.count, 2,
+                    "the guard must correct a clobbered width in exactly one write and then stop, not oscillate against itself")
+            compare(bar.width, bar.barLength)
+        }
+
+        // ---- reposition() debounce ----
+
+        // Bug found live, and the reason it was "unable to consistently
+        // replicate": onNoteWindowChanged reads noteWindow.screen
+        // SYNCHRONOUSLY, and on Wayland that's routinely still stale at that
+        // instant (the platform plugin only reassigns it once the
+        // wl_surface enter/leave for the note's new output arrives), so a
+        // reposition run right there can pick the wrong monitor — and so the
+        // wrong edge, and so the wrong orientation — and then onScreenChanged
+        // fires a second one milliseconds later once screen settles. Two
+        // orientation-flipping resizes back-to-back is exactly what makes
+        // the stale-ack race above reachable.
+        //
+        // Debouncing both triggers behind one one-shot timer means a single
+        // reposition, run once state has settled. (A one-shot timer restarted
+        // by real events is not polling — see this project's CLAUDE.md; a
+        // repeating timer would be banned outright.)
+        function test_reposition_is_deferred_to_a_settled_debounce_rather_than_run_on_the_triggering_event() {
+            // Parked first, so the bar starts at a position reposition()
+            // would never produce — anything else means one really ran.
+            bar.noteWindow = null
+            wait(80)
+            const parkedX = bar.x
+
+            noteA.noteX = 50
+            noteA.noteY = 300
+            bar.noteWindow = noteA
+            // Deliberately no wait: the debounce is still pending.
+            compare(bar.x, parkedX,
+                    "reposition must not run synchronously on the tracked-note change — the screen it reads is routinely stale at that exact instant")
+
+            wait(80)
+            verify(bar.x !== parkedX, "the debounce should have settled and repositioned by now")
+        }
+
+        // The point of deferring isn't the delay itself — it's that the one
+        // reposition that does run reads state as of the SETTLE, not as of
+        // the trigger. (In the real app the state that settles late is
+        // noteWindow.screen, which an offscreen single-screen test can't
+        // change; noteX moving between the trigger and the settle exercises
+        // the same "reads late state" contract.)
+        function test_the_settled_reposition_reads_state_as_of_the_settle_not_the_trigger() {
+            bar.noteWindow = null
+            wait(80)
+
+            noteA.noteX = 50
+            noteA.noteY = 300
+            bar.noteWindow = noteA
+
+            // Changed after the trigger, before the debounce settles.
+            noteA.noteX = 400
+            wait(80)
+
+            compare(bar.x, noteA.noteX + noteA.noteWidth / 2 - bar.width / 2,
+                    "the single settled reposition must centre on where the note actually is once things settle, not where it was when the trigger fired")
         }
 
         // Switching the tracked note (the way Main.qml does when focus
@@ -561,11 +830,11 @@ Item {
             noteB.noteY = 300
 
             bar.noteWindow = noteA
-            wait(20)
+            wait(80)
             const barXForNoteA = bar.x
 
             bar.noteWindow = noteB
-            wait(20)
+            wait(80)
 
             verify(bar.x !== barXForNoteA, "the bar should re-center over whichever note is now tracked")
             compare(bar.x, noteB.noteX + noteB.noteWidth / 2 - bar.width / 2)
@@ -580,7 +849,7 @@ Item {
             noteA.editor.select(0, "bold me".length)
 
             bar.noteWindow = noteA
-            wait(20)
+            wait(80)
 
             mouseClick(bar.boldButton, bar.boldButton.width / 2, bar.boldButton.height / 2)
 
@@ -597,7 +866,7 @@ Item {
             blurSpy.clear()
 
             bar.noteWindow = noteA
-            wait(20)
+            wait(80)
 
             let found = false
             for (let i = 0; i < blurSpy.count; ++i) {
@@ -609,7 +878,7 @@ Item {
 
         function test_blur_is_turned_off_again_once_the_tracked_note_is_cleared() {
             bar.noteWindow = noteA
-            wait(20)
+            wait(80)
             blurSpy.clear()
 
             bar.noteWindow = null
@@ -629,7 +898,7 @@ Item {
         // the note ever losing focus.
         function test_blur_is_reapplied_when_the_tracked_notes_blurEnabled_changes() {
             bar.noteWindow = noteA
-            wait(20)
+            wait(80)
             blurSpy.clear()
 
             settings.blurEnabled = !settings.blurEnabled
@@ -665,11 +934,11 @@ Item {
         function test_blur_is_applied_to_the_column_options_popup_only_while_it_wants_to_be_visible() {
             settings.blurEnabled = true
             bar.noteWindow = noteA
-            wait(20)
+            wait(80)
             blurSpy.clear()
 
             noteA.currentInTable = true
-            wait(20)
+            wait(80)
 
             let foundOn = false
             for (let i = 0; i < blurSpy.count; ++i) {
@@ -680,7 +949,7 @@ Item {
 
             blurSpy.clear()
             noteA.currentInTable = false
-            wait(20)
+            wait(80)
 
             let foundOff = false
             for (let i = 0; i < blurSpy.count; ++i) {
@@ -698,7 +967,7 @@ Item {
             blurSpy.clear()
 
             bar.noteWindow = noteA
-            wait(20)
+            wait(80)
 
             let foundOn = false
             for (let i = 0; i < blurSpy.count; ++i) {
@@ -714,16 +983,16 @@ Item {
         function test_column_options_popup_drag_area_disabled_outside_a_table() {
             bar.noteWindow = noteA
             noteA.currentInTable = false
-            wait(20)
+            wait(80)
 
             compare(bar.columnOptionsPopup.dragArea.enabled, false)
 
             noteA.currentInTable = true
-            wait(20)
+            wait(80)
             compare(bar.columnOptionsPopup.dragArea.enabled, true)
 
             noteA.currentInTable = false
-            wait(20)
+            wait(80)
             compare(bar.columnOptionsPopup.dragArea.enabled, false)
         }
 
@@ -751,7 +1020,7 @@ Item {
             noteA.applyInlineToggle(r => noteA.docHandler.toggleBold(r.start, r.end))
 
             bar.noteWindow = noteA
-            wait(20)
+            wait(80)
 
 
             compare(bar.boldButton.checked, true,
@@ -764,7 +1033,7 @@ Item {
             noteA.editor.select(0, "plain text".length)
 
             bar.noteWindow = noteA
-            wait(20)
+            wait(80)
 
             compare(bar.boldButton.checked, false,
                     "the Bold button should not show checked for plain, unformatted text")
@@ -781,7 +1050,7 @@ Item {
             noteA.editor.select(0, "bold me".length)
 
             bar.noteWindow = noteA
-            wait(20)
+            wait(80)
             compare(bar.boldButton.checked, false, "precondition: not bold yet")
 
             mouseClick(bar.boldButton, bar.boldButton.width / 2, bar.boldButton.height / 2)
@@ -799,7 +1068,7 @@ Item {
             noteA.applyInlineToggle(r => noteA.docHandler.toggleItalic(r.start, r.end))
 
             bar.noteWindow = noteA
-            wait(20)
+            wait(80)
 
             compare(bar.italicButton.checked, true, "italic is active, so the Italic button should be checked")
             compare(bar.strikethroughButton.checked, false,
@@ -816,12 +1085,12 @@ Item {
             noteA.editor.deselect()
 
             bar.noteWindow = noteA
-            wait(20)
+            wait(80)
 
             compare(bar.cutButton.enabled, false, "Cut should be disabled with no selection")
 
             noteA.editor.select(0, 5)
-            wait(20)
+            wait(80)
 
             compare(bar.cutButton.enabled, true, "Cut should be enabled once text is selected")
         }
@@ -832,7 +1101,7 @@ Item {
             noteA.editor.select(0, 5)
 
             bar.noteWindow = noteA
-            wait(20)
+            wait(80)
 
             mouseClick(bar.cutButton, bar.cutButton.width / 2, bar.cutButton.height / 2)
 
@@ -852,7 +1121,7 @@ Item {
             noteA.editor.select(0, "copy me".length)
 
             bar.noteWindow = noteA
-            wait(20)
+            wait(80)
 
             mouseClick(bar.copyButton, bar.copyButton.width / 2, bar.copyButton.height / 2)
 
@@ -889,7 +1158,7 @@ Item {
             noteA.misspelledWordEnd = 5
 
             bar.noteWindow = noteA
-            wait(20)
+            wait(80)
 
             compare(bar.spellingSuggestionsPopup.wantsVisible, true,
                     "precondition: the popup should want to be visible")
@@ -1007,7 +1276,7 @@ Item {
             noteA.misspelledWordEnd = 5
 
             bar.noteWindow = noteA
-            wait(20)
+            wait(80)
 
             verify(bar.spellingSuggestionsPopup.width > 1, "precondition: the popup has real size while a word is flagged")
             verify(bar.spellingSuggestionsPopup.height > 1, "precondition: the popup has real size while a word is flagged")
@@ -1016,7 +1285,7 @@ Item {
             verify(screen, "precondition: the tracked note reports a real screen")
 
             noteA.currentMisspelledWord = ""
-            wait(20)
+            wait(80)
 
             verify(bar.spellingSuggestionsPopup.x > screen.virtualX + screen.width || bar.spellingSuggestionsPopup.y > screen.virtualY + screen.height,
                    "clearing the misspelled word should move the still-mapped window off every screen so it stops blocking clicks")

@@ -514,8 +514,15 @@ Window {
     // extra step that turned out to actively cause a worse bug. Width/
     // height now stay at their real size unconditionally; only position
     // changes on hide.
-    width: isVertical ? barThickness : barLength
-    height: isVertical ? barLength : barThickness
+    // The single source of truth for how big this window must be right now,
+    // named rather than inlined into width/height below so the size guard
+    // (see enforceSize()) can re-assert exactly the same expression instead
+    // of a hand-copied second version of it that could drift.
+    readonly property int wantedWidth: isVertical ? barThickness : barLength
+    readonly property int wantedHeight: isVertical ? barLength : barThickness
+
+    width: wantedWidth
+    height: wantedHeight
 
     // Shown exactly ONCE, here, and never hidden/shown again — confirmed
     // live that repeatedly mapping/unmapping this window while a note
@@ -568,6 +575,15 @@ Window {
         bar.hide()
         bar.show()
         updateBlur()
+        // Applied AFTER the show/hide/show above, not before: a hide()
+        // destroys this window's wl_surface and the next show() creates a
+        // fresh one, and an input region is per-surface state — a mask set
+        // before that cycle would be set on a surface that no longer
+        // exists. Nothing has been tracked yet at this point, so "blocks
+        // all input" is the correct starting state (background.visible
+        // starts false too); backgroundInputMask below takes over from the
+        // first real transition onward.
+        windowInputMask.setAcceptsInput(bar, false)
 
         // Deliberately NOT calling parkOffscreen() here too, unlike every
         // real hide transition below — bug found live: positionManager.
@@ -615,15 +631,40 @@ Window {
 
     // Parks any of this file's permanently-mapped windows (this bar
     // itself, columnOptionsPopup, spellingSuggestionsPopup, tooltipWindow)
-    // at offscreenPoint() — paired everywhere with shrinking that same
-    // window's width/height to 1x1, never 0x0 (see each one's own comment
-    // for why 0 is actively dangerous on real Wayland, not just untidy).
-    // Neither alone is a complete fix: size-only still leaves a 1x1
-    // sliver sitting at the window's last real, on-note position;
-    // position-only would still leave a full-sized window that could
-    // briefly overlap real content if a resize ever raced a move. Doing
-    // both means there's no monitor, anywhere, this window could still be
-    // seen or intercept a click on while it isn't wanted.
+    // at offscreenPoint(), so an unwanted-but-still-mapped window can't be
+    // seen on any monitor.
+    //
+    // Correction: this used to claim it was "paired everywhere with
+    // shrinking that same window's width/height to 1x1." That shrinking is
+    // GONE (see bar's own width/height comment above, and
+    // spellingSuggestionsPopup's trace-confirmed one below, for the resize
+    // race that removing it fixed) — width/height now stay at their real
+    // size unconditionally, and only position changes on hide.
+    //
+    // Load-bearing for VISIBILITY only, NOT for input correctness — do not
+    // rely on it for the latter. It is a best-effort, genuinely racy
+    // mechanism: positionManager.moveWindow() is asynchronous and spawns a
+    // fresh, untracked thread per call, and its completions are explicitly
+    // documented (see PositionManager's windowMoved signal) to arrive in
+    // COMPLETION order, which need not match call order. So for any
+    // show->hide pair issued close together, the park's move can land
+    // BEFORE the show's, leaving the show's geometry applied last — an
+    // unwanted, fully-sized, always-on-top window sitting back on screen
+    // with nothing ever re-parking it. It also silently no-ops outright if
+    // KWin scripting isn't reachable, or if the caption doesn't match (see
+    // KWinRuleApplier::moveWindow). A transparent window with invisible
+    // CONTENT still eats every click landing on it, so none of that may be
+    // allowed to decide whether input passes through.
+    //
+    // That is why each of these four windows ALSO carries a
+    // windowInputMask.setAcceptsInput() hook tied to its own
+    // content-visibility flag (see backgroundInputMask below and its
+    // equivalents on each popup). An input region is synchronous and
+    // client-side — no compositor round-trip, no ordering hazard, no
+    // mapping/unmapping churn (which this file must avoid at all costs; see
+    // Component.onCompleted above) — so input correctness holds even when
+    // this park loses its race or no-ops entirely. The two are
+    // complementary: the mask stops clicks, the park stops pixels.
     function parkOffscreen(win) {
         const pt = offscreenPoint()
         win.x = pt.x
@@ -649,8 +690,50 @@ Window {
     // the region KWindowEffects blurs is tied to the window's current
     // dimensions, and the bar's size does change (barThickness/barLength
     // swap between row and column layout — see isVertical/reposition).
-    onWidthChanged: updateBlur()
-    onHeightChanged: updateBlur()
+    onWidthChanged: {
+        enforceSize()
+        updateBlur()
+    }
+    onHeightChanged: {
+        enforceSize()
+        updateBlur()
+    }
+
+    // Second line of defense for the orientation-clipping bug
+    // repositionDebounce's own comment describes in full. That debounce
+    // removes the known TRIGGER (two resize negotiations back-to-back); this
+    // catches the damage if a stale configure/ack ever clobbers this
+    // window's real geometry anyway — from a cause not yet identified, or a
+    // second reposition legitimately arriving later (a note dragged to
+    // another monitor, say). Without it there is no self-correction at all:
+    // barThickness/barLength are fixed constants rather than derived from
+    // content's implicit size (see their own comment for why that would be
+    // circular), so a clipped surface stays clipped indefinitely.
+    //
+    // This is observable at the QML level despite being a platform-level
+    // clobber: the trace behind spellingSuggestionsPopup's own width/height
+    // comment recorded `width` ITSELF dropping to 1 while the QML that feeds
+    // it never changed — i.e. the platform writes the property, so
+    // onWidthChanged above genuinely fires for it.
+    //
+    // Qt.binding(), NOT a plain `width = wantedWidth`: a bare imperative
+    // assignment to a property that currently has a binding DESTROYS that
+    // binding, which would leave width permanently frozen at whatever this
+    // guard last wrote and stop it ever tracking isVertical again — turning
+    // a transient clipped surface into a permanent one, i.e. a worse version
+    // of the bug being fixed. Re-installing an equivalent binding restores
+    // the correct value AND keeps the property live for the next flip.
+    //
+    // Converges rather than recursing: the corrective assignment re-fires
+    // onWidthChanged, but by then width already equals wantedWidth, so the
+    // guard makes no further write and the chain stops. The !== check is
+    // what makes that true — it must stay.
+    function enforceSize() {
+        if (width !== wantedWidth)
+            width = Qt.binding(() => bar.wantedWidth)
+        if (height !== wantedHeight)
+            height = Qt.binding(() => bar.wantedHeight)
+    }
 
     // The tracked note itself can change while still focused (its blur
     // toggle lives in PerNoteSettingsPopup, reachable without losing
@@ -686,8 +769,52 @@ Window {
         target: bar.noteWindow
         function onScreenChanged() {
             if (bar.noteWindow)
-                bar.reposition()
+                repositionDebounce.restart()
         }
+    }
+
+    // Coalesces the two reposition() calls the lag documented just above
+    // routinely produces — onNoteWindowChanged fires one immediately with a
+    // STALE screen, then onScreenChanged fires another once the real
+    // wl_surface enter/leave lands — into a single call against settled
+    // state.
+    //
+    // Bug found live ("toolbar/icon layout orientation mismatch, only one
+    // icon visible in the middle"; "unable to consistently replicate"), and
+    // the intermittency is the tell. reposition() picks the note's edge by
+    // clamping against screen.virtualX/width (see its edge-priority chain),
+    // so a stale screen readily picks a DIFFERENT edge than the settled one
+    // — e.g. vertical=true, then vertical=false a few ms later. Each flip
+    // of isVertical forces a real 436x36 <-> 36x436 client<->compositor
+    // resize negotiation, so two flips back-to-back means two negotiations
+    // racing: exactly the hazard spellingSuggestionsPopup's own width/height
+    // comment documents as trace-confirmed on this platform (a belated,
+    // stale ack from the earlier one landing AFTER the fresher one and
+    // silently overwriting the window's real on-screen geometry). Lose that
+    // race and the surface stays at the OLD orientation's size while
+    // content.flow — pure client-side QML, applied instantly — has already
+    // reflowed to the new one. A 436px-wide row inside a 36px-wide surface,
+    // centered via content's anchors.centerIn, overflows equally off both
+    // ends and clips: one icon left visible in the middle. barThickness/
+    // barLength are fixed constants deliberately (see their comment), so
+    // nothing ever recomputes the surface back — it stays clipped until
+    // something else happens to trigger a fresh reposition.
+    //
+    // Debouncing removes the back-to-back pair at the source rather than
+    // trying to correct after the fact. A ONE-SHOT timer restarted by real
+    // events (never `repeat: true`, which this project bans outright) is
+    // event-driven, not polling, and costs nothing while idle — the same
+    // pattern, for the same reason, as NoteWindow.qml's positionSaveDebounce.
+    // 50ms is comfortably longer than the observed gap between the two
+    // calls, while staying well inside the ~60-100ms KWin round-trip that
+    // positionManager.moveWindow() needs afterward anyway (see
+    // PositionManager::moveWindow), so it adds no perceptible latency to
+    // where the bar actually lands.
+    Timer {
+        id: repositionDebounce
+        interval: 50
+        repeat: false
+        onTriggered: bar.reposition()
     }
 
     // Recomputes the default position only when the tracked note *changes*
@@ -711,10 +838,22 @@ Window {
         content.visible = tracking
         content.enabled = tracking
         dragArea.enabled = tracking
-        if (tracking)
-            reposition()
-        else
+        if (tracking) {
+            // Debounced, not called straight through — see
+            // repositionDebounce's own comment for the orientation-clipping
+            // bug that the immediate call (racing onScreenChanged's own,
+            // moments later) causes.
+            repositionDebounce.restart()
+        } else {
+            // Dropped, not left pending: a reposition landing after the bar
+            // has already been parked would drag it back on-screen for a
+            // note that's no longer tracked. reposition() bails on a null
+            // noteWindow anyway, but stopping here keeps that a belt-and-
+            // braces rather than the only thing standing between a park and
+            // an unwanted move.
+            repositionDebounce.stop()
             parkOffscreen(bar)
+        }
         updateBlur()
         columnOptionsPopup.updateBlur()
         spellingSuggestionsPopup.updateBlur()
@@ -883,6 +1022,19 @@ Window {
     Rectangle {
         id: background
         visible: false
+
+        // Keeps this window's input region in lockstep with whether it's
+        // actually showing anything — see parkOffscreen()'s own comment for
+        // why the offscreen park can't be trusted to do this job, and
+        // WindowInputMask's for the Wayland mechanics.
+        //
+        // Hooked to `visible` here rather than called from each of the
+        // handlers that flip it: this Rectangle's own visibility IS the
+        // file's existing "is this window really showing content" flag (the
+        // same one updateBlur() keys off), so one hook on it can't drift out
+        // of sync with a flip site someone forgets to update later.
+        onVisibleChanged: windowInputMask.setAcceptsInput(bar, background.visible)
+
         anchors.fill: parent
         radius: 6
         color: bar.noteWindow
@@ -1250,6 +1402,10 @@ Window {
             hide()
             show()
             updateBlur()
+            // Nothing is shown yet, and the surface only exists as of the
+            // show() above — see bar's own Component.onCompleted for why the
+            // mask has to be applied here rather than before that cycle.
+            windowInputMask.setAcceptsInput(columnOptionsPopup, false)
 
             // Deliberately NOT calling bar.parkOffscreen() here too — see
             // bar's own Component.onCompleted comment for why: it races
@@ -1366,6 +1522,11 @@ Window {
         Rectangle {
             id: columnOptionsBackground
             visible: false
+            // Same input-region hook, same reasoning, as bar's own
+            // background above — see it and parkOffscreen() for why this
+            // window can't rely on being parked off-screen to stop eating
+            // clicks while it isn't wanted.
+            onVisibleChanged: windowInputMask.setAcceptsInput(columnOptionsPopup, columnOptionsBackground.visible)
             width: columnOptionsContent.implicitWidth + 8
             height: columnOptionsContent.implicitHeight + 8
             radius: 6
@@ -1607,6 +1768,10 @@ Window {
             hide()
             show()
             updateBlur()
+            // Nothing is shown yet, and the surface only exists as of the
+            // show() above — see bar's own Component.onCompleted for why the
+            // mask has to be applied here rather than before that cycle.
+            windowInputMask.setAcceptsInput(spellingSuggestionsPopup, false)
 
             // Deliberately NOT calling bar.parkOffscreen() here too — bug
             // found live: it raced moveWindow's slow, unsynchronized
@@ -2225,6 +2390,13 @@ Window {
         Rectangle {
             id: spellingSuggestionsBackground
             visible: false
+            // Same input-region hook, same reasoning, as bar's own
+            // background above (see parkOffscreen()). This window's reveal
+            // is deliberately deferred until its position/size are confirmed
+            // (see spellingSuggestionsRevealIfReady), so hooking `visible`
+            // rather than wantsVisible also means it only starts accepting
+            // clicks once it's genuinely settled where the user can see it.
+            onVisibleChanged: windowInputMask.setAcceptsInput(spellingSuggestionsPopup, spellingSuggestionsBackground.visible)
             // Math.max floor, not a bare implicitWidth/Height passthrough
             // (bug found live: "sometimes a 1px-wide popup"): suggestionsRepeater's
             // model is data-driven (currentSpellingSuggestions), so every
@@ -2416,6 +2588,10 @@ Window {
             show()
             hide()
             show()
+            // Nothing is shown yet, and the surface only exists as of the
+            // show() above — see bar's own Component.onCompleted for why the
+            // mask has to be applied here rather than before that cycle.
+            windowInputMask.setAcceptsInput(tooltipWindow, false)
 
             // Deliberately NOT calling bar.parkOffscreen() here too — bug
             // found live: it raced moveWindow's slow, unsynchronized
@@ -2450,6 +2626,11 @@ Window {
         Rectangle {
             id: tooltipBackground
             visible: tooltipWindow.contentVisible
+            // Same input-region hook, same reasoning, as bar's own
+            // background above (see parkOffscreen()) — doubly worth having
+            // here, since a tooltip window toggles on every single hover
+            // in/out, giving the racy park by far the most chances to lose.
+            onVisibleChanged: windowInputMask.setAcceptsInput(tooltipWindow, tooltipBackground.visible)
             width: tooltipLabel.implicitWidth + 12
             height: tooltipLabel.implicitHeight + 12
             radius: 6

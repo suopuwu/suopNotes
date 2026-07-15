@@ -1,8 +1,8 @@
 // NoteHud — top-right corner hover-expand icon strip for NoteWindow.qml.
 // Modeled on suopPanel's TileGridHud.qml (same collapsed-dot / hover-expand
 // / glyph-as-Text-with-HoverHandler-and-TapHandler interaction pattern) but
-// deliberately simpler: this app has only two actions (pin, settings) and
-// no shared theme system, so colors are plain properties with sensible
+// deliberately simpler: this app has only a handful of actions (see Signals
+// below) and no shared theme system, so colors are plain properties with sensible
 // defaults instead of a required `theme` token object. No glass/blur
 // treatment here — that's wired independently elsewhere.
 //
@@ -19,6 +19,7 @@
 //   pinToggleRequested() — pin glyph tapped
 //   settingsRequested()  — gear glyph tapped (from collapsed placeholder
 //                          or the expanded row)
+//   duplicateRequested() — duplicate glyph tapped
 //   closeRequested()     — close glyph tapped TWICE (armed, then confirmed)
 //                          within closeArmTimeoutMs — see closeArmed below.
 //                          Deleting a note's file is irreversible, so a
@@ -64,6 +65,7 @@ Rectangle {
 
     signal pinToggleRequested()
     signal settingsRequested()
+    signal duplicateRequested()
     signal closeRequested()
 
     Timer {
@@ -92,6 +94,7 @@ Rectangle {
     // directly instead.
     readonly property alias pinGlyphItem: pinGlyph
     readonly property alias gearGlyphItem: gearGlyph
+    readonly property alias duplicateGlyphItem: duplicateGlyph
     readonly property alias closeGlyphItem: closeGlyph
 
     height: 26
@@ -201,6 +204,35 @@ Rectangle {
 
             HoverHandler { id: gearHov; cursorShape: Qt.PointingHandCursor }
             TapHandler { onTapped: hud.settingsRequested() }
+        }
+
+        Item {
+            width: 22
+            height: 22
+            anchors.verticalCenter: parent.verticalCenter
+
+            InteractableHighlight {
+                anchors.fill: parent
+                active: duplicateHov.hovered
+            }
+
+            // "⧉" for the same reason "⚲" is used for pin above rather than
+            // an emoji: it's plain-presentation, so it actually honors the
+            // `color` binding below instead of rendering in a fixed emoji
+            // color and ignoring it.
+            Text {
+                id: duplicateGlyph
+                objectName: "duplicateGlyph"
+                text: "⧉"
+                font.pixelSize: 16
+                color: hud.iconColor
+                opacity: duplicateHov.hovered ? 1.0 : 0.7
+                anchors.centerIn: parent
+                Behavior on opacity { NumberAnimation { duration: 120 } }
+            }
+
+            HoverHandler { id: duplicateHov; cursorShape: Qt.PointingHandCursor }
+            TapHandler { onTapped: hud.duplicateRequested() }
         }
 
         // Rightmost, matching the reference ribbon's own convention of

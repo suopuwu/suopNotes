@@ -5,6 +5,7 @@
 #include <QFont>
 #include <QFontMetricsF>
 #include <QTextBlock>
+#include <QTextBlockFormat>
 #include <QTextCharFormat>
 #include <QTextCursor>
 #include <QTextDocument>
@@ -644,11 +645,63 @@ SCENARIO("Undo survives the restyling that every cursor move triggers", "[markdo
             }
             REQUIRE(doc.toPlainText() != QStringLiteral("start\nsecond"));
 
-            THEN("undoing walks the document all the way back to where it started")
+            THEN("undoing walks the document all the way back to where it started, in a finite number of steps")
             {
-                while (doc.isUndoAvailable())
+                // Bounded deliberately. The bug this guards against is a
+                // LIVE-LOCK — undo reverting a highlighter-applied format,
+                // which retriggers the highlighter, which reapplies it — so an
+                // unbounded `while (doc.isUndoAvailable())` here would not fail
+                // on a regression, it would hang the test run forever (this
+                // cost 426 minutes at 99% CPU once already). A cap turns that
+                // same regression into an ordinary red test.
+                int undos = 0;
+                while (doc.isUndoAvailable() && undos < 100) {
                     doc.undo();
+                    ++undos;
+                }
+                CHECK(undos < 100);
                 CHECK(doc.toPlainText() == QStringLiteral("start\nsecond"));
+            }
+        }
+    }
+}
+
+SCENARIO("Highlighting never writes a block format", "[markdown_highlighter]")
+{
+    // Regression for the root cause of the live-lock in the scenario above,
+    // asserted directly rather than only through its symptom.
+    //
+    // A QTextBlockFormat is undoable document state, and the highlighter re-runs
+    // on every contentsChange — including the format-only ones a block-format
+    // write itself produces. So a block format written from highlightBlock() is
+    // reapplied every time the user undoes it: Ctrl+Z live-locks and never
+    // reaches the text (measured at 200+ undos with the typed text never
+    // reverting). It is reachable in production through a font change, which
+    // calls rehighlight() with undo enabled and no user edit to attach to.
+    //
+    // Hanging indent — the one feature that wants a block format — is therefore
+    // applied from the list EDIT operations and the load path instead (see
+    // TextFormatting), never from here. The highlighter's own output goes to the
+    // block's LAYOUT, which is not undoable, which is exactly why it is safe.
+    GIVEN("markdown exercising every rule the highlighter has: lists, headings and emphasis")
+    {
+        QTextDocument doc;
+        doc.documentLayout();
+        doc.setPlainText("# heading\n- bullet\n- [ ] checkbox\n1. numbered\n**bold** and *italic*");
+
+        WHEN("a highlighter styles all of it")
+        {
+            MarkdownHighlighter highlighter(&doc);
+            highlighter.setCursorBlockNumber(0);
+            highlightNow(highlighter);
+
+            THEN("every block's format is left at its defaults — no indent, no margins")
+            {
+                for (QTextBlock b = doc.begin(); b.isValid(); b = b.next()) {
+                    const QTextBlockFormat format = b.blockFormat();
+                    CHECK(format.leftMargin() == 0);
+                    CHECK(format.textIndent() == 0);
+                }
             }
         }
     }

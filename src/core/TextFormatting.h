@@ -86,6 +86,22 @@ bool isHandRolledListItemEmpty(QTextCursor cursor);
 // this file's own list-aware functions, and would otherwise leave the
 // surviving items out of sequence.
 void maintainHandRolledListNumbering(QTextCursor cursor);
+// Gives every list item in `document` its hanging indent, so a wrapped item's
+// continuation lines line up under its text rather than under its marker.
+//
+// Every list operation above already maintains this for the lines it touches;
+// this exists for the one path that has no edit to hang off — loading a note,
+// which replaces the whole buffer at once (DocumentHandler::setMarkdown). Call
+// it there only from INSIDE that function's undo-disabled window and only
+// AFTER setPlainText() has returned: indent is undoable document state, so
+// applying it with undo enabled would make a freshly opened note's first
+// Ctrl+Z undo its own indent, and applying it reentrantly from a
+// contentsChange handler mid-setPlainText crashes.
+//
+// Deliberately NOT called on font change, even though a note's font size is
+// what this is measured in — see the long comment in TextFormatting.cpp. Indent
+// is knowingly stale after a font change until the line is next edited.
+void applyListIndentToDocument(QTextDocument *document);
 // level 0 clears heading formatting back to a normal paragraph; 1-6 are h1-h6.
 void setHeadingLevel(QTextCursor cursor, int level);
 // Tab (feature request): inserts four literal spaces at the cursor,

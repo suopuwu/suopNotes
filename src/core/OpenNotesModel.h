@@ -31,6 +31,17 @@ public:
     QHash<int, QByteArray> roleNames() const override;
 
     Q_INVOKABLE void openNote(const QString &noteId);
+
+    // Opens a note with its spawn position already seeded, for callers that
+    // know where the new window belongs (duplicating a note, which offsets the
+    // copy from its source). Position has to be in Settings *before* the
+    // note's window delegate is constructed: that delegate writes a KWin
+    // "Apply Initially" rule from this x/y and must do so before its surface
+    // is ever mapped, so there is no post-spawn opportunity to place it
+    // without the window visibly jumping. Hence a seeded open rather than an
+    // openNote() followed by a move.
+    Q_INVOKABLE void openNoteAt(const QString &noteId, int x, int y);
+
     Q_INVOKABLE void closeNote(const QString &noteId);
     Q_INVOKABLE bool isOpen(const QString &noteId) const;
 

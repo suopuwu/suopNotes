@@ -1,6 +1,7 @@
 #include "KWinRuleWriter.h"
 
 #include <QDateTime>
+#include <QDebug>
 #include <QDir>
 #include <QProcess>
 #include <QSet>
@@ -128,6 +129,11 @@ bool KWinRuleApplier::isAvailable()
         && !QStandardPaths::findExecutable(QStringLiteral("kreadconfig6")).isEmpty();
 }
 
+bool KWinRuleApplier::isScriptingAvailable()
+{
+    return !QStandardPaths::findExecutable(QStringLiteral("qdbus6")).isEmpty();
+}
+
 QString KWinRuleApplier::groupNameFor(const QString &noteId)
 {
     return QStringLiteral("suopNotes-%1").arg(noteId);
@@ -213,7 +219,13 @@ void KWinRuleApplier::reconfigure()
 LivePosition KWinRuleApplier::captureLivePosition(const QString &windowTitle)
 {
     LivePosition result;
-    if (!isAvailable())
+    // isScriptingAvailable(), not isAvailable(): like moveWindow below, this
+    // shells out to qdbus6 and never touches kwriteconfig6/kreadconfig6,
+    // which is all the latter probes for. A silent found=false here is
+    // correct and already contractual (see LivePosition's own comment —
+    // callers fall back to the last persisted position), so unlike
+    // moveWindow this needs no warning.
+    if (!isScriptingAvailable())
         return result;
 
     QTemporaryFile scriptFile(QDir::tempPath() + QStringLiteral("/suopNotes-probe-XXXXXX.js"));
@@ -282,8 +294,22 @@ LivePosition KWinRuleApplier::captureLivePosition(const QString &windowTitle)
 
 void KWinRuleApplier::moveWindow(const QString &windowTitle, int x, int y)
 {
-    if (!isAvailable())
+    // isScriptingAvailable(), not isAvailable(): this function's actual
+    // dependency is qdbus6, which the latter never probed for (bug: it
+    // checked kwriteconfig6/kreadconfig6, neither of which is used here).
+    //
+    // Warns rather than returning silently. Callers use this to park
+    // permanently-mapped, always-on-top windows off-screen, and a park that
+    // no-ops leaves one of those sitting on screen with no retry and no
+    // trace of why. That can no longer swallow clicks — SelectionToolbar.qml
+    // masks those windows' input regions independently of this call ever
+    // landing (see its parkOffscreen comment) — but it would still leave
+    // them VISIBLE in the wrong place, which is worth a log line.
+    if (!isScriptingAvailable()) {
+        qWarning() << "KWinRuleApplier::moveWindow: qdbus6 not found; cannot move" << windowTitle
+                   << "— windows that rely on being parked off-screen will stay where they are.";
         return;
+    }
 
     QTemporaryFile scriptFile(QDir::tempPath() + QStringLiteral("/suopNotes-move-XXXXXX.js"));
     if (!scriptFile.open())

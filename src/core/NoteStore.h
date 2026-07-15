@@ -48,7 +48,10 @@ public:
 
     Q_INVOKABLE QStringList noteIds() const;
     Q_INVOKABLE QString loadNoteContent(const QString &id) const;
-    Q_INVOKABLE QString createNote();
+    // `content` is written to the new note's file synchronously, unlike every
+    // other write in this class — see the definition for why duplicating a
+    // note can't go through the debounced saveNoteContent() path.
+    Q_INVOKABLE QString createNote(const QString &content = QString());
     Q_INVOKABLE void deleteNote(const QString &id);
     Q_INVOKABLE void saveNoteContent(const QString &id, const QString &markdownText);
 

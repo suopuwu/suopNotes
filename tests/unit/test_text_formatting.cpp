@@ -1229,3 +1229,398 @@ SCENARIO("A note's markdown round-trips byte-for-byte through the buffer", "[tex
         }
     }
 }
+
+// --- Hanging indent ----------------------------------------------------
+//
+// A wrapped list item's continuation lines should line up under the item's own
+// TEXT rather than under its marker. That is a leftMargin (where every line of
+// the block starts) plus a negative textIndent (how far the FIRST line is
+// pulled back left, to make room for the marker, which is real text living in
+// the buffer like everything else).
+//
+// These read the indent off block.blockFormat(). That is deliberately NOT where
+// MarkdownHighlighter's own work lands — a QSyntaxHighlighter writes to the
+// block's LAYOUT — and the distinction is the whole architecture here: layout
+// formats are not undoable, block formats are. See the live-lock scenarios at
+// the bottom of this file.
+
+namespace
+{
+// The width a marker actually occupies ON SCREEN, which is what the indent has
+// to reserve — not the width of its literal text. MarkdownHighlighter re-renders
+// bullet/checkbox markers: one reserved glyph character and the marker's
+// trailing space each get PercentageSpacing 200 (double advance), and the rest
+// of the marker collapses to a 0.01pt font. A numbered marker is left alone and
+// so measures as the ordinary text it is.
+qreal renderedMarkerWidthInTest(const QTextDocument &doc, const QTextBlock &block)
+{
+    const QFontMetricsF metrics(doc.defaultFont());
+    const QString text = block.text();
+    static const QRegularExpression numbered(QStringLiteral("^\\d+\\. "));
+    if (const QRegularExpressionMatch m = numbered.match(text); m.hasMatch())
+        return metrics.horizontalAdvance(m.captured(0));
+    // Bullet "- ": the "-" is the reserved glyph. Checkbox "- [ ] ": the "[" is.
+    const QString glyph = text.startsWith(QStringLiteral("- ["))
+        ? QStringLiteral("[")
+        : QStringLiteral("-");
+    return 2.0 * metrics.horizontalAdvance(glyph)
+        + 2.0 * metrics.horizontalAdvance(QStringLiteral(" "));
+}
+}
+
+SCENARIO("A list item's wrapped lines hang under its text, not under its marker", "[text_formatting]")
+{
+    GIVEN("a ten-item numbered list, built one Enter at a time")
+    {
+        QTextDocument doc;
+        QTextCursor cursor(&doc);
+        TextFormatting::toggleNumberedList(cursor, 1);
+        cursor.insertText("item 1");
+        for (int i = 2; i <= 10; ++i) {
+            TextFormatting::continueHandRolledList(cursor);
+            cursor.insertText(QStringLiteral("item %1").arg(i));
+        }
+
+        THEN("the marker text itself is untouched — the indent adds no literal padding characters")
+        {
+            CHECK(doc.findBlockByNumber(0).text() == "1. item 1");
+            CHECK(doc.findBlockByNumber(8).text() == "9. item 9");
+            CHECK(doc.findBlockByNumber(9).text() == "10. item 10");
+        }
+
+        THEN("every item shares one leftMargin, so their wrapped lines all align")
+        {
+            const QTextBlockFormat item1 = doc.findBlockByNumber(0).blockFormat();
+            const QTextBlockFormat item9 = doc.findBlockByNumber(8).blockFormat();
+            const QTextBlockFormat item10 = doc.findBlockByNumber(9).blockFormat();
+            CHECK(item1.leftMargin() == item9.leftMargin());
+            CHECK(item9.leftMargin() == item10.leftMargin());
+        }
+
+        THEN("item 10's own marker is the run's widest, so its first line sits flush left")
+        {
+            const QTextBlockFormat item10 = doc.findBlockByNumber(9).blockFormat();
+            CHECK(item10.leftMargin() == -item10.textIndent());
+        }
+
+        THEN("item 9's narrower marker gets a less-negative textIndent, leaving blank space to its own left")
+        {
+            const QTextBlockFormat item9 = doc.findBlockByNumber(8).blockFormat();
+            CHECK(-item9.textIndent() < item9.leftMargin());
+        }
+
+        THEN("every item's actual text, after its own marker, starts at the same x")
+        {
+            // The invariant the two THENs above exist to produce. A block's
+            // first line renders at leftMargin+textIndent and its wrapped lines
+            // at leftMargin, so this is what makes "9. " and "10. " line their
+            // content up with each other AND with every continuation line.
+            qreal contentStartX = -1;
+            for (QTextBlock b = doc.begin(); b.isValid(); b = b.next()) {
+                const QTextBlockFormat format = b.blockFormat();
+                const qreal thisContentStart =
+                    format.leftMargin() + format.textIndent() + renderedMarkerWidthInTest(doc, b);
+                if (contentStartX < 0)
+                    contentStartX = thisContentStart;
+                else
+                    CHECK(thisContentStart == Catch::Approx(contentStartX));
+            }
+        }
+    }
+}
+
+SCENARIO("A list's hanging indent is sized to its own widest marker, not the document's", "[text_formatting]")
+{
+    GIVEN("a list whose markers are all single-digit")
+    {
+        QTextDocument doc;
+        QTextCursor cursor(&doc);
+        TextFormatting::toggleNumberedList(cursor, 1);
+        cursor.insertText("only item");
+
+        THEN("it reserves room for a single-digit marker, not a two-digit one")
+        {
+            const QFontMetricsF metrics(doc.defaultFont());
+            const QTextBlockFormat format = doc.begin().blockFormat();
+            CHECK(format.leftMargin() < metrics.horizontalAdvance(QStringLiteral("12. ")));
+            CHECK(format.leftMargin() == Catch::Approx(metrics.horizontalAdvance(QStringLiteral("1. "))));
+        }
+    }
+
+    GIVEN("a list that starts double-digit immediately")
+    {
+        QTextDocument doc;
+        QTextCursor cursor(&doc);
+        TextFormatting::toggleNumberedList(cursor, 11);
+        cursor.insertText("only item");
+
+        THEN("the reserved space grows to fit the two-digit marker")
+        {
+            const QFontMetricsF metrics(doc.defaultFont());
+            CHECK(doc.begin().blockFormat().leftMargin()
+                  > metrics.horizontalAdvance(QStringLiteral("2. ")));
+        }
+    }
+
+    GIVEN("a note loaded with a single-digit list and a double-digit list, a plain paragraph between them")
+    {
+        // Loaded rather than built with toggles, because that is the only way
+        // the app can actually produce this shape: Qt's insertBlock() copies the
+        // previous block's format, so a plain paragraph typed straight after a
+        // list item inherits its indent, and it is whatever ends the list —
+        // exitHandRolledList, or a load — that clears it again.
+        QTextDocument doc;
+        doc.setUndoRedoEnabled(false);
+        doc.setPlainText(QStringLiteral("1. first list item\nbetween the two lists\n11. second list item"));
+        TextFormatting::applyListIndentToDocument(&doc);
+        doc.setUndoRedoEnabled(true);
+
+        THEN("each list keeps its own margin — the wide one does not leak into the narrow one")
+        {
+            const QTextBlockFormat firstList = doc.findBlockByNumber(0).blockFormat();
+            const QTextBlockFormat secondList = doc.findBlockByNumber(2).blockFormat();
+            CHECK(firstList.leftMargin() < secondList.leftMargin());
+        }
+
+        THEN("the plain paragraph between them has no indent at all")
+        {
+            const QTextBlockFormat between = doc.findBlockByNumber(1).blockFormat();
+            CHECK(between.leftMargin() == 0);
+            CHECK(between.textIndent() == 0);
+        }
+    }
+
+    GIVEN("a list grown one item at a time from 1 up to 10")
+    {
+        QTextDocument doc;
+        QTextCursor cursor(&doc);
+        TextFormatting::toggleNumberedList(cursor, 1);
+        cursor.insertText("item 1");
+        for (int i = 2; i <= 10; ++i) {
+            TextFormatting::continueHandRolledList(cursor);
+            cursor.insertText(QStringLiteral("item %1").arg(i));
+        }
+
+        THEN("item 9 is widened along with the rest when item 10 joins the run")
+        {
+            // Regression: item 9 was already indented before item 10 existed,
+            // so it is the one an "only size the block being edited" bug would
+            // leave behind at the old, narrower margin.
+            const QTextBlockFormat item9 = doc.findBlockByNumber(8).blockFormat();
+            const QTextBlockFormat item10 = doc.findBlockByNumber(9).blockFormat();
+            CHECK(item9.leftMargin() == item10.leftMargin());
+        }
+    }
+}
+
+SCENARIO("Bullet, numbered and checkbox items all get a hanging indent", "[text_formatting]")
+{
+    GIVEN("a bullet list")
+    {
+        QTextDocument doc;
+        QTextCursor cursor(&doc);
+        TextFormatting::toggleBulletList(cursor);
+        cursor.insertText("bullet item");
+
+        THEN("its indent reserves the bullet's rendered width, and its text starts flush with it")
+        {
+            const QTextBlockFormat format = doc.begin().blockFormat();
+            CHECK(format.leftMargin() > 0);
+            CHECK(format.leftMargin() == -format.textIndent());
+            CHECK(format.leftMargin()
+                  == Catch::Approx(renderedMarkerWidthInTest(doc, doc.begin())));
+        }
+    }
+
+    GIVEN("a checkbox list")
+    {
+        QTextDocument doc;
+        QTextCursor cursor(&doc);
+        TextFormatting::toggleCheckboxList(cursor);
+        cursor.insertText("checkbox item");
+
+        THEN("its indent reserves the checkbox's rendered width, which is wider than the literal text is")
+        {
+            const QTextBlockFormat format = doc.begin().blockFormat();
+            CHECK(doc.begin().text() == "- [ ] checkbox item");
+            CHECK(format.leftMargin() == -format.textIndent());
+            CHECK(format.leftMargin()
+                  == Catch::Approx(renderedMarkerWidthInTest(doc, doc.begin())));
+        }
+    }
+
+    GIVEN("a bullet item and a checkbox item adjacent to each other")
+    {
+        QTextDocument doc;
+        QTextCursor cursor(&doc);
+        TextFormatting::toggleBulletList(cursor);
+        cursor.insertText("bullet item");
+        cursor.insertBlock();
+        TextFormatting::toggleCheckboxList(cursor);
+        cursor.insertText("checkbox item");
+
+        THEN("they read as one list and share a margin, so both items' text starts at the same x")
+        {
+            // Adjacent list lines are one run whatever their kinds, because
+            // that is what a reader sees as a single list.
+            const QTextBlockFormat bullet = doc.findBlockByNumber(0).blockFormat();
+            const QTextBlockFormat checkbox = doc.findBlockByNumber(1).blockFormat();
+            CHECK(bullet.leftMargin() == checkbox.leftMargin());
+            CHECK(bullet.leftMargin() + bullet.textIndent()
+                      + renderedMarkerWidthInTest(doc, doc.findBlockByNumber(0))
+                  == Catch::Approx(checkbox.leftMargin() + checkbox.textIndent()
+                                   + renderedMarkerWidthInTest(doc, doc.findBlockByNumber(1))));
+        }
+    }
+}
+
+SCENARIO("A block that stops being a list item loses its hanging indent", "[text_formatting]")
+{
+    // Bugfix, reported live: typing ordinary prose at the very start of a
+    // numbered item pushes its marker off position 0, so the line is no longer
+    // a list item — but nothing cleared the indent it was given back when it
+    // was one. The stale indent only shows once the paragraph is long enough to
+    // WRAP (textIndent cancels leftMargin on the first line), which is exactly
+    // why it went unnoticed.
+    GIVEN("a numbered item with prose typed in front of its marker")
+    {
+        QTextDocument doc;
+        QTextCursor cursor(&doc);
+        TextFormatting::toggleNumberedList(cursor, 2);
+        cursor.insertText("some item text");
+
+        QTextCursor typeCursor(&doc);
+        typeCursor.setPosition(doc.begin().position());
+        typeCursor.insertText("some regular text before the marker ");
+
+        WHEN("the reactive maintenance pass runs, as it does after every keystroke")
+        {
+            TextFormatting::maintainHandRolledListNumbering(QTextCursor(doc.begin()));
+
+            THEN("the line is a plain paragraph with no leftover margin or indent")
+            {
+                CHECK_FALSE(TextFormatting::isNumberedList(QTextCursor(doc.begin())));
+                CHECK(doc.begin().blockFormat().leftMargin() == 0);
+                CHECK(doc.begin().blockFormat().textIndent() == 0);
+            }
+        }
+    }
+
+    GIVEN("a list item turned into a heading")
+    {
+        QTextDocument doc;
+        QTextCursor cursor(&doc);
+        TextFormatting::toggleBulletList(cursor);
+        cursor.insertText("was a bullet");
+        REQUIRE(doc.begin().blockFormat().leftMargin() > 0);
+
+        WHEN("a heading prefix is applied, pushing the marker off position 0")
+        {
+            TextFormatting::setHeadingLevel(QTextCursor(doc.begin()), 1);
+
+            THEN("it is no longer a list item and keeps no indent")
+            {
+                CHECK(doc.begin().text() == "# - was a bullet");
+                CHECK(doc.begin().blockFormat().leftMargin() == 0);
+                CHECK(doc.begin().blockFormat().textIndent() == 0);
+            }
+        }
+    }
+
+    GIVEN("an empty list item the user presses Enter on to leave the list")
+    {
+        QTextDocument doc;
+        QTextCursor cursor(&doc);
+        TextFormatting::toggleBulletList(cursor);
+        REQUIRE(doc.begin().blockFormat().leftMargin() > 0);
+
+        WHEN("the item exits the list")
+        {
+            TextFormatting::exitHandRolledList(cursor);
+
+            THEN("the resulting plain paragraph has no indent")
+            {
+                CHECK(doc.begin().text() == "");
+                CHECK(doc.begin().blockFormat().leftMargin() == 0);
+                CHECK(doc.begin().blockFormat().textIndent() == 0);
+            }
+        }
+    }
+}
+
+SCENARIO("Loading a note indents its lists without touching the undo stack", "[text_formatting]")
+{
+    // Regression: a previous attempt applied indent from MarkdownHighlighter::
+    // highlightBlock(), which runs REENTRANTLY inside
+    // QTextDocumentPrivate::finishEdit() during setPlainText() — with undo
+    // disabled and no edit block to join. That crashed (SIGSEGV) on the note-
+    // loading path. Indent is applied here after setPlainText() returns instead,
+    // still inside the load's undo-disabled window.
+    GIVEN("a buffer loaded the way DocumentHandler::setMarkdown loads one")
+    {
+        QTextDocument doc;
+        doc.documentLayout();
+        doc.setUndoRedoEnabled(false);
+        doc.setPlainText(QStringLiteral("- first\n- second\n1. one\n2. two"));
+        TextFormatting::applyListIndentToDocument(&doc);
+        doc.setUndoRedoEnabled(true);
+
+        THEN("every loaded list item comes back already indented")
+        {
+            CHECK(doc.findBlockByNumber(0).blockFormat().leftMargin() > 0);
+            CHECK(doc.findBlockByNumber(1).blockFormat().leftMargin() > 0);
+            CHECK(doc.findBlockByNumber(2).blockFormat().leftMargin() > 0);
+            CHECK(doc.findBlockByNumber(3).blockFormat().leftMargin() > 0);
+        }
+
+        THEN("the load itself is not undoable — a freshly opened note's first Ctrl+Z is a no-op")
+        {
+            CHECK_FALSE(doc.isUndoAvailable());
+        }
+    }
+}
+
+SCENARIO("A reactive maintenance pass leaves nothing on the undo stack when nothing changed", "[text_formatting]")
+{
+    // Bugfix: this pass runs after every keystroke anywhere near a list, and
+    // almost every run has nothing to fix. Merging a block format
+    // unconditionally would still be a real edit, so each no-op pass pushed its
+    // own undo entry — which is what made Ctrl+Z feel like it was cycling
+    // through invisible steps instead of stepping back through real edits.
+    GIVEN("an already-correctly-indented list")
+    {
+        QTextDocument doc;
+        QTextCursor cursor(&doc);
+        TextFormatting::toggleNumberedList(cursor, 1);
+        cursor.insertText("item");
+        const qreal leftMargin = doc.begin().blockFormat().leftMargin();
+
+        WHEN("the maintenance pass runs many times over, as typing would run it")
+        {
+            QTextDocument scratch;
+            scratch.setPlainText(doc.toPlainText());
+            for (int i = 0; i < 25; ++i)
+                TextFormatting::maintainHandRolledListNumbering(QTextCursor(doc.begin()));
+
+            THEN("the indent is unchanged")
+            {
+                CHECK(doc.begin().blockFormat().leftMargin() == leftMargin);
+            }
+
+            THEN("not one of those passes was a document edit")
+            {
+                // Bounded on purpose: never `while (isUndoAvailable())`. If a
+                // no-op pass ever starts pushing entries again, this must fail,
+                // not spin.
+                int undos = 0;
+                while (doc.isUndoAvailable() && undos < 50) {
+                    doc.undo();
+                    ++undos;
+                }
+                // Only the two real edits (the toggle, and typing "item") are
+                // undoable; 25 maintenance passes added nothing.
+                CHECK(undos <= 2);
+            }
+        }
+    }
+}

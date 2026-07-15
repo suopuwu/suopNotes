@@ -66,6 +66,18 @@ void OpenNotesModel::openNote(const QString &noteId)
     m_settings->upsertNoteState(state);
 }
 
+void OpenNotesModel::openNoteAt(const QString &noteId, int x, int y)
+{
+    if (isOpen(noteId))
+        return;
+
+    Settings::NoteSessionState state;
+    state.noteId = noteId;
+    state.x = x;
+    state.y = y;
+    m_settings->upsertNoteState(state);
+}
+
 void OpenNotesModel::closeNote(const QString &noteId)
 {
     m_settings->removeNoteState(noteId);

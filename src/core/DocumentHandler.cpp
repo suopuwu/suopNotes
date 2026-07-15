@@ -742,7 +742,21 @@ void DocumentHandler::setMarkdown(const QString &markdown)
     QTextDocument *document = m_document->textDocument();
     document->setUndoRedoEnabled(false);
     document->setPlainText(markdown);
+    // Inside the undo-disabled window, and only once setPlainText() has
+    // returned. List indent is a block format, i.e. undoable document state, so
+    // doing this after undo is re-enabled would make a freshly opened note's
+    // very first Ctrl+Z undo the indent — exactly the no-op-first-undo the
+    // toggle above exists to prevent. It cannot ride along on the load's own
+    // contentsChange either: that fires from inside
+    // QTextDocumentPrivate::finishEdit(), and writing a block format
+    // reentrantly there is what crashed a previous attempt at this. There is
+    // also nothing else to do it — QML's onContentEdited returns early until
+    // the editor is ready, so the reactive maintenance pass never sees a load.
+    TextFormatting::applyListIndentToDocument(document);
     document->setUndoRedoEnabled(true);
+    // The loaded buffer is, by definition, already maintained — seed the gate
+    // so the first thing that can move it is the user's own next keystroke.
+    m_lastMaintainedText = document->toPlainText();
 
     // Disabling undo/redo above doesn't just skip recording history — it
     // also freezes QTextBlock::revision() (confirmed empirically: Qt drives
@@ -989,9 +1003,27 @@ void DocumentHandler::maintainListNumbering(int cursorPosition)
     if (!m_document || !m_document->textDocument())
         return;
 
-    QTextCursor cursor(m_document->textDocument());
-    cursor.setPosition(cursorPosition);
+    // Only react to real TEXT changes. This pass writes hanging indent, which
+    // is undoable block format, and contentEdited() fires for a block-format
+    // change (and for undoing one) just as it does for typing — so without this
+    // the pass would fight the user's own Ctrl+Z forever. See
+    // m_lastMaintainedText's declaration for the measurements.
+    //
+    // Compared against the buffer rather than tracked with a flag because the
+    // re-entry to suppress is the UNDO of an earlier indent write, which
+    // happens long after the write itself, on no flag's watch.
+    QTextDocument *document = m_document->textDocument();
+    const QString text = document->toPlainText();
+    if (text == m_lastMaintainedText)
+        return;
+
+    QTextCursor cursor(document);
+    cursor.setPosition(qBound(0, cursorPosition, document->characterCount() - 1));
     TextFormatting::maintainHandRolledListNumbering(cursor);
+    // Re-read rather than reusing `text`: the pass itself rewrites markers when
+    // it renumbers, so the buffer it leaves behind is what the next call has to
+    // compare against.
+    m_lastMaintainedText = document->toPlainText();
 }
 
 bool DocumentHandler::tryResetHeadingOnReturn(int cursorPosition)

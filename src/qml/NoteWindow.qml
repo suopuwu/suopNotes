@@ -244,6 +244,42 @@ Window {
         model.closeNote(id)
     }
 
+    // How far the duplicate spawns from its source, on both axes. Small and
+    // constant, in the spirit of Component.onCompleted's own `index * 40`
+    // cascade: enough that the copy reads as a separate window rather than a
+    // repaint of the original, without flinging it across the screen.
+    readonly property int duplicateOffset: 30
+
+    // Duplicate (feature request): creates a genuinely independent note — its
+    // own id, own file, own session state — that merely starts out with this
+    // note's content. Nothing is shared afterward; editing either is a normal
+    // edit of a normal note.
+    //
+    // The content goes through createNote() rather than a save after the fact
+    // because the new note's window reads its file the moment it opens, while
+    // saveNoteContent() is debounced — see NoteStore::createNote for the full
+    // reasoning.
+    //
+    // The position is seeded through openNoteAt() rather than moved after the
+    // window exists because a mapped Wayland toplevel can't be placed by
+    // assigning x/y at all; placement happens via the KWin rule the new
+    // delegate writes during its own Component.onCompleted, so the position
+    // must already be in Settings by then.
+    //
+    // Source position prefers noteX/noteY (model-backed, and the only value
+    // updated after a compositor-driven drag) and falls back to this window's
+    // own x/y, which is the sole record of where a never-dragged note sits.
+    // The pair is tested together, matching Component.onCompleted's own
+    // hasSavedPosition convention.
+    function duplicateNote() {
+        const hasKnownPosition = (noteX !== 0 || noteY !== 0)
+        const sourceX = hasKnownPosition ? noteX : noteWindow.x
+        const sourceY = hasKnownPosition ? noteY : noteWindow.y
+
+        const newId = noteStore.createNote(docHandler.toMarkdown())
+        openNotesModel.openNoteAt(newId, sourceX + duplicateOffset, sourceY + duplicateOffset)
+    }
+
     // Feature request: Copy — both the toolbar button and Ctrl+C, see
     // editor's own Keys.onPressed below — copies the whole note when
     // nothing is selected, rather than silently doing nothing, and briefly
@@ -2168,6 +2204,7 @@ Window {
             glassSheenSize: noteAppearance.glassSheenSize
             onPinToggleRequested: noteWindow.setPinned(!noteWindow.alwaysOnTop)
             onSettingsRequested: perNoteSettingsPopup.show()
+            onDuplicateRequested: noteWindow.duplicateNote()
             onCloseRequested: noteWindow.deleteNote()
         }
 

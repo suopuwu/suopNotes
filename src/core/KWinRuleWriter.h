@@ -57,7 +57,19 @@ struct LivePosition
 class KWinRuleApplier
 {
 public:
+    // Whether the CONFIG-writing half below (applyRule/removeRule) can run:
+    // probes kwriteconfig6/kreadconfig6, the only tools those two use.
     static bool isAvailable();
+
+    // Whether the LIVE, KWin-scripting half below (captureLivePosition/
+    // moveWindow) can run. Separate from isAvailable() on purpose: that one
+    // probes kwriteconfig6/kreadconfig6, but these two shell out to qdbus6,
+    // which is an entirely different package (qt6-tools) and can be missing
+    // on a system that has kwriteconfig6 perfectly well. Sharing one probe
+    // meant isAvailable() answered TRUE while every moveWindow() silently
+    // did nothing at all — see moveWindow's own comment for why a silently
+    // no-op move is worse than an obvious one.
+    static bool isScriptingAvailable();
 
     // Writes/updates this note's rule group with the given spec and
     // triggers a KWin reconfigure. The note's own id is reused as the

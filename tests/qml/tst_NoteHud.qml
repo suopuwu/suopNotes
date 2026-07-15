@@ -53,6 +53,12 @@ Item {
     }
 
     SignalSpy {
+        id: duplicateSpy
+        target: hud
+        signalName: "duplicateRequested"
+    }
+
+    SignalSpy {
         id: closeSpy
         target: hud
         signalName: "closeRequested"
@@ -65,6 +71,7 @@ Item {
         function init() {
             pinSpy.clear()
             settingsSpy.clear()
+            duplicateSpy.clear()
             closeSpy.clear()
             behindArea.behindClickCount = 0
             hud._closeArmed = false
@@ -88,6 +95,31 @@ Item {
             mouseClick(glyph, glyph.width / 2, glyph.height / 2)
             compare(pinSpy.count, 1)
             compare(settingsSpy.count, 0)
+        }
+
+        // Tapping the duplicate glyph asks the host to make a copy of the
+        // note (once, and without also triggering any other action).
+        function test_tapping_duplicate_glyph_emits_duplicateRequested() {
+            const glyph = hud.duplicateGlyphItem
+            mouseClick(glyph, glyph.width / 2, glyph.height / 2)
+            compare(duplicateSpy.count, 1)
+            compare(pinSpy.count, 0)
+            compare(settingsSpy.count, 0)
+            compare(closeSpy.count, 0)
+        }
+
+        // The close glyph deletes the note's file, so it must stay the
+        // rightmost (last-reached) icon in the row — a copy or settings tap
+        // must never sit past it where a stray click meant for close could
+        // land. Verified by comparing the glyphs' scene-mapped x positions.
+        function test_close_glyph_stays_rightmost_of_all_icons() {
+            const closePos = hud.closeGlyphItem.mapToItem(root, 0, 0)
+            const pinPos = hud.pinGlyphItem.mapToItem(root, 0, 0)
+            const gearPos = hud.gearGlyphItem.mapToItem(root, 0, 0)
+            const duplicatePos = hud.duplicateGlyphItem.mapToItem(root, 0, 0)
+            verify(closePos.x > pinPos.x)
+            verify(closePos.x > gearPos.x)
+            verify(closePos.x > duplicatePos.x)
         }
 
         // Reads pinGlyph's color via the pinGlyphItem alias (a live item
