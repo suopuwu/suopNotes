@@ -432,6 +432,66 @@ Item {
                     "the bar should default to horizontally centered over the note")
         }
 
+        // Feature request: the bar follows the note it's tracking when
+        // that note is dragged somewhere else, rather than being left
+        // behind at the note's old spot until the user unfocuses and
+        // refocuses it.
+        //
+        // Moving noteX/noteY is what a finished drag actually looks like
+        // to this component: the compositor tells the client nothing
+        // during a startSystemMove() gesture, so the position only ever
+        // arrives here via PositionEventService -> Settings -> the model's
+        // noteX/noteY roles, once, when the drag ends (see
+        // PositionEventService.h). This test drives that same property the
+        // model would.
+        function test_reanchors_to_the_tracked_note_after_that_note_is_dragged() {
+            // Both the before and after positions are deliberately kept
+            // well inside the screen, so the bar's centered spot is never
+            // clamped to a screen edge and these stay plain "it followed
+            // the note" assertions rather than a restatement of
+            // reposition()'s edge-clamping math.
+            verify(noteA.screen !== null, "precondition: the note must be associated with a real screen")
+            verify(noteA.screen.width >= 750,
+                   "precondition: the test screen must be wide enough to fit the bar at both positions unclamped")
+
+            noteA.noteX = 300
+            noteA.noteY = 300
+            bar.noteWindow = noteA
+            wait(80)
+            compare(bar.x, noteA.noteX + noteA.noteWidth / 2 - bar.width / 2,
+                    "precondition: the bar starts centered over the note's original position")
+
+            noteA.noteX = 400
+            noteA.noteY = 350
+            wait(80)
+
+            compare(bar.x, 400 + noteA.noteWidth / 2 - bar.width / 2,
+                    "the bar should re-center over the note's new position")
+            compare(bar.y, 350 - bar.barThickness - 8,
+                    "the bar should sit above the note's new position")
+        }
+
+        // Same re-anchoring, for the other way a note's geometry moves out
+        // from under the bar. Unlike position, size IS visible to the
+        // client continuously, so this fires repeatedly through a resize
+        // drag — repositionDebounce is what collapses that into one
+        // reposition once the drag settles.
+        function test_reanchors_to_the_tracked_note_after_that_note_is_resized() {
+            noteA.noteX = 300
+            noteA.noteY = 300
+            noteA.noteWidth = 260
+            bar.noteWindow = noteA
+            wait(80)
+
+            noteA.noteWidth = 400
+            wait(80)
+
+            compare(bar.x, noteA.noteX + 400 / 2 - bar.width / 2,
+                    "the bar should re-center over the note's new width")
+
+            noteA.noteWidth = 260
+        }
+
         // With no room above (pinned at the screen's own top edge) but
         // room to the left, left is next in priority order.
         function test_falls_back_to_the_left_of_the_note_when_theres_no_room_above() {

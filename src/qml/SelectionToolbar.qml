@@ -765,9 +765,47 @@ Window {
     // happens to re-run onNoteWindowChanged, by which point screen has
     // caught up. Re-running reposition() the moment screen itself changes
     // closes that gap without needing a focus round-trip.
+    // Re-anchors the bar to the tracked note whenever that note's geometry
+    // actually changes — a drag that lands it somewhere else, or a resize.
+    // Without this the bar stayed at wherever the note *used* to be, and
+    // only unfocusing/refocusing (which re-runs onNoteWindowChanged) put it
+    // back — the same "nothing else re-reads this" gap as onScreenChanged
+    // just above, for the note's position rather than its screen.
+    //
+    // noteX/noteY (model-backed), NOT noteWindow.x/y: per NoteWindow.qml's
+    // architecture notes, plain Window.x/y are never updated after a real
+    // compositor-driven drag on Wayland, so they'd never fire here at all.
+    // That indirection is also what makes this a drag-*end* trigger for
+    // free rather than a live follow: noteX/noteY only change when
+    // PositionEventService's KWin script reports interactiveMoveResizeFinished
+    // and that lands in Settings, which is exactly once per completed drag.
+    // Live-following a compositor-driven move isn't available to us — the
+    // client is told nothing until the gesture ends (see PositionEventService.h).
+    //
+    // Resize is the opposite: noteWidth/noteHeight are client-side and do
+    // update continuously, so these fire on every pixel of a resize drag.
+    // repositionDebounce absorbs that — it's one-shot and restarted here,
+    // so it only fires once the resize goes quiet for 50ms, keeping this to
+    // one KWin round-trip per gesture rather than one per frame.
     Connections {
         target: bar.noteWindow
         function onScreenChanged() {
+            if (bar.noteWindow)
+                repositionDebounce.restart()
+        }
+        function onNoteXChanged() {
+            if (bar.noteWindow)
+                repositionDebounce.restart()
+        }
+        function onNoteYChanged() {
+            if (bar.noteWindow)
+                repositionDebounce.restart()
+        }
+        function onNoteWidthChanged() {
+            if (bar.noteWindow)
+                repositionDebounce.restart()
+        }
+        function onNoteHeightChanged() {
             if (bar.noteWindow)
                 repositionDebounce.restart()
         }
@@ -817,11 +855,12 @@ Window {
         onTriggered: bar.reposition()
     }
 
-    // Recomputes the default position only when the tracked note *changes*
-    // (including going from/to null) — not on every move of the still-
-    // focused note. Once shown, the bar is the user's to drag wherever
-    // they like (see dragArea below) until focus switches to a different
-    // note, at which point it defaults again.
+    // Recomputes the default position when the tracked note *changes*
+    // (including going from/to null). The Connections block above covers
+    // the other case — the still-tracked note's own geometry moving under
+    // the bar. Between the two, a position the user chose by dragging the
+    // bar itself (see dragArea below) survives only until the next of
+    // either happens, at which point the bar re-anchors to the note.
     onNoteWindowChanged: {
         // Computed fresh here, not read from the wantsVisible property:
         // wantsVisible and this handler are both listeners on the same
