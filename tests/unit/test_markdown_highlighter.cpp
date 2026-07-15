@@ -1,7 +1,9 @@
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 #include <QColor>
 #include <QFont>
+#include <QFontMetricsF>
 #include <QTextBlock>
 #include <QTextCharFormat>
 #include <QTextCursor>
@@ -16,6 +18,17 @@
 // is what makes that literal text *look* formatted. Every assertion below reads
 // styling back out of the block's layout (where a QSyntaxHighlighter's setFormat
 // lands) while the buffer text itself stays untouched and byte-exact.
+//
+// The highlighter gives markdown punctuation one of three treatments, and most
+// of what follows is about which punctuation gets which:
+//
+//   collapsed — invisible AND zero-width, so the text closes up over it as if
+//               it had been parsed away. Emphasis and heading markers, on every
+//               line except the one the cursor is on.
+//   revealed  — visible but dimmed. The same markers, on the cursor's own line,
+//               so they can be seen and edited (Obsidian-style live preview).
+//   reserved  — invisible but still full-width, holding a slot open for
+//               NoteWindow.qml to draw a real bullet/checkbox into.
 
 namespace
 {
@@ -58,21 +71,52 @@ bool isItalicAt(const QTextBlock &block, int position)
     return formatAt(block, position).fontItalic();
 }
 
-bool isDimmedMarkerAt(const QTextBlock &block, int position)
+// Visible, but greyed out: how a marker looks on the cursor's own line.
+bool isRevealedMarkerAt(const QTextBlock &block, int position)
 {
     return formatAt(block, position).foreground().color() == markerGray;
 }
 
+// Gone from the rendered line entirely: transparent AND shrunk to a hair-thin
+// font, which is what actually removes its horizontal advance (a transparent
+// colour alone would leave a hole in the text).
+bool isCollapsedMarkerAt(const QTextBlock &block, int position)
+{
+    const QTextCharFormat format = formatAt(block, position);
+    const qreal pointSize = format.fontPointSize();
+    return format.foreground().color().alpha() == 0 && pointSize > 0.0 && pointSize < 1.0;
 }
 
-SCENARIO("Bold text renders bold while its ** markers stay in the buffer, dimmed", "[markdown_highlighter]")
+// Invisible but still occupying its space, so a real bullet/checkbox can be
+// drawn into the slot it holds open. The absence of a shrunk point size is the
+// whole distinction from isCollapsedMarkerAt above.
+bool isReservedMarkerAt(const QTextBlock &block, int position)
+{
+    const QTextCharFormat format = formatAt(block, position);
+    return format.foreground().color().alpha() == 0 && format.fontPointSize() == 0.0;
+}
+
+// How many extra pixels of advance a character has been given. This is how a
+// table cell is padded out to its column's width: the cell's last character is
+// widened, so the columns line up without a single byte of the buffer moving.
+qreal extraWidthAt(const QTextBlock &block, int position)
+{
+    const QTextCharFormat format = formatAt(block, position);
+    if (format.fontLetterSpacingType() != QFont::AbsoluteSpacing)
+        return 0.0;
+    return format.fontLetterSpacing();
+}
+
+}
+
+SCENARIO("Bold text renders bold while its ** markers vanish from the rendered line", "[markdown_highlighter]")
 {
     GIVEN("a document whose literal text contains **bold**")
     {
         QTextDocument doc;
         doc.setPlainText("say **bold** here");
 
-        WHEN("a MarkdownHighlighter is attached")
+        WHEN("a MarkdownHighlighter is attached and the cursor is elsewhere")
         {
             MarkdownHighlighter highlighter(&doc);
             highlightNow(highlighter);
@@ -89,18 +133,86 @@ SCENARIO("Bold text renders bold while its ** markers stay in the buffer, dimmed
                     CHECK(isBoldAt(block, i));
             }
 
-            THEN("the ** markers are dimmed rather than hidden")
+            THEN("the ** markers collapse to nothing, so the line reads as rendered text")
             {
-                CHECK(isDimmedMarkerAt(block, 4));
-                CHECK(isDimmedMarkerAt(block, 5));
-                CHECK(isDimmedMarkerAt(block, 10));
-                CHECK(isDimmedMarkerAt(block, 11));
+                CHECK(isCollapsedMarkerAt(block, 4));
+                CHECK(isCollapsedMarkerAt(block, 5));
+                CHECK(isCollapsedMarkerAt(block, 10));
+                CHECK(isCollapsedMarkerAt(block, 11));
             }
 
             THEN("surrounding plain text is left unstyled")
             {
                 CHECK_FALSE(isBoldAt(block, 0));
                 CHECK_FALSE(isBoldAt(block, 14));
+            }
+        }
+    }
+}
+
+SCENARIO("The cursor's own line reveals its markdown punctuation", "[markdown_highlighter]")
+{
+    GIVEN("two identical lines of bold text")
+    {
+        QTextDocument doc;
+        doc.setPlainText("**one**\n**two**");
+
+        WHEN("the cursor is reported to be on the first line")
+        {
+            MarkdownHighlighter highlighter(&doc);
+            highlighter.setCursorBlockNumber(0);
+            highlightNow(highlighter);
+
+            const QTextBlock cursorLine = doc.findBlockByNumber(0);
+            const QTextBlock otherLine = doc.findBlockByNumber(1);
+
+            THEN("that line's markers become visible, dimmed, so they can be edited")
+            {
+                CHECK(isRevealedMarkerAt(cursorLine, 0));
+                CHECK(isRevealedMarkerAt(cursorLine, 1));
+            }
+
+            THEN("the identical line without the cursor keeps its markers collapsed")
+            {
+                CHECK(isCollapsedMarkerAt(otherLine, 0));
+                CHECK(isCollapsedMarkerAt(otherLine, 1));
+            }
+
+            THEN("revealing punctuation does not stop the text itself rendering bold")
+            {
+                CHECK(isBoldAt(cursorLine, 2));
+                CHECK(isBoldAt(otherLine, 2));
+            }
+        }
+
+        WHEN("the cursor then moves to the second line")
+        {
+            MarkdownHighlighter highlighter(&doc);
+            highlighter.setCursorBlockNumber(0);
+            highlightNow(highlighter);
+            // No rehighlight() here: setCursorBlockNumber must restyle the two
+            // affected lines by itself, since in the app it is called from a
+            // cursor move with no edit to trigger anything else.
+            highlighter.setCursorBlockNumber(1);
+
+            THEN("the markers follow it — the line it left collapses, the line it entered reveals")
+            {
+                CHECK(isCollapsedMarkerAt(doc.findBlockByNumber(0), 0));
+                CHECK(isRevealedMarkerAt(doc.findBlockByNumber(1), 0));
+            }
+        }
+
+        WHEN("the cursor is reported as being nowhere at all")
+        {
+            MarkdownHighlighter highlighter(&doc);
+            highlighter.setCursorBlockNumber(0);
+            highlightNow(highlighter);
+            highlighter.setCursorBlockNumber(-1);
+
+            THEN("every marker in the document collapses — an untouched note reads as prose")
+            {
+                CHECK(isCollapsedMarkerAt(doc.findBlockByNumber(0), 0));
+                CHECK(isCollapsedMarkerAt(doc.findBlockByNumber(1), 0));
             }
         }
     }
@@ -244,10 +356,14 @@ SCENARIO("Headings render bold and larger, sized by their level", "[markdown_hig
                 CHECK(formatAt(h3, 4).property(QTextFormat::FontSizeAdjustment).toInt() == 0);
             }
 
-            THEN("the # markers stay in the buffer, dimmed")
+            THEN("the # markers stay in the buffer but collapse out of the rendered line")
             {
                 CHECK(doc.toPlainText().startsWith(QStringLiteral("# One")));
-                CHECK(isDimmedMarkerAt(h1, 0));
+                CHECK(isCollapsedMarkerAt(h1, 0));
+                // The space after the hash goes too, so the heading's text
+                // starts at the left margin rather than indented by its own
+                // syntax.
+                CHECK(isCollapsedMarkerAt(h1, 1));
             }
         }
     }
@@ -273,7 +389,7 @@ SCENARIO("A hash with no following space is not a heading", "[markdown_highlight
     }
 }
 
-SCENARIO("List markers are dimmed and never parsed as emphasis", "[markdown_highlighter]")
+SCENARIO("A bullet's marker holds its space open for a drawn bullet", "[markdown_highlighter]")
 {
     GIVEN("a bullet list written with an asterisk marker")
     {
@@ -286,9 +402,13 @@ SCENARIO("List markers are dimmed and never parsed as emphasis", "[markdown_high
             highlightNow(highlighter);
             const QTextBlock first = doc.findBlockByNumber(0);
 
-            THEN("the leading asterisks are dimmed markers")
+            THEN("the marker itself is invisible but still occupies its slot")
             {
-                CHECK(isDimmedMarkerAt(first, 0));
+                // Reserved, NOT collapsed: NoteWindow.qml draws the real bullet
+                // into exactly this character's rect, and a zero-width slot
+                // would put that bullet on top of the item's own text.
+                CHECK(isReservedMarkerAt(first, 0));
+                CHECK_FALSE(isCollapsedMarkerAt(first, 0));
             }
 
             THEN("the two lines' markers do not pair up into an italic span")
@@ -300,7 +420,7 @@ SCENARIO("List markers are dimmed and never parsed as emphasis", "[markdown_high
     }
 }
 
-SCENARIO("Numbered and checkbox list markers are dimmed as literal text", "[markdown_highlighter]")
+SCENARIO("A checkbox collapses to a single drawn control, and a numbered marker stays text", "[markdown_highlighter]")
 {
     GIVEN("a numbered item and both checkbox states, written in literal GFM")
     {
@@ -318,25 +438,36 @@ SCENARIO("Numbered and checkbox list markers are dimmed as literal text", "[mark
                 CHECK(doc.toPlainText().contains(QStringLiteral("- [x] done")));
             }
 
-            THEN("the numbered marker is dimmed")
+            THEN("the numbered marker is left as ordinary, text-coloured content")
             {
-                CHECK(isDimmedMarkerAt(doc.findBlockByNumber(0), 0));
+                // A number is not punctuation to read past — it's what a
+                // rendered list would show anyway, so it is neither dimmed,
+                // collapsed, nor replaced by anything drawn.
+                const QTextBlock numbered = doc.findBlockByNumber(0);
+                CHECK_FALSE(isRevealedMarkerAt(numbered, 0));
+                CHECK_FALSE(isCollapsedMarkerAt(numbered, 0));
+                CHECK_FALSE(isReservedMarkerAt(numbered, 0));
             }
 
-            THEN("both checkbox markers are dimmed across their whole bracket span")
+            THEN("a checkbox keeps ONE slot open and collapses the rest of its syntax")
             {
-                const QTextBlock unchecked = doc.findBlockByNumber(1);
-                for (int i = 0; i < 5; ++i)
-                    CHECK(isDimmedMarkerAt(unchecked, i));
-
-                const QTextBlock checked = doc.findBlockByNumber(2);
-                for (int i = 0; i < 5; ++i)
-                    CHECK(isDimmedMarkerAt(checked, i));
+                // "- [ ] todo": the "[" at index 2 is the reserved slot the
+                // drawn checkbox lands in; "- " before it and " ]" after it
+                // disappear entirely, leaving a control exactly one column
+                // wide — the same width a bullet gets, so mixed lists line up.
+                for (const int blockNumber : {1, 2}) {
+                    const QTextBlock item = doc.findBlockByNumber(blockNumber);
+                    CHECK(isCollapsedMarkerAt(item, 0));
+                    CHECK(isCollapsedMarkerAt(item, 1));
+                    CHECK(isReservedMarkerAt(item, 2));
+                    CHECK(isCollapsedMarkerAt(item, 3));
+                    CHECK(isCollapsedMarkerAt(item, 4));
+                }
             }
 
             THEN("the item text after a checkbox marker is left unstyled")
             {
-                CHECK_FALSE(isDimmedMarkerAt(doc.findBlockByNumber(1), 6));
+                CHECK_FALSE(isRevealedMarkerAt(doc.findBlockByNumber(1), 6));
             }
         }
     }
@@ -381,9 +512,143 @@ SCENARIO("Editing a block restyles it without any timer or polling", "[markdown_
                 CHECK(isBoldAt(doc.begin(), 2));
             }
 
-            THEN("the markers that created it are dimmed")
+            THEN("the markers that created it collapse out of the rendered line")
             {
-                CHECK(isDimmedMarkerAt(doc.begin(), 0));
+                CHECK(isCollapsedMarkerAt(doc.begin(), 0));
+            }
+        }
+    }
+}
+
+SCENARIO("A pipe table renders as a grid without rewriting a byte of it", "[markdown_highlighter]")
+{
+    GIVEN("a ragged table — its cells are not padded to a common width in the file")
+    {
+        //  0123456789...
+        // "| Name | Status |"   " Name " is narrower than " alpha "
+        // "| --- | --- |"
+        // "| alpha | done |"    " done "  is narrower than " Status "
+        const QString source = QStringLiteral("| Name | Status |\n| --- | --- |\n| alpha | done |");
+        QTextDocument doc;
+        doc.setPlainText(source);
+
+        WHEN("a MarkdownHighlighter is attached")
+        {
+            MarkdownHighlighter highlighter(&doc);
+            highlightNow(highlighter);
+
+            const QTextBlock header = doc.findBlockByNumber(0);
+            const QTextBlock delimiter = doc.findBlockByNumber(1);
+            const QTextBlock row = doc.findBlockByNumber(2);
+
+            THEN("the file's own text is completely untouched — alignment is a rendering effect only")
+            {
+                CHECK(doc.toPlainText() == source);
+            }
+
+            THEN("every pipe collapses, so each column boundary is one exact x for the grid to be drawn at")
+            {
+                CHECK(isCollapsedMarkerAt(header, 0));
+                CHECK(isCollapsedMarkerAt(header, 7));
+                CHECK(isCollapsedMarkerAt(header, 16));
+            }
+
+            THEN("the whole |---|---| row collapses — a drawn header rule replaces it")
+            {
+                for (int i = 0; i < delimiter.text().size(); ++i)
+                    CHECK(isCollapsedMarkerAt(delimiter, i));
+            }
+
+            THEN("every cell in a column ends up rendered at exactly the same width — which IS the alignment")
+            {
+                // Asserted as a width equality rather than "this specific cell
+                // gets padded", because which cell is the widest depends on the
+                // font: " Name " actually out-measures " alpha " in the default
+                // font (a capital N and an m beat five narrow lowercase
+                // letters), so hard-coding a winner tests the test's font, not
+                // the highlighter.
+                const QFontMetricsF metrics(doc.defaultFont());
+                const auto renderedWidth = [&](const QTextBlock &block, int start, int end) {
+                    return metrics.horizontalAdvance(block.text().mid(start, end - start))
+                        + extraWidthAt(block, end - 1);
+                };
+
+                // Column 0: " Name " against " alpha ".
+                CHECK(renderedWidth(header, 1, 7) == Catch::Approx(renderedWidth(row, 1, 8)));
+                // Column 1: " Status " against " done ".
+                CHECK(renderedWidth(header, 8, 16) == Catch::Approx(renderedWidth(row, 9, 15)));
+            }
+
+            THEN("cells are only ever widened, never squeezed")
+            {
+                CHECK(extraWidthAt(header, 6) >= 0.0);
+                CHECK(extraWidthAt(row, 7) >= 0.0);
+                CHECK(extraWidthAt(header, 15) >= 0.0);
+                CHECK(extraWidthAt(row, 14) >= 0.0);
+            }
+        }
+    }
+}
+
+SCENARIO("A line that merely starts with a pipe is not treated as a table", "[markdown_highlighter]")
+{
+    GIVEN("prose beginning with a pipe, and no delimiter row under it")
+    {
+        QTextDocument doc;
+        doc.setPlainText("| this is just prose");
+
+        WHEN("a MarkdownHighlighter is attached")
+        {
+            MarkdownHighlighter highlighter(&doc);
+            highlightNow(highlighter);
+
+            THEN("its pipe stays visible — GFM needs a delimiter row, and a table half-typed must not vanish")
+            {
+                CHECK_FALSE(isCollapsedMarkerAt(doc.begin(), 0));
+            }
+        }
+    }
+}
+
+SCENARIO("Undo survives the restyling that every cursor move triggers", "[markdown_highlighter]")
+{
+    GIVEN("an attached highlighter over a document with an undo history")
+    {
+        QTextDocument doc;
+        doc.documentLayout();
+        // Seed the text with undo off, mirroring DocumentHandler::setMarkdown,
+        // so the baseline itself is not an undoable step.
+        doc.setUndoRedoEnabled(false);
+        doc.setPlainText("start\nsecond");
+        doc.setUndoRedoEnabled(true);
+
+        MarkdownHighlighter highlighter(&doc);
+        highlighter.setCursorBlockNumber(0);
+        highlightNow(highlighter);
+
+        WHEN("edits are interleaved with the cursor moving between lines")
+        {
+            // This is the scenario that matters. Revealing markers means
+            // rehighlighting a block on every cursor move — and an earlier
+            // attempt at hanging indents proved that touching a BLOCK format
+            // from highlightBlock() live-locks undo outright (ten undos in a
+            // row reverted nothing). This highlighter only ever sets CHARACTER
+            // formats, which is what keeps undo intact; the assertion below is
+            // what would catch a regression back to that class of bug.
+            QTextCursor cursor(&doc);
+            for (int i = 0; i < 5; ++i) {
+                cursor.movePosition(QTextCursor::End);
+                cursor.insertText(QStringLiteral(" *x%1*").arg(i));
+                highlighter.setCursorBlockNumber(1);
+                highlighter.setCursorBlockNumber(0);
+            }
+            REQUIRE(doc.toPlainText() != QStringLiteral("start\nsecond"));
+
+            THEN("undoing walks the document all the way back to where it started")
+            {
+                while (doc.isUndoAvailable())
+                    doc.undo();
+                CHECK(doc.toPlainText() == QStringLiteral("start\nsecond"));
             }
         }
     }

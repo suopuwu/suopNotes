@@ -1,5 +1,6 @@
 #include "DocumentHandler.h"
 #include "MarkdownHighlighter.h"
+#include "MarkdownList.h"
 #include "MarkdownTable.h"
 #include "SpellCheckHighlighter.h"
 #include "SpellChecker.h"
@@ -176,6 +177,10 @@ void DocumentHandler::setDocument(QQuickTextDocument *document)
     }
     m_lastMisspelledWordRanges = computeMisspelledWordRanges();
     emit misspelledWordRangesChanged();
+    m_lastListMarkerRanges = computeListMarkerRanges();
+    emit listMarkerRangesChanged();
+    m_lastTableRanges = computeTableRanges();
+    emit tableRangesChanged();
 }
 
 bool DocumentHandler::spellcheckEnabled() const
@@ -281,11 +286,163 @@ void DocumentHandler::onContentsChange(int from, int charsRemoved, int charsAdde
     // fall out of sync, so there is nothing to repair.
 
     emitMisspelledWordRangesChangedIfNeeded();
+    // Only a real edit can add, remove or re-check a list marker; a pure
+    // formatting pass cannot. Guarding on the same condition the real-edit
+    // branch above uses keeps the glyph overlay off the highlighters' own
+    // rehighlight path entirely.
+    if (charsRemoved != 0 || charsAdded != 0) {
+        emitListMarkerRangesChangedIfNeeded();
+        emitTableRangesChangedIfNeeded();
+    }
 }
 
 QVariantList DocumentHandler::misspelledWordRanges() const
 {
     return computeMisspelledWordRanges();
+}
+
+QVariantList DocumentHandler::listMarkerRanges() const
+{
+    return computeListMarkerRanges();
+}
+
+QVariantList DocumentHandler::computeListMarkerRanges() const
+{
+    QVariantList ranges;
+    if (!m_document || !m_document->textDocument())
+        return ranges;
+
+    const QTextDocument *document = m_document->textDocument();
+    for (QTextBlock block = document->begin(); block.isValid(); block = block.next()) {
+        const MarkdownList::Marker marker = MarkdownList::parse(block.text());
+        // Numbered items are excluded on purpose: their marker stays real,
+        // visible text (see MarkdownHighlighter), so there is nothing to draw
+        // over it.
+        if (marker.kind != MarkdownList::Kind::Bullet
+            && marker.kind != MarkdownList::Kind::Checkbox) {
+            continue;
+        }
+
+        // Document positions, not line offsets — QML resolves these straight
+        // through editor.positionToRectangle().
+        QVariantMap range;
+        range.insert(QStringLiteral("start"), block.position() + marker.glyphStart);
+        range.insert(QStringLiteral("end"), block.position() + marker.glyphStart + marker.glyphLength);
+        range.insert(QStringLiteral("kind"),
+                     marker.kind == MarkdownList::Kind::Checkbox ? QStringLiteral("checkbox")
+                                                                 : QStringLiteral("bullet"));
+        range.insert(QStringLiteral("checked"), marker.checked);
+        ranges.append(range);
+    }
+    return ranges;
+}
+
+void DocumentHandler::emitListMarkerRangesChangedIfNeeded()
+{
+    const QVariantList current = computeListMarkerRanges();
+    if (current == m_lastListMarkerRanges)
+        return;
+    m_lastListMarkerRanges = current;
+    emit listMarkerRangesChanged();
+}
+
+QVariantList DocumentHandler::tableRanges() const
+{
+    return computeTableRanges();
+}
+
+QVariantList DocumentHandler::computeTableRanges() const
+{
+    QVariantList ranges;
+    if (!m_document || !m_document->textDocument())
+        return ranges;
+
+    const QTextDocument *document = m_document->textDocument();
+    for (QTextBlock block = document->begin(); block.isValid();) {
+        const MarkdownTable::Region region =
+            MarkdownTable::regionAt(document, block.blockNumber());
+        if (!region.isValid()) {
+            block = block.next();
+            continue;
+        }
+
+        const QTextBlock header = document->findBlockByNumber(region.firstBlockNumber);
+        const QTextBlock last = document->findBlockByNumber(region.lastBlockNumber);
+        if (!header.isValid() || !last.isValid())
+            break;
+
+        // Column boundaries come from the header row alone: the highlighter has
+        // already stretched every row so a given column sits at one x across
+        // the whole table, which is exactly what makes one row's pipes speak
+        // for all of them.
+        QVariantList boundaries;
+        for (const int pipe : MarkdownTable::pipePositions(header.text()))
+            boundaries.append(header.position() + pipe);
+
+        QVariantList rowStarts;
+        const int delimiterBlockNumber = region.firstBlockNumber + 1;
+        for (int number = region.firstBlockNumber; number <= region.lastBlockNumber; ++number) {
+            if (number == delimiterBlockNumber)
+                continue; // collapsed to a sliver; the header rule goes there
+            const QTextBlock row = document->findBlockByNumber(number);
+            if (row.isValid())
+                rowStarts.append(row.position());
+        }
+
+        QVariantMap table;
+        table.insert(QStringLiteral("columnBoundaries"), boundaries);
+        table.insert(QStringLiteral("rowStarts"), rowStarts);
+        // Named tableTop/tableBottom, not top/bottom: these become required
+        // properties on a QML Item delegate, and Item already declares top and
+        // bottom as FINAL — colliding with them fails the whole component load
+        // ("Cannot override FINAL property"), which takes the note window with
+        // it.
+        table.insert(QStringLiteral("tableTop"), header.position());
+        table.insert(QStringLiteral("tableBottom"), last.position());
+        // Where the header rule is drawn — the collapsed delimiter row.
+        const QTextBlock delimiter = document->findBlockByNumber(delimiterBlockNumber);
+        table.insert(QStringLiteral("headerRule"),
+                     delimiter.isValid() ? delimiter.position() : header.position());
+        ranges.append(table);
+
+        // Skip past this table rather than re-detecting the same region from
+        // each of its own rows.
+        block = document->findBlockByNumber(region.lastBlockNumber).next();
+    }
+    return ranges;
+}
+
+void DocumentHandler::emitTableRangesChangedIfNeeded()
+{
+    const QVariantList current = computeTableRanges();
+    if (current == m_lastTableRanges)
+        return;
+    m_lastTableRanges = current;
+    emit tableRangesChanged();
+}
+
+void DocumentHandler::rehighlightMarkdown()
+{
+    if (m_markdownHighlighter)
+        m_markdownHighlighter->rehighlight();
+}
+
+void DocumentHandler::setCursorPosition(int position)
+{
+    if (!m_markdownHighlighter)
+        return;
+
+    if (position < 0) {
+        m_markdownHighlighter->setCursorBlockNumber(-1);
+        return;
+    }
+
+    if (!m_document || !m_document->textDocument())
+        return;
+
+    QTextCursor cursor(m_document->textDocument());
+    cursor.setPosition(qBound(0, position, m_document->textDocument()->characterCount() - 1));
+    m_markdownHighlighter->setCursorBlockNumber(cursor.blockNumber());
 }
 
 QVariantList DocumentHandler::computeMisspelledWordRanges() const
@@ -602,6 +759,12 @@ void DocumentHandler::setMarkdown(const QString &markdown)
     // spellcheckLanguage/userDictionaryWords changes already do.
     invalidateAllMisspelledBlockCaches();
     emitMisspelledWordRangesChangedIfNeeded();
+    // Loading a note wholesale replaces every list marker in it, and does so
+    // without any per-keystroke contentsChange to notice it — so the glyph
+    // overlay has to be told here, or an opened note shows its bullets'
+    // reserved gaps with nothing drawn in them.
+    emitListMarkerRangesChangedIfNeeded();
+    emitTableRangesChangedIfNeeded();
 }
 
 QTextCursor DocumentHandler::cursorFor(int selectionStart, int selectionEnd) const

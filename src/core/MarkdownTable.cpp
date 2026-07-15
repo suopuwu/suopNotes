@@ -9,10 +9,22 @@
 namespace
 {
 
+const QRegularExpression &delimiterCellPattern()
+{
+    // ---, :---, ---:, :---: — GFM's alignment markers. At least one dash.
+    static const QRegularExpression pattern(QStringLiteral("^:?-+:?$"));
+    return pattern;
+}
+
+}
+
+namespace MarkdownTable
+{
+
 // A cell boundary is an unescaped "|". Walking character by character (rather
 // than QString::split) is what lets "\|" stay content: split() has no notion of
 // escaping and would cut the cell in half.
-QList<int> unescapedPipePositions(const QString &line)
+QList<int> pipePositions(const QString &line)
 {
     QList<int> positions;
     for (int i = 0; i < line.size(); ++i) {
@@ -29,20 +41,13 @@ QList<int> unescapedPipePositions(const QString &line)
     return positions;
 }
 
-const QRegularExpression &delimiterCellPattern()
-{
-    // ---, :---, ---:, :---: — GFM's alignment markers. At least one dash.
-    static const QRegularExpression pattern(QStringLiteral("^:?-+:?$"));
-    return pattern;
-}
-
 // Each cell's [start, end) span in `line`'s own coordinates — the single place
 // cell boundaries are decided, so splitting text and hit-testing an offset can
 // never disagree about where a cell begins. Spans are raw (padding included);
 // callers trim if they want content.
 QList<QPair<int, int>> cellSpans(const QString &line)
 {
-    const QList<int> pipes = unescapedPipePositions(line);
+    const QList<int> pipes = pipePositions(line);
     if (pipes.isEmpty())
         return {};
 
@@ -59,11 +64,6 @@ QList<QPair<int, int>> cellSpans(const QString &line)
 
     return spans;
 }
-
-}
-
-namespace MarkdownTable
-{
 
 bool isTableRow(const QString &line)
 {

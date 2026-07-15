@@ -1,5 +1,7 @@
 #pragma once
 
+#include <QList>
+#include <QPair>
 #include <QString>
 #include <QStringList>
 
@@ -81,5 +83,22 @@ int columnAt(const QString &line, int offsetInLine);
 // column doesn't exist. This is what lets a caller place a cursor *inside* a
 // cell — the plain-text stand-in for QTextTable's cell geometry.
 bool cellContentRange(const QString &line, int column, int *start, int *end);
+
+// Each cell's RAW [start, end) span within `line` — surrounding pipes excluded
+// but the cell's own padding spaces included, i.e. exactly the run of
+// characters that sits between one column boundary and the next.
+//
+// This is the same internal geometry cellContentRange and columnAt are built
+// on, exposed because rendering needs the padded span rather than the trimmed
+// content: MarkdownHighlighter measures precisely this run to decide how much
+// to stretch a cell so its column lines up. Trimmed content would measure the
+// wrong thing, and a second private copy of the boundary logic is exactly what
+// this module exists to prevent.
+QList<QPair<int, int>> cellSpans(const QString &line);
+
+// The offset of every unescaped "|" in `line`: a table's column boundaries,
+// and so the x positions a renderer draws its grid lines at. Escaped "\|" is
+// content and never appears here.
+QList<int> pipePositions(const QString &line);
 
 }

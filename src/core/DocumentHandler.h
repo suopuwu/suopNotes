@@ -52,6 +52,31 @@ class DocumentHandler : public QObject
     // contentsChange connection, m_pendingEditActive/m_pendingEditPosition)
     // for the mechanism itself; this property only controls its timing.
     Q_PROPERTY(int spellcheckDebounceMs READ spellcheckDebounceMs WRITE setSpellcheckDebounceMs NOTIFY spellcheckDebounceMsChanged)
+    // Every bullet and checkbox marker in the document, as a list of
+    // {"start": int, "end": int, "kind": "bullet"|"checkbox", "checked": bool}
+    // maps. MarkdownHighlighter renders those markers' literal characters
+    // transparent while keeping their width (see its reservedMarkerFormat),
+    // and NoteWindow.qml draws a real bullet/checkbox into the reserved slot
+    // for each range reported here — the same "C++ reports ranges, QML draws
+    // the decoration" split misspelledWordRanges above already uses, and for
+    // the same underlying reason: a QSyntaxHighlighter can only restyle
+    // characters, it can't replace one with a different glyph.
+    Q_PROPERTY(QVariantList listMarkerRanges READ listMarkerRanges NOTIFY listMarkerRangesChanged)
+    // Every pipe table in the document, as the geometry needed to draw a grid
+    // over it — a list of maps:
+    //   "columnBoundaries": [int]  document positions of the header row's pipes
+    //   "rowStarts":        [int]  document position of each rendered row's start
+    //   "top"/"bottom":     int    positions on the first and last rendered rows
+    // All of them are POSITIONS, not pixels: NoteWindow.qml turns each into a
+    // rect with editor.positionToRectangle(), the same way every other overlay
+    // here works, so the grid tracks scrolling and reflow for free.
+    //
+    // The rows are already aligned into columns by MarkdownHighlighter (which
+    // stretches each cell so a column is one exact x in every row) — that is
+    // what makes a single set of boundaries taken from the header row correct
+    // for the whole table. The delimiter row is excluded from rowStarts: it is
+    // collapsed to a sliver and is where the header rule gets drawn instead.
+    Q_PROPERTY(QVariantList tableRanges READ tableRanges NOTIFY tableRangesChanged)
 public:
     explicit DocumentHandler(QObject *parent = nullptr);
     ~DocumentHandler();
@@ -70,8 +95,30 @@ public:
 
     QVariantList misspelledWordRanges() const;
 
+    QVariantList listMarkerRanges() const;
+
+    QVariantList tableRanges() const;
+
+    // Re-runs the markdown pass over the whole document. Needed because table
+    // column alignment is computed from the document's font metrics (see
+    // MarkdownHighlighter::highlightTableRow), and a font change emits no
+    // contentsChange — so without this, changing a note's font or size would
+    // leave every table stretched to the OLD font's measurements until the
+    // next keystroke happened to restyle it.
+    Q_INVOKABLE void rehighlightMarkdown();
+
     int spellcheckDebounceMs() const;
     void setSpellcheckDebounceMs(int ms);
+
+    // Tells the markdown highlighter which line the cursor is on, so that
+    // line — and only that line — shows its raw markdown punctuation
+    // (Obsidian-style live preview; see MarkdownHighlighter::
+    // setCursorBlockNumber). Called from QML on every cursor move, which is
+    // cheap: the highlighter no-ops unless the *block* actually changed.
+    //
+    // Pass -1 when the editor has no cursor to speak of (it lost focus), which
+    // collapses every marker in the document.
+    Q_INVOKABLE void setCursorPosition(int position);
 
     // Resolves `position` to the word range (start/end/text) it falls inside,
     // using the exact same tokenization SpellCheckHighlighter uses to decide
@@ -223,6 +270,15 @@ signals:
     // recompute (see misspelledWordRanges' own doc comment for why this
     // property exists at all).
     void misspelledWordRangesChanged();
+    // Emitted when the set of bullet/checkbox markers may have changed — after
+    // any real text edit, and after a document swap. Like
+    // misspelledWordRangesChanged above this is only emitted when the value
+    // genuinely differs, so typing inside a list item's text doesn't rebuild
+    // the glyph overlay's delegates on every keystroke.
+    void listMarkerRangesChanged();
+    // Emitted when the set of tables, or their shape, may have changed — same
+    // only-on-real-change discipline as the two above.
+    void tableRangesChanged();
     void spellcheckDebounceMsChanged();
     // Emitted after any call above that can change the format active at the
     // cursor/selection (the toggles, setHeadingLevel, and the two list-aware
@@ -272,6 +328,21 @@ private:
     // themselves and compare against m_lastMisspelledWordRanges — see
     // emitMisspelledWordRangesChangedIfNeeded()'s own comment for why.
     QVariantList computeMisspelledWordRanges() const;
+    // Shared implementation behind the listMarkerRanges Q_PROPERTY getter,
+    // pulled out for the same reason computeMisspelledWordRanges above is:
+    // so an edit can recompute and compare against m_lastListMarkerRanges
+    // instead of emitting unconditionally. See
+    // emitListMarkerRangesChangedIfNeeded().
+    QVariantList computeListMarkerRanges() const;
+    // Recomputes listMarkerRanges and emits only on a real change. Mirrors
+    // emitMisspelledWordRangesChangedIfNeeded() below, and exists for the
+    // identical reason: the property drives a QML Repeater, so an
+    // unconditional emit on every keystroke would tear down and rebuild every
+    // bullet/checkbox glyph in the note just because the user typed a letter
+    // into one list item's label.
+    void emitListMarkerRangesChangedIfNeeded();
+    QVariantList computeTableRanges() const;
+    void emitTableRangesChangedIfNeeded();
     // Recomputes misspelledWordRanges and only emits misspelledWordRangesChanged
     // if the result actually differs from the last-emitted value. Every
     // trigger that used to emit misspelledWordRangesChanged unconditionally
@@ -310,6 +381,8 @@ private:
 
     QPointer<QQuickTextDocument> m_document;
     QVariantList m_lastMisspelledWordRanges;
+    QVariantList m_lastListMarkerRanges;
+    QVariantList m_lastTableRanges;
     int m_spellcheckDebounceMs = 500;
     // Bug found live ("the current word that has a popup currently loses
     // the underline when the popup is on" — the previous cursor/selection-

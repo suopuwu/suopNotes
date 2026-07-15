@@ -39,12 +39,20 @@ Marker parse(const QString &line)
         marker.kind = Kind::Checkbox;
         marker.length = match.capturedLength();
         marker.checked = match.captured(1) != QStringLiteral(" ");
+        // The "[" immediately before the captured state character. Derived
+        // from the match rather than hard-coded to index 2 so it stays correct
+        // for every bullet spelling the pattern accepts. See Marker::glyphStart
+        // on why the bracket and not the state character itself.
+        marker.glyphStart = match.capturedStart(1) - 1;
+        marker.glyphLength = 1;
         return marker;
     }
 
     if (const QRegularExpressionMatch match = bulletPattern().match(line); match.hasMatch()) {
         marker.kind = Kind::Bullet;
         marker.length = match.capturedLength();
+        marker.glyphStart = 0;
+        marker.glyphLength = 1; // the "-" itself
         return marker;
     }
 
@@ -52,6 +60,8 @@ Marker parse(const QString &line)
         marker.kind = Kind::Numbered;
         marker.length = match.capturedLength();
         marker.number = match.captured(1).toInt();
+        // Left at 0/0: "1." stays real text, so there is no reserved slot and
+        // nothing gets drawn over it.
         return marker;
     }
 

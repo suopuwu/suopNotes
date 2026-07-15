@@ -10,7 +10,7 @@ top-level Wayland surfaces restored from settings at startup. The surface is
 pixels, so verification means launching it, getting a note on screen, and
 capturing it.
 
-## Two hazards — read these first
+## Three hazards — read these first
 
 **1. Launching your build will KILL the user's running suopNotes unless you
 isolate `TMPDIR`.** `SingleInstanceGuard` uses `QLocalServer`, and Qt puts
@@ -21,7 +21,26 @@ alone does **not** protect them. Always set `TMPDIR` to a scratch dir; verify
 afterwards that `/tmp/suopNotes-singleinstance` is untouched and their process
 still lives.
 
-**2. Never drive this app with synthetic global input (`/dev/uinput`) on a live
+**2. Your sandboxed note windows get ADOPTED by the user's running app, which
+then writes them into the user's REAL config.** Sandboxing `XDG_CONFIG_HOME`
+does not prevent this, because it isn't your app doing the writing — theirs is.
+`PositionManager` finds note windows through KWin by `resourceName`/caption
+across the whole session, with no check that a window belongs to its own
+process, so it treats yours as its own notes: they get appended to
+`~/.config/suopNotes/suopNotes/settings.ini`'s `[OpenNotes]` and given rule
+groups in `~/.config/kwinrulesrc` (confirmed live — four sandbox notes ended up
+in the user's open-notes list at the ghost windows' 260x260 size, and the user's
+app re-adds them on its next position-save, so cleaning the files while it runs
+is undone). Their app never removes them, so on its next start it tries to open
+notes whose IDs aren't in the user's index.
+
+There is no known way to launch a second instance and avoid this. So: **check
+both files afterwards** (`grep <your-note-uuid>`), and if you polluted them,
+cleanup must be ordered — quit their app FIRST (memory is the source of truth),
+then edit the files, then restart. Prefer a note UUID with an obvious fixed
+prefix so the damage is greppable.
+
+**3. Never drive this app with synthetic global input (`/dev/uinput`) on a live
 desktop.** Keystrokes go wherever focus is, not where you aim. Activating the
 note window via KWin scripting does **not** focus the inner `TextArea`, and the
 note often won't raise above other windows — keystrokes intended for it land in
@@ -93,5 +112,35 @@ To make a click land reliably, set `c.fullScreen = true` on it first.
   `NoteFilename::stripLeadingMarker` strips `-*+>` and `1.` but **not `#`**, so
   a note starting with a heading becomes `# Title.md`. Pre-existing, not a bug
   you introduced (the user's own notes folder already contains `## Notes.md`).
-- The app writes a per-note KWin rule; with `XDG_CONFIG_HOME` sandboxed it lands
-  in `$SB/config/kwinrulesrc`, leaving the real one clean. Check this.
+- The app writes a per-note KWin rule via `kwriteconfig6`, which does honor
+  `XDG_CONFIG_HOME`, so *your* instance's rules land in `$SB/config/kwinrulesrc`
+  (verified). That is NOT enough to keep the real one clean — see hazard 2.
+- **`ctest` writes into the user's real `~/.config/kwinrulesrc`.** `qml_tests`
+  instantiates NoteWindow unsandboxed, and its rule groups
+  (`suopNotes-toolbar-test-note-a`/`-b`) persist there. Confirmed by md5 before
+  and after a bare `ctest -R qml_tests`.
+- **A QML error makes the app exit 255 with NO output under the wayland
+  platform** — an empty log and a dead process, which reads exactly like a crash
+  with no cause. `main.cpp` does `return -1` when `rootObjects()` is empty. To
+  actually see the error, run offscreen:
+  ```bash
+  env -i HOME="$HOME" PATH="$PATH" XDG_CONFIG_HOME="$SB/config" \
+    XDG_DATA_HOME="$SB/data" TMPDIR="$GT" \
+    QT_QPA_PLATFORM=offscreen QT_FORCE_STDERR_LOGGING=1 \
+    timeout 8 ./build/src/suopNotes 2>&1 | grep -iE "unavailable|Cannot|failed"
+  ```
+  This is a fast pre-flight for any QML change — it caught "Cannot override
+  FINAL property" (a delegate declaring `top`/`bottom`, which `Item` already
+  declares final) in seconds after the wayland run said nothing at all.
+- **`kill -9` leaves a ghost window in KWin**: a dead client's window keeps
+  answering geometry queries. A caption-matching raise script will happily grab
+  the ghost, resize it, and screenshot a region that paints nothing — which
+  looks precisely like "the app renders an empty note". Use SIGTERM, and give
+  each run a UNIQUE note UUID so a stale caption can't be matched.
+- The app's own KWin rule sets `positionrule=3`, so KWin **overrides any
+  `frameGeometry` you assign** from a script. Always crop the screenshot from
+  the geometry KWin *reports*, never from what you asked for. The geometry read
+  during a raise can also still be the window's transient startup size (seen
+  reporting 260x260 before settling to 780x700) — re-query after it settles, and
+  retry rather than sleeping a fixed amount: the window can take well over 4s to
+  map.

@@ -30,6 +30,34 @@ public:
     // its header); this uses the same parent-less ctor + setDocument() fix.
     explicit MarkdownHighlighter(QTextDocument *document);
 
+    // Which line the cursor is on, as a block number (-1 for "nowhere", e.g.
+    // the editor isn't focused). Markdown punctuation collapses to zero width
+    // on every OTHER line and is revealed, dimmed, on this one — the
+    // Obsidian/CodeMirror live-preview behavior: you read rendered text, and
+    // the raw syntax appears only where you're actually editing it.
+    //
+    // Rehighlights just the two blocks whose appearance can change (the line
+    // being left and the line being entered) rather than the whole document,
+    // so this stays cheap enough to call on every cursor move. Setting the
+    // same value twice is a no-op, which matters because a plain left/right
+    // keypress within one line fires cursorPositionChanged too.
+    void setCursorBlockNumber(int blockNumber);
+    int cursorBlockNumber() const;
+
 protected:
     void highlightBlock(const QString &text) override;
+
+private:
+    // Renders one row of a pipe table: collapses the pipes, and stretches each
+    // cell so its column lines up with the same column in every other row.
+    // Returns false if `text` isn't actually part of a valid table, in which
+    // case the caller styles it as ordinary prose.
+    //
+    // The alignment is purely visual — not one byte of the buffer changes — so
+    // a hand-typed ragged table renders as a neat grid and still saves exactly
+    // as it was typed. NoteWindow.qml draws the grid lines themselves over the
+    // top (see DocumentHandler::tableRanges).
+    bool highlightTableRow(const QString &text);
+
+    int m_cursorBlockNumber = -1;
 };

@@ -40,6 +40,29 @@ struct Marker
     int number = 0;     // Numbered only; 0 otherwise
     bool checked = false; // Checkbox only
 
+    // Bullet and Checkbox only: the one character within the line whose space
+    // is reserved for a drawn control. The rest of the marker collapses to
+    // zero width, so this single character's slot becomes the whole column the
+    // bullet/checkbox is painted into. Zero-length for Numbered, whose marker
+    // stays ordinary visible text and is never replaced by anything drawn.
+    //
+    // These exist as one shared value rather than each caller re-deriving them
+    // because two callers must agree on this range to the character:
+    // MarkdownHighlighter makes exactly this range transparent-but-full-width
+    // (and everything around it zero-width), and NoteWindow.qml draws the real
+    // bullet/checkbox into exactly this range's rect. Off by one in either
+    // direction and the control lands beside a leftover visible "-", or on top
+    // of the item's own first letter.
+    //
+    // For a bullet the character is the obvious one, its "-". For a checkbox
+    // it is deliberately the OPENING BRACKET, not the " "/"x" state character
+    // between the brackets: the state character is the one part of the marker
+    // whose width changes when the box is ticked, so reserving it would make
+    // every checkbox shift sideways by the difference between a space and an
+    // "x" the moment it was clicked. The bracket's advance never changes.
+    int glyphStart = 0;
+    int glyphLength = 0;
+
     bool isValid() const { return kind != Kind::None; }
 };
 

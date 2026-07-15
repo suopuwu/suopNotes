@@ -596,6 +596,15 @@ Window {
                     font.family: noteAppearance.fontFamily.length > 0 ? noteAppearance.fontFamily : Qt.application.font.family
                     background: Item {}
 
+                    // A table's columns are aligned by stretching each cell to
+                    // a width measured in the document's font (see
+                    // MarkdownHighlighter::highlightTableRow). Changing the
+                    // font emits no contentsChange, so nothing would otherwise
+                    // re-run that measurement: every table would stay stretched
+                    // to the OLD font's metrics until the next keystroke.
+                    // Restyling on a font change is what keeps them aligned.
+                    onFontChanged: docHandler.rehighlightMarkdown()
+
                     // QtQuick Controls' built-in right-click cut/copy/paste menu
                     // (T.ContextMenu, Qt 6.9+) would fight the drag area below
                     // for the same right-button press — right-click is reserved
@@ -746,6 +755,11 @@ Window {
                         // own comment for why (avoids a full underline
                         // delegate rebuild on every keystroke).
                         onMisspelledWordRangesChanged: misspelledWordOverlay.syncMisspelledWordsModel()
+                        // Same deal for the bullet/checkbox glyph overlay —
+                        // see listMarkerOverlay's own model comment.
+                        onListMarkerRangesChanged: listMarkerOverlay.syncListMarkersModel()
+                        // And for the table grid — see tableGridOverlay.
+                        onTableRangesChanged: tableGridOverlay.syncTablesModel()
 
                         // Debounced + atomic on NoteStore's side (~300ms after
                         // the last keystroke) — instant-feeling without a
@@ -1054,6 +1068,386 @@ Window {
                         }
                     }
 
+                    // Draws the real bullets and checkboxes (feature request:
+                    // "checkboxes should look like real checkboxes",
+                    // "bulleted lists should look like real bullets").
+                    //
+                    // A QSyntaxHighlighter can only restyle characters — it
+                    // cannot swap a "-" for a "•". So MarkdownHighlighter
+                    // makes each marker's reserved slot transparent while
+                    // keeping its width (see its reservedMarkerFormat) and
+                    // this overlay paints the actual control into that slot.
+                    // The buffer keeps the literal "- [x]" the user typed, so
+                    // the file still saves byte-for-byte — the glyph exists
+                    // only on screen, which is the whole point of the
+                    // plain-text rewrite.
+                    //
+                    // Same shape, same constraints and the same hard-won
+                    // fixes as misspelledWordOverlay above: a child of
+                    // `editor` so it inherits editor's coordinate space and
+                    // scrolls with the text for free, a ListModel synced by
+                    // targeted updates so delegates are never needlessly
+                    // rebuilt, and one debounced imperative recompute rather
+                    // than a reactive binding on positionToRectangle().
+                    Item {
+                        id: listMarkerOverlay
+                        anchors.fill: parent
+                        z: 1
+
+                        ListModel {
+                            id: listMarkersModel
+                        }
+
+                        // See syncMisspelledWordsModel() above — identical
+                        // reasoning: these are ABSOLUTE document positions, so
+                        // typing anywhere above a list shifts every marker
+                        // below it, and handing the raw QVariantList to the
+                        // Repeater would destroy and rebuild every bullet in
+                        // the note on those keystrokes.
+                        function syncListMarkersModel() {
+                            const ranges = docHandler.listMarkerRanges
+                            const n = Math.min(listMarkersModel.count, ranges.length)
+                            for (let i = 0; i < n; i++) {
+                                const existing = listMarkersModel.get(i)
+                                const incoming = ranges[i]
+                                if (existing.start !== incoming.start || existing.end !== incoming.end
+                                        || existing.kind !== incoming.kind
+                                        || existing.checked !== incoming.checked)
+                                    listMarkersModel.set(i, incoming)
+                            }
+                            while (listMarkersModel.count < ranges.length)
+                                listMarkersModel.append(ranges[listMarkersModel.count])
+                            while (listMarkersModel.count > ranges.length)
+                                listMarkersModel.remove(listMarkersModel.count - 1)
+                        }
+
+                        Repeater {
+                            id: listMarkerRepeater
+                            model: listMarkersModel
+
+                            delegate: Item {
+                                id: markerGlyph
+                                required property int start
+                                required property int end
+                                required property string kind
+                                required property bool checked
+
+                                // Byte-for-byte the mechanism underlineCanvas
+                                // above documents at length: positionToRectangle()
+                                // reflects a text layout that settles a frame or
+                                // more AFTER start/end change, so x/y/width/height
+                                // are only ever ASSIGNED from this one function,
+                                // never bound to a live expression, and every
+                                // trigger routes through the single debounce
+                                // below. Read that comment before changing any of
+                                // this — the failure modes (a glyph at a stale
+                                // position, or a flash as it recomputes twice per
+                                // edit) are subtle and were both found live.
+                                function recomputeGlyphRect() {
+                                    if (!editor.ready)
+                                        return
+                                    const startRect = editor.positionToRectangle(start)
+                                    const endRect = editor.positionToRectangle(end)
+                                    if (startRect.y !== endRect.y)
+                                        return
+                                    markerGlyph.x = startRect.x
+                                    markerGlyph.y = startRect.y
+                                    markerGlyph.width = Math.max(1, endRect.x - startRect.x)
+                                    markerGlyph.height = startRect.height
+                                }
+
+                                Timer {
+                                    id: glyphSettleDebounce
+                                    interval: 32
+                                    onTriggered: markerGlyph.recomputeGlyphRect()
+                                }
+                                onStartChanged: glyphSettleDebounce.restart()
+                                onEndChanged: glyphSettleDebounce.restart()
+                                Component.onCompleted: glyphSettleDebounce.restart()
+
+                                Connections {
+                                    target: editor
+                                    function onWidthChanged() { glyphSettleDebounce.restart() }
+                                    function onContentWidthChanged() { glyphSettleDebounce.restart() }
+                                    function onContentHeightChanged() { glyphSettleDebounce.restart() }
+                                }
+
+                                visible: width > 1 && height > 0
+
+                                // Sized off the LINE HEIGHT rather than the
+                                // reserved slot's width, so both controls scale
+                                // with the note's font instead of with whatever
+                                // the current font happens to make a "-" or a
+                                // "[" measure. Centered on the slot, which lets
+                                // them overhang it slightly — harmless, because
+                                // what sits on either side is the marker's own
+                                // collapsed, invisible characters.
+                                readonly property real glyphSize: Math.max(4, markerGlyph.height * 0.52)
+
+                                // A real bullet: a filled dot in the text's own
+                                // color, where the literal "-" would have been.
+                                Rectangle {
+                                    visible: markerGlyph.kind === "bullet"
+                                    width: markerGlyph.glyphSize * 0.62
+                                    height: width
+                                    radius: width / 2
+                                    anchors.centerIn: parent
+                                    color: editor.color
+                                }
+
+                                // A real checkbox: a rounded outline that fills
+                                // in and shows a tick when checked. Both colors
+                                // are derived from the note's OWN font and
+                                // background (which the user can override per
+                                // note), rather than a fixed accent — a
+                                // hardcoded blue would be invisible on a blue
+                                // note.
+                                Rectangle {
+                                    id: checkboxBox
+                                    visible: markerGlyph.kind === "checkbox"
+                                    width: markerGlyph.glyphSize
+                                    height: width
+                                    radius: Math.max(2, width * 0.22)
+                                    anchors.centerIn: parent
+                                    color: markerGlyph.checked ? editor.color : "transparent"
+                                    border.width: Math.max(1, width * 0.1)
+                                    border.color: markerGlyph.checked
+                                        ? editor.color
+                                        : Qt.rgba(editor.color.r, editor.color.g, editor.color.b, 0.55)
+
+                                    // The tick. Drawn as two rotated bars rather
+                                    // than a "✓" text glyph so it can't depend on
+                                    // the note's user-chosen font actually having
+                                    // one.
+                                    Item {
+                                        anchors.centerIn: parent
+                                        width: checkboxBox.width * 0.62
+                                        height: checkboxBox.height * 0.62
+                                        visible: markerGlyph.checked
+                                        opacity: 0.95
+
+                                        Rectangle {
+                                            width: parent.width * 0.42
+                                            height: Math.max(1, checkboxBox.width * 0.12)
+                                            radius: height / 2
+                                            color: noteAppearance.backgroundColor
+                                            x: parent.width * 0.02
+                                            y: parent.height * 0.58
+                                            transformOrigin: Item.Left
+                                            rotation: 45
+                                        }
+                                        Rectangle {
+                                            width: parent.width * 0.78
+                                            height: Math.max(1, checkboxBox.width * 0.12)
+                                            radius: height / 2
+                                            color: noteAppearance.backgroundColor
+                                            x: parent.width * 0.24
+                                            y: parent.height * 0.72
+                                            transformOrigin: Item.Left
+                                            rotation: -45
+                                        }
+                                    }
+
+                                    Behavior on color {
+                                        ColorAnimation { duration: 90 }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Draws the grid over pipe tables (feature request:
+                    // "tables don't display properly (at all, they just show
+                    // the raw text)").
+                    //
+                    // The division of labour: MarkdownHighlighter collapses the
+                    // pipes and stretches each cell so a column sits at one
+                    // exact x in every row, and this draws the lines. Neither
+                    // touches the buffer — a hand-typed ragged table renders as
+                    // a neat grid and still saves byte-for-byte as typed, which
+                    // is why the alignment is done with character advances
+                    // rather than by padding the markdown itself.
+                    //
+                    // Same overlay constraints as the two above it: a child of
+                    // `editor` for its coordinate space, a ListModel synced by
+                    // targeted updates, and one debounced imperative recompute.
+                    Item {
+                        id: tableGridOverlay
+                        anchors.fill: parent
+                        z: 0
+
+                        ListModel {
+                            id: tablesModel
+                        }
+
+                        // A table's column/row positions are ARRAYS, and
+                        // ListModel cannot hold one: it silently converts a
+                        // nested JS array role into another ListModel (
+                        // confirmed — the delegate received an object with
+                        // .count and .agent instead of a list, so .length was
+                        // undefined, no lines were computed, and the grid just
+                        // never appeared). dynamicRoles: true does NOT change
+                        // that. Carrying the arrays across as JSON strings and
+                        // parsing them in the delegate sidesteps the conversion
+                        // entirely, and keeps the C++ side reporting an
+                        // ordinary list.
+                        function tableEntry(table) {
+                            return {
+                                "tableTop": table.tableTop,
+                                "tableBottom": table.tableBottom,
+                                "headerRule": table.headerRule,
+                                "columnBoundariesJson": JSON.stringify(table.columnBoundaries),
+                                "rowStartsJson": JSON.stringify(table.rowStarts)
+                            }
+                        }
+
+                        // Same reasoning as syncMisspelledWordsModel(): these
+                        // are absolute document positions, so typing anywhere
+                        // above (or inside) a table shifts them, and handing the
+                        // raw QVariantList to the Repeater would tear down and
+                        // rebuild the whole grid on every keystroke.
+                        function syncTablesModel() {
+                            const tables = docHandler.tableRanges
+                            const n = Math.min(tablesModel.count, tables.length)
+                            for (let i = 0; i < n; i++)
+                                tablesModel.set(i, tableEntry(tables[i]))
+                            while (tablesModel.count < tables.length)
+                                tablesModel.append(tableEntry(tables[tablesModel.count]))
+                            while (tablesModel.count > tables.length)
+                                tablesModel.remove(tablesModel.count - 1)
+                        }
+
+                        Repeater {
+                            model: tablesModel
+
+                            delegate: Item {
+                                id: tableGrid
+                                required property string columnBoundariesJson
+                                required property string rowStartsJson
+                                required property int tableTop
+                                required property int tableBottom
+                                required property int headerRule
+
+                                // Resolved pixel geometry, assigned only by
+                                // recomputeGrid() below.
+                                property var columnXs: []
+                                property var rowYs: []
+                                property real ruleY: -1
+                                property real lineThickness: 1
+
+                                readonly property color lineColor:
+                                    Qt.rgba(editor.color.r, editor.color.g, editor.color.b, 0.28)
+
+                                // Imperative + debounced for exactly the reason
+                                // underlineCanvas documents at length:
+                                // positionToRectangle() reflects a text layout
+                                // that settles a frame or more after the
+                                // positions change, so reading it from a
+                                // reactive binding can capture a half-settled
+                                // (sometimes degenerate) rect.
+                                function recomputeGrid() {
+                                    if (!editor.ready)
+                                        return
+                                    const topRect = editor.positionToRectangle(tableGrid.tableTop)
+                                    const bottomRect = editor.positionToRectangle(tableGrid.tableBottom)
+                                    if (bottomRect.y + bottomRect.height <= topRect.y)
+                                        return
+
+                                    tableGrid.x = 0
+                                    tableGrid.y = topRect.y
+                                    tableGrid.width = editor.width
+                                    tableGrid.height = (bottomRect.y + bottomRect.height) - topRect.y
+
+                                    const boundaries = JSON.parse(tableGrid.columnBoundariesJson)
+                                    const xs = []
+                                    for (let i = 0; i < boundaries.length; i++)
+                                        xs.push(editor.positionToRectangle(boundaries[i]).x)
+                                    tableGrid.columnXs = xs
+
+                                    // Row lines sit at the TOP of each rendered
+                                    // row; the table's bottom edge is added as
+                                    // one extra line at full height.
+                                    const starts = JSON.parse(tableGrid.rowStartsJson)
+                                    const ys = []
+                                    for (let i = 0; i < starts.length; i++)
+                                        ys.push(editor.positionToRectangle(starts[i]).y - topRect.y)
+                                    ys.push(tableGrid.height)
+                                    tableGrid.rowYs = ys
+
+                                    tableGrid.ruleY =
+                                        editor.positionToRectangle(tableGrid.headerRule).y - topRect.y
+                                }
+
+                                Timer {
+                                    id: gridSettleDebounce
+                                    interval: 32
+                                    onTriggered: tableGrid.recomputeGrid()
+                                }
+                                onTableTopChanged: gridSettleDebounce.restart()
+                                onTableBottomChanged: gridSettleDebounce.restart()
+                                onColumnBoundariesJsonChanged: gridSettleDebounce.restart()
+                                onRowStartsJsonChanged: gridSettleDebounce.restart()
+                                Component.onCompleted: gridSettleDebounce.restart()
+
+                                Connections {
+                                    target: editor
+                                    function onWidthChanged() { gridSettleDebounce.restart() }
+                                    function onContentWidthChanged() { gridSettleDebounce.restart() }
+                                    function onContentHeightChanged() { gridSettleDebounce.restart() }
+                                }
+
+                                visible: tableGrid.height > 0 && tableGrid.columnXs.length > 1
+
+                                // Column separators, including the table's own
+                                // left and right edges (the header row's outer
+                                // pipes are boundaries too).
+                                Repeater {
+                                    model: tableGrid.columnXs
+                                    delegate: Rectangle {
+                                        required property real modelData
+                                        x: modelData
+                                        y: 0
+                                        width: tableGrid.lineThickness
+                                        height: tableGrid.height
+                                        color: tableGrid.lineColor
+                                    }
+                                }
+
+                                // Row separators, plus the bottom edge.
+                                Repeater {
+                                    model: tableGrid.rowYs
+                                    delegate: Rectangle {
+                                        required property real modelData
+                                        x: tableGrid.columnXs.length > 0 ? tableGrid.columnXs[0] : 0
+                                        y: modelData
+                                        width: tableGrid.columnXs.length > 1
+                                            ? tableGrid.columnXs[tableGrid.columnXs.length - 1] - tableGrid.columnXs[0]
+                                              + tableGrid.lineThickness
+                                            : 0
+                                        height: tableGrid.lineThickness
+                                        color: tableGrid.lineColor
+                                    }
+                                }
+
+                                // The header rule, drawn into the sliver of
+                                // space the collapsed "| --- |" row leaves
+                                // behind. Brighter than the other lines so the
+                                // header reads as a header.
+                                Rectangle {
+                                    visible: tableGrid.ruleY >= 0
+                                    x: tableGrid.columnXs.length > 0 ? tableGrid.columnXs[0] : 0
+                                    y: tableGrid.ruleY
+                                    width: tableGrid.columnXs.length > 1
+                                        ? tableGrid.columnXs[tableGrid.columnXs.length - 1] - tableGrid.columnXs[0]
+                                          + tableGrid.lineThickness
+                                        : 0
+                                    height: Math.max(1, tableGrid.lineThickness)
+                                    color: Qt.rgba(editor.color.r, editor.color.g, editor.color.b, 0.6)
+                                }
+                            }
+                        }
+                    }
+
                     Component.onCompleted: {
                         docHandler.setMarkdown(noteStore.loadNoteContent(noteWindow.noteId))
                         // setMarkdown() rebuilds the whole document through a
@@ -1077,6 +1471,44 @@ Window {
                     onSelectionStartChanged: noteWindow.refreshFormatState()
                     onSelectionEndChanged: noteWindow.refreshFormatState()
 
+                    // Live preview: markdown punctuation ("**", "#", "`")
+                    // collapses to zero width everywhere except the line the
+                    // cursor is actually on, where it's revealed so it can be
+                    // edited. -1 means "no line" and collapses every marker in
+                    // the note.
+                    //
+                    // Gated on hasBeenEdited — "has this editor EVER held
+                    // focus" — rather than on the live activeFocus, and the
+                    // difference matters twice:
+                    //
+                    //  - A freshly opened note has never been touched, so it
+                    //    reads as finished prose with nothing revealed, rather
+                    //    than exposing whatever punctuation happens to sit on
+                    //    line 0 (where the cursor starts).
+                    //  - The selection toolbar is a SEPARATE WINDOW that takes
+                    //    OS focus when clicked (see persistentSelection above,
+                    //    which exists for that same reason). On live
+                    //    activeFocus, clicking Bold would drop focus, collapse
+                    //    the cursor line's markers and reflow the text the user
+                    //    is aiming at — mid-click. Sticky state keeps the line
+                    //    revealed across that, exactly as persistentSelection
+                    //    keeps the selection.
+                    //
+                    // Safe to call on every cursor move, including the many
+                    // that stay on one line: DocumentHandler resolves the
+                    // position to a block number and the highlighter no-ops
+                    // unless that block actually changed (see
+                    // MarkdownHighlighter::setCursorBlockNumber).
+                    property bool hasBeenEdited: false
+                    function syncMarkerReveal() {
+                        docHandler.setCursorPosition(hasBeenEdited ? cursorPosition : -1)
+                    }
+                    onCursorPositionChanged: syncMarkerReveal()
+                    onActiveFocusChanged: {
+                        if (activeFocus)
+                            hasBeenEdited = true
+                        syncMarkerReveal()
+                    }
 
                     onCursorRectangleChanged: editorFlick.ensureCursorVisible(cursorRectangle)
 
