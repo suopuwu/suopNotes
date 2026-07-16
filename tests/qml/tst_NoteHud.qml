@@ -40,6 +40,17 @@ Item {
         id: defaultHud
     }
 
+    // Vertical column variant (the layout NoteHudWindow uses): the same five
+    // glyphs stacked top-to-bottom instead of left-to-right. Placed clear of
+    // the other fixtures so its geometry assertions read cleanly.
+    NoteHud {
+        id: verticalHud
+        x: 0
+        y: 450
+        vertical: true
+        alwaysExpanded: true
+    }
+
     // Frosted-backdrop fixture, mirroring NoteWindow.qml's real geometry: the
     // ribbon is inset 4px from the note's frame while the editor is inset 8px,
     // so the ribbon genuinely overhangs the editor's viewport on two sides.
@@ -249,6 +260,46 @@ Item {
             mouseClick(glyph, glyph.width / 2, glyph.height / 2)
             compare(pinSpy.count, 0)
             compare(settingsSpy.count, 0)
+        }
+
+        // ---- Vertical column layout (the windowed ribbon's orientation) ----
+
+        // In vertical mode the glyphs stack top-to-bottom in a single column,
+        // and close stays LAST — the bottom-most, last-reached icon — for the
+        // same irreversible-delete reason it stays rightmost in the row: no
+        // other action may sit past it where a stray click meant for close
+        // could land.
+        function test_vertical_stacks_glyphs_in_a_column_with_close_last() {
+            const closePos = verticalHud.closeGlyphItem.mapToItem(root, 0, 0)
+            const pinPos = verticalHud.pinGlyphItem.mapToItem(root, 0, 0)
+            const gearPos = verticalHud.gearGlyphItem.mapToItem(root, 0, 0)
+            const duplicatePos = verticalHud.duplicateGlyphItem.mapToItem(root, 0, 0)
+            const searchPos = verticalHud.searchGlyphItem.mapToItem(root, 0, 0)
+
+            // Stacked downward: close sits below every other glyph.
+            verify(closePos.y > pinPos.y)
+            verify(closePos.y > gearPos.y)
+            verify(closePos.y > duplicatePos.y)
+            verify(closePos.y > searchPos.y)
+
+            // A single column: every glyph sits at essentially the same x.
+            // Compared with a tolerance rather than exactly equal because each
+            // alias points at the centered glyph Text, whose own width varies
+            // by a pixel or two with the glyph/font-size — so their centered x
+            // differs slightly even though the column is perfectly aligned. The
+            // tolerance (10px) is far below the vertical gap between rows (~34px
+            // per the y values above), so this still unambiguously asserts a
+            // column, not a row.
+            const xs = [pinPos.x, gearPos.x, duplicatePos.x, searchPos.x, closePos.x]
+            verify(Math.max(...xs) - Math.min(...xs) < 10,
+                   "all glyphs share one narrow column (x spread stays tiny)")
+        }
+
+        // The column is a fixed narrow strip that grows in height, the mirror
+        // image of the horizontal row (fixed height, grows in width).
+        function test_vertical_ribbon_is_a_narrow_fixed_width_column() {
+            verify(verticalHud.width <= 30, "the vertical ribbon stays a narrow fixed-width column")
+            verify(verticalHud.height > verticalHud.width, "and is taller than it is wide")
         }
 
         // ---- Frosted backdrop (blurring the note's text under the ribbon) ----

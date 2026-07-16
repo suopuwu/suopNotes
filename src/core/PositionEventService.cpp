@@ -70,7 +70,8 @@ const QStringList &pseudoNoteIds()
 {
     static const QStringList ids = { QStringLiteral("selectionToolbar"), QStringLiteral("columnOptionsPopup"),
                                       QStringLiteral("spellingSuggestionsPopup"), QStringLiteral("toolbarTooltip"),
-                                      QStringLiteral("findReplacePanel"), QStringLiteral("noteContextMenu") };
+                                      QStringLiteral("findReplacePanel"), QStringLiteral("noteContextMenu"),
+                                      QStringLiteral("noteHud") };
     return ids;
 }
 

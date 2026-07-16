@@ -180,6 +180,12 @@ SCENARIO("A fresh Settings instance reports documented defaults", "[settings]")
             REQUIRE(settings.hudAlwaysExpanded());
         }
 
+        THEN("hudAsWindow defaults to true (the ribbon renders as its own "
+             "window beside the note, not inline over its text)")
+        {
+            REQUIRE(settings.hudAsWindow());
+        }
+
         THEN("openNotes defaults to an empty list")
         {
             REQUIRE(settings.openNotes().isEmpty());
@@ -520,6 +526,14 @@ SCENARIO("Changing a property emits its NOTIFY signal", "[settings]")
             QSignalSpy spy(&settings, &Settings::hudAlwaysExpandedChanged);
             settings.setHudAlwaysExpanded(true);
             THEN("hudAlwaysExpandedChanged fires once") { REQUIRE(spy.count() == 1); }
+        }
+
+        WHEN("hudAsWindow is changed")
+        {
+            QSignalSpy spy(&settings, &Settings::hudAsWindowChanged);
+            settings.setHudAsWindow(false);
+            THEN("hudAsWindowChanged fires once") { REQUIRE(spy.count() == 1); }
+            THEN("the new value is read back") { REQUIRE(settings.hudAsWindow() == false); }
         }
 
         WHEN("borderWidth is changed")

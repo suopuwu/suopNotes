@@ -50,6 +50,7 @@ class Settings : public QObject
     Q_PROPERTY(bool chromeGlassFollowsNote READ chromeGlassFollowsNote WRITE setChromeGlassFollowsNote NOTIFY chromeGlassFollowsNoteChanged)
     Q_PROPERTY(bool chromeGlassEnabled READ chromeGlassEnabled WRITE setChromeGlassEnabled NOTIFY chromeGlassEnabledChanged)
     Q_PROPERTY(bool hudAlwaysExpanded READ hudAlwaysExpanded WRITE setHudAlwaysExpanded NOTIFY hudAlwaysExpandedChanged)
+    Q_PROPERTY(bool hudAsWindow READ hudAsWindow WRITE setHudAsWindow NOTIFY hudAsWindowChanged)
 
     // Code mode (feature request): the global DEFAULTS for every note's code
     // mode — what it is (codeModeEnabled) and what it does (the three
@@ -331,6 +332,16 @@ public:
     bool hudAlwaysExpanded() const;
     void setHudAlwaysExpanded(bool alwaysExpanded);
 
+    // Whether the note's top-right ribbon (NoteHud) is rendered as its own
+    // separate top-level window anchored to the outside of the note, rather
+    // than inline in the note's own scene graph over its text. The inline
+    // version overlaps the text on a small note (which the frosted-glass hole-
+    // punch in NoteWindow.qml only softens, never removes); the windowed
+    // version sits outside the note entirely, so it never covers text. Default
+    // on. A plain global toggle, same category as hudAlwaysExpanded above.
+    bool hudAsWindow() const;
+    void setHudAsWindow(bool asWindow);
+
     // Whether a note renders as code by default: a monospaced font and a
     // line-number gutter, plus whichever of the three suppressions below are
     // on. Defaults to false, and is the one code-mode field a single note can
@@ -446,6 +457,7 @@ signals:
     void chromeGlassFollowsNoteChanged();
     void chromeGlassEnabledChanged();
     void hudAlwaysExpandedChanged();
+    void hudAsWindowChanged();
     void codeModeEnabledChanged();
     void codeModeDisablesMarkdownHighlightingChanged();
     void codeModeDisablesAutoFormattingChanged();

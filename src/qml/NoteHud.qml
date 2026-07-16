@@ -34,6 +34,7 @@
 
 import QtQuick
 import QtQuick.Effects
+import QtQuick.Layouts
 import Qt5Compat.GraphicalEffects
 
 Rectangle {
@@ -44,6 +45,16 @@ Rectangle {
     property color dangerColor: "#ff5555"
     property bool pinned: false
     property bool alwaysExpanded: false
+    // Lays the glyphs out as a vertical column instead of a horizontal row
+    // (feature request: NoteHudWindow renders the ribbon down the note's
+    // right-hand side so it never conflicts with the above-note toolbar).
+    // Default false keeps the original horizontal strip for the inline,
+    // in-note-scene-graph mode (Settings.hudAsWindow off). The frosted-glass
+    // backdrop machinery below is horizontal-only, but it never runs in the
+    // windowed/vertical mode anyway — that mode leaves backdropSource null
+    // (a separate top-level window can't sample the note's own text surface),
+    // so backdropActive is false and all of it stays inert.
+    property bool vertical: false
     // Follows the note window's own curvature (feature request) — host
     // binds this to mainFrame.radius, so the ribbon reads as an extension
     // of the note's frame rather than a fixed-radius chip glued on top of
@@ -164,6 +175,14 @@ Rectangle {
     readonly property alias closeArmed: hud._closeArmed
     property bool _closeArmed: false
 
+    // Whether the pointer is anywhere over the ribbon. NoteHudWindow reads
+    // this as a keep-alive signal (mirrors how Main.qml treats the toolbar's
+    // own `hovered`): the windowed ribbon sits just outside the note, so
+    // moving the pointer from the note onto the ribbon leaves the note
+    // un-hovered — this is what keeps the ribbon from vanishing out from
+    // under the pointer in that gap.
+    readonly property alias hovered: hudHover.hovered
+
     signal pinToggleRequested()
     signal settingsRequested()
     signal duplicateRequested()
@@ -209,13 +228,28 @@ Rectangle {
     // which is the opposite of what frosted glass looks like.
     property color chipColor: Qt.rgba(0, 0, 0, 0.28)
 
-    height: 26
-    width: hud.expanded ? hudRow.implicitWidth + 12 : 28
+    // Collapsed cross-axis size (the standalone gear's square) — the width of
+    // a horizontal strip when collapsed, and the fixed width of a vertical
+    // column always. Named so both orientations read from one constant.
+    readonly property int _band: 28
+
+    // Horizontal (default): height fixed at 26, width grows along the row.
+    // Vertical: width fixed at _band, height grows down the column. The
+    // main-axis size collapses to _band when not expanded, same as before —
+    // though in the windowed mode NoteHudWindow keeps alwaysExpanded true, so
+    // `expanded` is always true there and only the note-hover show/hide of the
+    // whole window is doing the reveal.
+    width: hud.vertical ? _band : (hud.expanded ? hudRow.implicitWidth + 12 : _band)
+    height: hud.vertical ? (hud.expanded ? hudRow.implicitHeight + 12 : _band) : 26
     clip: true
     radius: hud.cornerRadius
     color: "transparent"
 
+    // One Behavior per axis — only the main axis of the current orientation
+    // actually animates (the cross axis is a constant, so its Behavior never
+    // sees a change); harmless to have both declared.
     Behavior on width { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+    Behavior on height { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
 
     MouseArea {
         anchors.fill: parent
@@ -356,17 +390,33 @@ Rectangle {
         TapHandler { onTapped: hud.settingsRequested() }
     }
 
-    Row {
+    // A GridLayout (not a plain Row/Column) so one set of glyph items can
+    // reflow between a horizontal strip (flow LeftToRight, the default inline
+    // mode) and a vertical column (flow TopToBottom, the windowed mode) purely
+    // off `hud.vertical` — the same reflow-one-layout trick SelectionToolbar's
+    // own `content` uses to flip between the note's edges, and the reason the
+    // 5 glyphs aren't duplicated into two positioners (their ids/objectNames
+    // are the test surface; there can only be one of each). Centered in the
+    // chip either way: in horizontal mode chip width is content + 12, so
+    // centering leaves the same ~6px each side the old right-anchor+6 margin
+    // did; close still ends up last (rightmost / bottommost) since it's the
+    // final child.
+    GridLayout {
         id: hudRow
-        // Right-anchor keeps the row flush against the right edge; close
-        // stays last/rightmost (see its own comment below). Only shown
-        // when expanded (hover or always-expanded) — the collapsed state
-        // shows the standalone gear above instead.
         visible: hud.expanded
-        anchors.right:          parent.right
-        anchors.rightMargin:    6
-        anchors.verticalCenter: parent.verticalCenter
-        spacing: 12
+        anchors.centerIn: parent
+        flow: hud.vertical ? GridLayout.TopToBottom : GridLayout.LeftToRight
+        // The wrap-count dimension (columns for LeftToRight, rows for
+        // TopToBottom) is set to a count comfortably above the glyph count so
+        // the strip/column never wraps; the other dimension is -1 (compute
+        // automatically). Same idiom, for the same reason, as
+        // SelectionToolbar's own `content` grid — bump _noWrap if the glyph
+        // count ever approaches it.
+        readonly property int _noWrap: 12
+        columns: hud.vertical ? -1 : _noWrap
+        rows: hud.vertical ? _noWrap : -1
+        rowSpacing: 12
+        columnSpacing: 12
 
         // Each glyph sits inside a fixed-size wrapper (feature request: a
         // configurable highlight box behind each interactable, matching
@@ -379,9 +429,9 @@ Rectangle {
         // keeps its own id/objectName/color/opacity bindings unchanged, so
         // existing tests reading e.g. `pinGlyphItem.color` are unaffected.
         Item {
-            width: 22
-            height: 22
-            anchors.verticalCenter: parent.verticalCenter
+            implicitWidth: 22
+            implicitHeight: 22
+            Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
 
             InteractableHighlight {
                 anchors.fill: parent
@@ -409,9 +459,9 @@ Rectangle {
         }
 
         Item {
-            width: 22
-            height: 22
-            anchors.verticalCenter: parent.verticalCenter
+            implicitWidth: 22
+            implicitHeight: 22
+            Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
 
             InteractableHighlight {
                 anchors.fill: parent
@@ -434,9 +484,9 @@ Rectangle {
         }
 
         Item {
-            width: 22
-            height: 22
-            anchors.verticalCenter: parent.verticalCenter
+            implicitWidth: 22
+            implicitHeight: 22
+            Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
 
             InteractableHighlight {
                 anchors.fill: parent
@@ -463,9 +513,9 @@ Rectangle {
         }
 
         Item {
-            width: 22
-            height: 22
-            anchors.verticalCenter: parent.verticalCenter
+            implicitWidth: 22
+            implicitHeight: 22
+            Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
 
             InteractableHighlight {
                 anchors.fill: parent
@@ -495,9 +545,9 @@ Rectangle {
         // this requires two taps (arm, then confirm) rather than firing
         // closeRequested() on the first — see closeArmTimeoutMs above.
         Item {
-            width: 22
-            height: 22
-            anchors.verticalCenter: parent.verticalCenter
+            implicitWidth: 22
+            implicitHeight: 22
+            Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
 
             InteractableHighlight {
                 anchors.fill: parent

@@ -35,6 +35,7 @@ constexpr qreal kDefaultGlassSheenStrength = 10;
 constexpr qreal kDefaultGlassSheenSize = 0.18;
 const char *kDefaultGlassTintColor = "#000000";
 constexpr bool kDefaultHudAlwaysExpanded = true;
+constexpr bool kDefaultHudAsWindow = true;
 const char *kDefaultShortcutBold = "Ctrl+B";
 const char *kDefaultShortcutItalic = "Ctrl+I";
 const char *kDefaultShortcutStrikethrough = "Ctrl+Shift+X";
@@ -107,6 +108,7 @@ const char *kKeyInteractableHighlightGlassEnabled = "interactableHighlightGlassE
 const char *kKeyChromeGlassFollowsNote = "chromeGlassFollowsNote";
 const char *kKeyChromeGlassEnabled = "chromeGlassEnabled";
 const char *kKeyHudAlwaysExpanded = "hudAlwaysExpanded";
+const char *kKeyHudAsWindow = "hudAsWindow";
 const char *kKeyCodeModeEnabled = "codeModeEnabled";
 const char *kKeyCodeModeDisablesMarkdownHighlighting = "codeModeDisablesMarkdownHighlighting";
 const char *kKeyCodeModeDisablesAutoFormatting = "codeModeDisablesAutoFormatting";
@@ -646,6 +648,18 @@ void Settings::setHudAlwaysExpanded(bool alwaysExpanded)
     m_settings->setValue(QString("%1/%2").arg(kGroupAppearance, kKeyHudAlwaysExpanded), alwaysExpanded);
     m_settings->sync();
     emit hudAlwaysExpandedChanged();
+}
+
+bool Settings::hudAsWindow() const
+{
+    return m_settings->value(QString("%1/%2").arg(kGroupAppearance, kKeyHudAsWindow), kDefaultHudAsWindow).toBool();
+}
+
+void Settings::setHudAsWindow(bool asWindow)
+{
+    m_settings->setValue(QString("%1/%2").arg(kGroupAppearance, kKeyHudAsWindow), asWindow);
+    m_settings->sync();
+    emit hudAsWindowChanged();
 }
 
 bool Settings::codeModeEnabled() const

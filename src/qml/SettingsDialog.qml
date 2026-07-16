@@ -319,6 +319,12 @@ ApplicationWindow {
             }
 
             CheckBox {
+                text: "Show note controls beside the note (not over its text)"
+                checked: settings.hudAsWindow
+                onToggled: settings.hudAsWindow = checked
+            }
+
+            CheckBox {
                 id: launchOnLoginCheckBox
                 text: "Launch on login"
                 // Hidden (not just disabled) off Linux, where there's no XDG

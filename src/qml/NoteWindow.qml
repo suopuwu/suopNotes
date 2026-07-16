@@ -386,6 +386,16 @@ Window {
         duplicateNoteAt(origin.x + duplicateOffset, origin.y + duplicateOffset)
     }
 
+    // Opens this note's own per-note appearance override popup. The inline
+    // ribbon calls perNoteSettingsPopup.show() directly (same file); the
+    // windowed ribbon (NoteHudWindow) is a separate window and reaches it
+    // through this function instead — a note can't be reached by id from
+    // there, only by object reference, exactly like setPinned/duplicateNote/
+    // deleteNote which it also calls.
+    function openSettings() {
+        perNoteSettingsPopup.show()
+    }
+
     // Feature request: Copy — both the toolbar button and Ctrl+C, see
     // editor's own Keys.onPressed below — copies the whole note when
     // nothing is selected, rather than silently doing nothing, and briefly
@@ -2764,7 +2774,12 @@ Window {
             anchors.top: parent.top
             anchors.right: parent.right
             anchors.margins: 4
-            visible: noteHoverHandler.hovered
+            // Inline mode only (Settings.hudAsWindow off): when hudAsWindow is
+            // on, the ribbon lives in its own top-level window (NoteHudWindow,
+            // owned by Main.qml) anchored outside the note instead, so this
+            // in-scene copy stays hidden. Keeping it hidden rather than removing
+            // it lets the setting flip live without reloading the note.
+            visible: noteHoverHandler.hovered && !settings.hudAsWindow
             pinned: noteWindow.alwaysOnTop
             alwaysExpanded: settings.hudAlwaysExpanded
             cornerRadius: mainFrame.radius
@@ -2777,7 +2792,15 @@ Window {
             // editorFlick is then handed over separately as the viewport, so
             // the capture gets clipped to what is actually on screen — which
             // a ShaderEffectSource will not do on its own.
-            backdropSource: editorFlick.contentItem
+            //
+            // Nulled out entirely in windowed mode: this inline HUD is hidden
+            // then (see visible above), but a live ShaderEffectSource keeps
+            // updating its texture regardless of visibility, so leaving
+            // backdropSource set would pay for a per-frame capture nobody sees.
+            // Null makes NoteHud's backdropActive false, so all of it goes
+            // inert — and the hole-punch above is already gated on
+            // noteHud.visible, so it disappears with the ribbon too.
+            backdropSource: settings.hudAsWindow ? null : editorFlick.contentItem
             backdropViewport: editorFlick
             glassEnabled: noteAppearance.glassEnabled
             glassTintColor: noteAppearance.glassTintColor

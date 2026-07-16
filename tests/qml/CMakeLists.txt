@@ -15,6 +15,9 @@ set_source_files_properties(${CMAKE_SOURCE_DIR}/src/qml/NoteWindow.qml
 set_source_files_properties(${CMAKE_SOURCE_DIR}/src/qml/NoteHud.qml
     PROPERTIES QT_RESOURCE_ALIAS "NoteHud.qml"
 )
+set_source_files_properties(${CMAKE_SOURCE_DIR}/src/qml/NoteHudWindow.qml
+    PROPERTIES QT_RESOURCE_ALIAS "NoteHudWindow.qml"
+)
 set_source_files_properties(${CMAKE_SOURCE_DIR}/src/qml/NoteContextMenu.qml
     PROPERTIES QT_RESOURCE_ALIAS "NoteContextMenu.qml"
 )
@@ -49,6 +52,7 @@ qt_add_qml_module(suopNotes_qml_tests
     QML_FILES
         ${CMAKE_SOURCE_DIR}/src/qml/NoteWindow.qml
         ${CMAKE_SOURCE_DIR}/src/qml/NoteHud.qml
+        ${CMAKE_SOURCE_DIR}/src/qml/NoteHudWindow.qml
         ${CMAKE_SOURCE_DIR}/src/qml/NoteContextMenu.qml
         ${CMAKE_SOURCE_DIR}/src/qml/FindReplacePanel.qml
         ${CMAKE_SOURCE_DIR}/src/qml/GlassOverlay.qml

@@ -95,6 +95,7 @@ qt_add_qml_module(suopNotes
         qml/NoteWindow.qml
         qml/SettingsDialog.qml
         qml/NoteHud.qml
+        qml/NoteHudWindow.qml
         qml/NoteContextMenu.qml
         qml/FindReplacePanel.qml
         qml/PerNoteSettingsPopup.qml
