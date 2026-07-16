@@ -40,6 +40,44 @@ Item {
         id: defaultHud
     }
 
+    // Frosted-backdrop fixture, mirroring NoteWindow.qml's real geometry: the
+    // ribbon is inset 4px from the note's frame while the editor is inset 8px,
+    // so the ribbon genuinely overhangs the editor's viewport on two sides.
+    // That overhang is the whole reason the capture has to be clamped, so a
+    // fixture that didn't reproduce it would prove nothing.
+    Item {
+        id: noteFrame
+        y: 200
+        width: 300
+        height: 200
+
+        Flickable {
+            id: backdropFlick
+            anchors.fill: parent
+            anchors.margins: 8
+            clip: true
+            contentWidth: width
+            contentHeight: 2000
+            Item {
+                width: backdropFlick.width
+                height: 2000
+            }
+        }
+
+        NoteHud {
+            id: backdropHud
+            alwaysExpanded: true
+            anchors.top: parent.top
+            anchors.right: parent.right
+            anchors.margins: 4
+            // contentItem, not the Flickable itself — see NoteHud's
+            // backdropSource for why the captured item must sit below the
+            // layer carrying the hole.
+            backdropSource: backdropFlick.contentItem
+            backdropViewport: backdropFlick
+        }
+    }
+
     SignalSpy {
         id: pinSpy
         target: hud
@@ -211,6 +249,111 @@ Item {
             mouseClick(glyph, glyph.width / 2, glyph.height / 2)
             compare(pinSpy.count, 0)
             compare(settingsSpy.count, 0)
+        }
+
+        // ---- Frosted backdrop (blurring the note's text under the ribbon) ----
+
+        // A host that asks for nothing gets nothing: the ribbon is plainly
+        // translucent, as it was before the backdrop existed, and none of the
+        // capture/blur machinery is switched on.
+        function test_backdrop_is_off_when_no_source_is_given() {
+            compare(defaultHud.backdropSource, null)
+            compare(defaultHud.backdropViewport, null)
+            compare(defaultHud.backdropActive, false)
+            compare(defaultHud.backdropItem.visible, false)
+        }
+
+        function test_backdrop_turns_on_once_a_source_is_given() {
+            compare(backdropHud.backdropActive, true)
+            compare(backdropHud.backdropItem.visible, true)
+        }
+
+        // The captured region never reaches outside what is actually on
+        // screen. This matters because a ShaderEffectSource does NOT honour
+        // its source item's clip, and the ribbon deliberately overhangs the
+        // editor's viewport (4px inset vs 8px) — so without the clamp the
+        // ribbon would blur in text scrolled above the viewport, i.e. text
+        // the user cannot see.
+        function test_captured_region_is_clamped_to_the_visible_viewport() {
+            const r = backdropHud._backdropLocalRect
+            verify(r.width > 0)
+            verify(r.height > 0)
+
+            // Expressed in the viewport's own coordinates, the captured rect
+            // must sit entirely inside it.
+            const inViewport = backdropHud.mapToItem(backdropFlick, r.x, r.y,
+                                                     r.width, r.height)
+            verify(inViewport.x >= -0.01)
+            verify(inViewport.y >= -0.01)
+            verify(inViewport.x + inViewport.width <= backdropFlick.width + 0.01)
+            verify(inViewport.y + inViewport.height <= backdropFlick.height + 0.01)
+        }
+
+        // Scrolling moves the text under the ribbon, so the blur has to
+        // re-aim at whatever is there now. The captured rect is fixed in
+        // VIEWPORT terms (the ribbon doesn't move) but slides in the
+        // scrolling content's own terms, by exactly the scrolled distance.
+        //
+        // This is the test that caught the `void`-read dependency being
+        // optimized away — see NoteHud's _backdropSourceRect. It failed with
+        // the blur permanently aimed at whatever text was under the ribbon
+        // when the note opened, which is precisely the bug a reader would
+        // never guess from the binding's source.
+        // Each "before" value is read out as a NUMBER, never held as a rect.
+        // Assigning the rect property to a local does not snapshot it — QML
+        // hands back a live wrapper onto the property, so a "before" rect and
+        // an "after" rect would both report the current value and every
+        // comparison here would pass vacuously.
+        function test_captured_region_follows_scrolling() {
+            backdropFlick.contentY = 0
+            tryCompare(backdropFlick.contentItem, "y", 0)
+            const localYBefore = backdropHud._backdropLocalRect.y
+            const localHeightBefore = backdropHud._backdropLocalRect.height
+            const sourceYBefore = backdropHud._backdropSourceRect.y
+            const sourceHeightBefore = backdropHud._backdropSourceRect.height
+
+            backdropFlick.contentY = 120
+            // A Flickable repositions its contentItem on its own update
+            // cycle, not synchronously from the contentY assignment — and
+            // contentItem.y (which IS -contentY) is exactly what the capture
+            // is bound to, so wait for that move rather than the assignment.
+            tryCompare(backdropFlick.contentItem, "y", -120)
+
+            // Fixed relative to the ribbon/viewport...
+            compare(backdropHud._backdropLocalRect.y, localYBefore)
+            compare(backdropHud._backdropLocalRect.height, localHeightBefore)
+            // ...but tracking the content that scrolled under it.
+            compare(backdropHud._backdropSourceRect.y - sourceYBefore, 120)
+            compare(backdropHud._backdropSourceRect.height, sourceHeightBefore)
+
+            backdropFlick.contentY = 0
+        }
+
+        // The capture is deliberately sized to the EXPANDED ribbon and pinned
+        // to its fixed right edge, so the 180ms expand animation never
+        // resizes the texture (which would reallocate an FBO every frame).
+        // Scalars, not rects — see test_captured_region_follows_scrolling for
+        // why holding the rect itself would make this pass no matter what.
+        function test_captured_region_does_not_resize_as_the_ribbon_expands() {
+            backdropHud.alwaysExpanded = true
+            const expandedX = backdropHud._backdropSourceRect.x
+            const expandedY = backdropHud._backdropSourceRect.y
+            const expandedWidth = backdropHud._backdropSourceRect.width
+            const expandedHeight = backdropHud._backdropSourceRect.height
+            const expandedChipWidth = backdropHud.width
+
+            backdropHud.alwaysExpanded = false
+            // The chip really does get narrower — via the 180ms width
+            // Behavior, so this is the animation whose per-frame width
+            // changes must not drag the captured texture along with them.
+            tryVerify(function() { return backdropHud.width < expandedChipWidth })
+            // ...while the captured region stays put, at the same size.
+            compare(backdropHud._backdropSourceRect.x, expandedX)
+            compare(backdropHud._backdropSourceRect.y, expandedY)
+            compare(backdropHud._backdropSourceRect.width, expandedWidth)
+            compare(backdropHud._backdropSourceRect.height, expandedHeight)
+
+            backdropHud.alwaysExpanded = true
         }
     }
 }

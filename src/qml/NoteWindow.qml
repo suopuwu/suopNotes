@@ -593,6 +593,68 @@ Window {
             // scrolled near the top. Accepted tradeoff: an occasionally
             // obscured scrollbar corner beats permanent dead space.
             clip: true
+
+            // Frosted ribbon (feature request: "blur text beneath it").
+            // noteHud renders a blurred copy of this text behind itself, and
+            // that only reads as frosted glass if the SHARP text stops being
+            // drawn under the ribbon — otherwise the sharp copy and the
+            // blurred one composite into a double image. So this punches a
+            // rounded-rect hole in this Flickable's own rendering, exactly
+            // where the ribbon sits.
+            //
+            // noteHud samples this Flickable's contentItem rather than the
+            // Flickable itself, and that distinction is the whole trick:
+            // confirmed empirically that a ShaderEffectSource aimed at an item
+            // with layer.enabled hands back that LAYER's texture, hole
+            // included — so capturing editorFlick here would blur a texture
+            // this mask has already emptied. contentItem is one level down,
+            // carries no layer of its own, and so is captured unmasked.
+            //
+            // Gated on the ribbon actually showing (it is hover-revealed), so
+            // an idle note renders precisely as it did before this existed:
+            // no layer, no FBO, nothing extra to composite.
+            layer.enabled: noteHud.visible
+            layer.effect: OpacityMask {
+                // The mask marks the ribbon; invert turns "keep this" into
+                // "drop this", which is the hole.
+                invert: true
+                maskSource: Item {
+                    width: editorFlick.width
+                    height: editorFlick.height
+                    Rectangle {
+                        x: editorFlick.hudHole.x
+                        y: editorFlick.hudHole.y
+                        width: editorFlick.hudHole.width
+                        height: editorFlick.hudHole.height
+                        radius: noteHud.radius
+                    }
+                }
+            }
+
+            // noteHud's footprint in this item's coordinates. noteHud is
+            // inset 4px from mainFrame while this is inset 8px, so the hole
+            // legitimately starts at a negative y and runs past `width` —
+            // the mask above is this item's size and simply crops that
+            // overhang, which costs nothing since there is no text out there
+            // to hide anyway.
+            //
+            // noteHud._dependOn() rather than the `void` reads this first
+            // used: mapToItem() is a function call, so QML sees no dependency
+            // on any geometry it walks, and a discarded read is optimized out
+            // of the compiled binding along with the dependency it was there
+            // to create. See NoteHud.qml's _dependOn() for the full story —
+            // here it would have meant the hole staying at the ribbon's old x
+            // after a note resize, i.e. a bite missing from the text next to
+            // a ribbon that no longer sits there.
+            readonly property rect hudHole: {
+                if (noteHud._dependOn(noteHud.x + noteHud.y
+                                      + noteHud.width + noteHud.height
+                                      + editorFlick.x + editorFlick.y
+                                      + editorFlick.width + editorFlick.height))
+                    return Qt.rect(0, 0, 0, 0)
+                return noteHud.mapToItem(editorFlick, 0, 0, noteHud.width, noteHud.height)
+            }
+
             contentWidth: width
             // "Scroll past end" (feature request): extends contentHeight
             // far enough past the real text that the scrollRange clamps
@@ -2706,6 +2768,17 @@ Window {
             pinned: noteWindow.alwaysOnTop
             alwaysExpanded: settings.hudAlwaysExpanded
             cornerRadius: mainFrame.radius
+            // The other half of editorFlick's hole-punch above — that stops
+            // the sharp text being drawn here, this supplies the blurred copy
+            // that replaces it. Neither is much use without the other.
+            //
+            // contentItem, NOT editorFlick, for the reason spelled out there:
+            // the captured item must sit BELOW the layer carrying the hole.
+            // editorFlick is then handed over separately as the viewport, so
+            // the capture gets clipped to what is actually on screen — which
+            // a ShaderEffectSource will not do on its own.
+            backdropSource: editorFlick.contentItem
+            backdropViewport: editorFlick
             glassEnabled: noteAppearance.glassEnabled
             glassTintColor: noteAppearance.glassTintColor
             glassSheenOpacity: noteAppearance.glassSheenOpacity
