@@ -34,18 +34,40 @@ Item {
     // cancelling the button's own press/release gesture, breaking every
     // button rather than just the untracked ones.
     //
-    // This version doesn't fight the OS for focus at all: the toolbar is
+    // This version doesn't fight the OS for focus at all: the chrome is
     // considered "in use" — and stays visible — for as long as EITHER the
-    // tracked note OR the toolbar itself is the active window. Only when
-    // focus moves to something that's neither (another note, another app,
-    // the desktop) does it actually clear. A click anywhere in the
-    // toolbar (a button, the grip, dead space) is then just a normal
-    // click in a normal window — nothing to race, nothing to swallow.
-    function noteOrToolbarActive() {
-        return (root.activeNoteWindow && root.activeNoteWindow.active) || selectionToolbar.active
+    // tracked note OR one of the chrome windows itself is the active
+    // window. Only when focus moves to something that's none of them
+    // (another note, another app, the desktop) does it actually clear. A
+    // click anywhere in the toolbar (a button, the grip, dead space) is
+    // then just a normal click in a normal window — nothing to race,
+    // nothing to swallow.
+    //
+    // findReplacePanel is in here for a sharper reason than the toolbar is.
+    // The toolbar only holds focus for the instant of a click, so it would
+    // mostly survive without this; the find panel holds focus for as long
+    // as the user is typing a search term. Without its term here, clicking
+    // into the find field deactivates the note, the debounce below fires
+    // 250ms later, finds nothing "active", and clears activeNoteWindow —
+    // pulling `noteWindow` out from under the very panel the user is typing
+    // into, which blanks it and parks it off-screen mid-keystroke. It would
+    // fail every time, not intermittently.
+    //
+    // noteContextMenu is in here for the same sharper reason the find panel
+    // is, and one more of its own: it takes focus the moment it opens (that is
+    // how it notices a click landing anywhere else — see its onActiveChanged),
+    // which deactivates the note by construction, every single time. Without
+    // its term here the debounce below would clear activeNoteWindow 250ms
+    // later and blank the menu while it is sitting open under the user's
+    // pointer. It would fail every time, not intermittently.
+    function noteOrChromeActive() {
+        return (root.activeNoteWindow && root.activeNoteWindow.active)
+            || selectionToolbar.active
+            || findReplacePanel.active
+            || noteContextMenu.active
     }
 
-    // A brief, spurious activation blip on the tracked note or the toolbar
+    // A brief, spurious activation blip on the tracked note or the chrome
     // — neither window's fault, just a transient compositor-level hiccup —
     // could otherwise let the debounce below race past the moment a real
     // focus hand-off (e.g. clicking a toolbar button) resolves, hiding the
@@ -57,8 +79,11 @@ Item {
     // would leave the toolbar stuck open forever once the user genuinely
     // switched focus to a different app entirely, if their mouse simply
     // never happened to move off the note afterward.
-    function noteOrToolbarHovered() {
-        return (root.activeNoteWindow && root.activeNoteWindow.hovered) || selectionToolbar.hovered
+    function noteOrChromeHovered() {
+        return (root.activeNoteWindow && root.activeNoteWindow.hovered)
+            || selectionToolbar.hovered
+            || findReplacePanel.hovered
+            || noteContextMenu.hovered
     }
 
     // Sees exactly one grace retry per deactivation episode, so the bound
@@ -69,14 +94,14 @@ Item {
     // Debounces clearing activeNoteWindow to null, restarted by every real
     // "the tracked note just deactivated" event (never runs on a schedule
     // — see CLAUDE.md on polling timers) and re-checked (not just delayed)
-    // at fire time via noteOrToolbarActive() above, so a still-focused
-    // toolbar never gets cleared out from under itself.
+    // at fire time via noteOrChromeActive() above, so a still-focused
+    // toolbar or find panel never gets cleared out from under itself.
     Timer {
         id: activeNoteWindowClearDebounce
         interval: 250
         repeat: false
         onTriggered: {
-            if (root.noteOrToolbarActive()) {
+            if (root.noteOrChromeActive()) {
                 root.activeNoteWindowClearGraceUsed = false
                 return
             }
@@ -86,7 +111,7 @@ Item {
             // switching focus to a different app entirely still clears
             // this promptly (within 2 * interval) even if the mouse never
             // moved off the note meanwhile.
-            if (!root.activeNoteWindowClearGraceUsed && root.noteOrToolbarHovered()) {
+            if (!root.activeNoteWindowClearGraceUsed && root.noteOrChromeHovered()) {
                 root.activeNoteWindowClearGraceUsed = true
                 activeNoteWindowClearDebounce.restart()
                 return
@@ -110,6 +135,39 @@ Item {
                     activeNoteWindowClearDebounce.restart()
                 }
             }
+
+            // A note can't reach the app-wide find panel itself, so it asks
+            // and this is where the ask is joined up (see NoteWindow's own
+            // findRequested comment). Guarded on being the tracked note:
+            // Ctrl+F is a per-note Qt.WindowShortcut, so only the focused
+            // note can fire it — but the tracking clears on a 250ms
+            // debounce, and an unfocused note driving the shared panel at
+            // whatever the tail of that window allows would be a bug, not a
+            // feature.
+            onFindRequested: (withReplace) => {
+                if (root.activeNoteWindow !== thisNoteWindow)
+                    return
+                if (withReplace)
+                    findReplacePanel.openReplace()
+                else
+                    findReplacePanel.openFind()
+            }
+            onFindCloseRequested: {
+                if (root.activeNoteWindow === thisNoteWindow)
+                    findReplacePanel.close()
+            }
+
+            // Same one-way ask as findRequested above — a note can't reach the
+            // app-wide context menu itself. Guarded on being the tracked note
+            // for a sharper reason than the find panel's, though: the menu
+            // binds to root.activeNoteWindow, so an untracked note opening it
+            // would put a menu on screen at THIS note's coordinates while
+            // every action in it ran against a different note entirely.
+            onContextMenuRequested: (screenX, screenY) => {
+                if (root.activeNoteWindow !== thisNoteWindow)
+                    return
+                noteContextMenu.openAt(screenX, screenY)
+            }
         }
     }
 
@@ -126,6 +184,41 @@ Item {
         // so the bar still hides shortly after, rather than staying stuck
         // forever (the Timer above only ever checks at the moment it
         // fires; it never reschedules itself on its own).
+        onActiveChanged: {
+            if (!active && root.activeNoteWindow && !root.activeNoteWindow.active)
+                activeNoteWindowClearDebounce.restart()
+        }
+    }
+
+    // The other app-wide chrome singleton, same shape as the toolbar above
+    // and for the same reason (see FindReplacePanel.qml's header): a note
+    // enforces no minimum size, so this card could not live inside one.
+    FindReplacePanel {
+        id: findReplacePanel
+        noteWindow: root.activeNoteWindow
+
+        // Same re-arm as the toolbar's: the Timer only ever checks at the
+        // moment it fires and never reschedules itself, so a panel losing
+        // focus to something that ISN'T the tracked note has to restart it
+        // or the note stays tracked forever.
+        onActiveChanged: {
+            if (!active && root.activeNoteWindow && !root.activeNoteWindow.active)
+                activeNoteWindowClearDebounce.restart()
+        }
+    }
+
+    // The third app-wide chrome singleton, same shape and same reason as the
+    // two above (see NoteContextMenu.qml's header): a right-click near a
+    // note's own corner puts most of this menu outside the note, which a small
+    // note could not render at all.
+    NoteContextMenu {
+        id: noteContextMenu
+        noteWindow: root.activeNoteWindow
+
+        // Same re-arm as the toolbar's and the panel's: the Timer only ever
+        // checks at the moment it fires and never reschedules itself, so chrome
+        // losing focus to something that ISN'T the tracked note has to restart
+        // it or the note stays tracked forever.
         onActiveChanged: {
             if (!active && root.activeNoteWindow && !root.activeNoteWindow.active)
                 activeNoteWindowClearDebounce.restart()

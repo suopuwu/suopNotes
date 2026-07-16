@@ -47,13 +47,46 @@ QTextCharFormat revealedMarkerFormat()
 // covers its "#" characters too, and leaving that adjustment in place
 // alongside a 0.01pt size would be two font-size properties fighting over the
 // same characters. Invisible text needs no size but its own.
+//
+// NoFontMerging is not an optimization detail — without it this format froze
+// the whole UI for ~5.8 SECONDS the first time it was ever applied (measured;
+// it was the entire cause of a reported "adding the first checkbox list or
+// table locks up the app" freeze, and of nothing else). 0.01pt rounds to a
+// pixel size of 0, at which the font engine can produce no glyph for any
+// character — so Qt concludes every character is *missing* and walks the whole
+// fallback chain, loading every font family installed on the system looking for
+// one that can render it. None can, at size 0. The result is then cached in
+// QFontCache, which is why only the first checkbox/table in a session paid it
+// and every one after was instant. NoFontMerging tells Qt not to go looking:
+// this text is transparent AND zero-width, so there is no glyph to fall back
+// *for*. Same 0.000 advance, 5.8s -> ~40ms. Keep this and setFontPointSize
+// together; the size is what makes the fallback walk happen.
 QTextCharFormat hiddenMarkerFormat()
 {
     QTextCharFormat format;
     format.setForeground(QColor(0, 0, 0, 0));
     format.setFontPointSize(0.01);
+    format.setFontStyleStrategy(QFont::NoFontMerging);
     return format;
 }
+
+// How wide each drawn control's reserved slot is, as a percentage of the
+// reserved character's own natural advance. Without widening at all, the column
+// is only as wide as whatever "-" or "[" happens to measure in the user's font
+// (~6px at the default size) — narrower than the control drawn into it, so the
+// bullet/checkbox overflowed on both sides: off the editor's left edge, where
+// it was visibly clipped in half, and rightwards into its own label, leaving no
+// gap (both confirmed on screen).
+//
+// A checkbox gets the wider slot because it is DRAWN bigger than a bullet
+// (feature request: "the display for checkboxes should be a little bigger" —
+// see NoteWindow.qml's checkboxScale). These two numbers and that scale are one
+// tuning decision split across two files: the control is centred in this slot,
+// and the slot's left edge is the editor's left edge, so a control drawn wider
+// than its slot doesn't just overhang — its left half is clipped away by the
+// editor. Grow the glyph and this must grow with it.
+constexpr qreal kBulletSlotPercent = 200.0;
+constexpr qreal kCheckboxSlotPercent = 320.0;
 
 // For punctuation that is replaced by a drawn glyph rather than removed: the
 // "-" of a bullet and the "- [ ]" of a checkbox. Transparent, so the literal
@@ -63,23 +96,16 @@ QTextCharFormat hiddenMarkerFormat()
 // listMarkerRanges), which is why this must NOT use hiddenMarkerFormat above:
 // collapse the slot to zero width and the drawn glyph would land on top of the
 // item's own text.
-QTextCharFormat reservedMarkerFormat()
+QTextCharFormat reservedMarkerFormat(qreal slotPercent)
 {
     QTextCharFormat format;
     format.setForeground(QColor(0, 0, 0, 0));
-    // Widen the slot to twice the character's natural advance. Without this
-    // the column is only as wide as whatever "-" or "[" happens to measure in
-    // the user's font (~6px at the default size) — narrower than the control
-    // drawn into it, so the bullet/checkbox overflowed on both sides: off the
-    // editor's left edge, where it was visibly clipped in half, and rightwards
-    // into its own label, leaving no gap (both confirmed on screen).
-    //
     // Percentage rather than an absolute pixel pad so the column tracks the
     // note's font size, which is user-configurable per note. It's applied to
     // the reserved character only, so it widens the marker's column without
     // touching the spacing of any real text.
     format.setFontLetterSpacingType(QFont::PercentageSpacing);
-    format.setFontLetterSpacing(200.0);
+    format.setFontLetterSpacing(slotPercent);
     return format;
 }
 
@@ -124,6 +150,37 @@ QTextCharFormat inlineCodeFormat()
     QTextCharFormat format;
     format.setFontFamilies({QStringLiteral("monospace")});
     format.setBackground(QColor(0x88, 0x88, 0x88, 0x30));
+    return format;
+}
+
+// The find/replace panel's "here's everywhere else your term appears" wash, and
+// the stronger version marking the one match the panel's own "3 of 7" counter
+// is pointing at.
+//
+// Amber, and TRANSLUCENT, for the same reason revealedMarkerFormat picks a flat
+// mid-gray: a note's background is whatever color the user chose, so a solid
+// highlight would be unreadable against some of them. Alpha-blending over the
+// real background keeps the text legible on any of them, and amber stays
+// distinct from the editor's own selection color (derived from the note's
+// highlightColor), which paints OVER the current match whenever the editor has
+// a live selection — so the two must not be mistakable for each other.
+//
+// Deliberately hardcoded rather than a Settings knob, unlike the spellcheck
+// underline's color/width: nobody asked to theme this, and adding a setting
+// means a settings-dialog row and a migration. Both formats are only a
+// background, so everything the markdown pass already applied (bold, heading
+// size, monospace) still shows through the merge in applySearchHighlight().
+QTextCharFormat searchMatchFormat()
+{
+    QTextCharFormat format;
+    format.setBackground(QColor(0xFF, 0xB3, 0x00, 0x45));
+    return format;
+}
+
+QTextCharFormat currentSearchMatchFormat()
+{
+    QTextCharFormat format;
+    format.setBackground(QColor(0xFF, 0xB3, 0x00, 0x99));
     return format;
 }
 
@@ -265,6 +322,63 @@ void MarkdownHighlighter::setCursorBlockNumber(int blockNumber)
     }
 }
 
+const QList<TextSearch::Match> &MarkdownHighlighter::searchMatches() const
+{
+    return m_searchMatches;
+}
+
+int MarkdownHighlighter::currentSearchMatch() const
+{
+    return m_currentSearchMatch;
+}
+
+void MarkdownHighlighter::setSearchMatches(const QList<TextSearch::Match> &matches, int currentIndex)
+{
+    if (matches == m_searchMatches && currentIndex == m_currentSearchMatch)
+        return;
+
+    const QList<TextSearch::Match> previous = m_searchMatches;
+    m_searchMatches = matches;
+    m_currentSearchMatch = currentIndex;
+
+    if (!document())
+        return;
+
+    // The union of the blocks the OLD matches occupied (their highlight has to
+    // come off) and the ones the NEW matches occupy (theirs has to go on).
+    // Everything else on screen already renders correctly.
+    //
+    // The old list is included even when only currentIndex moved, since the
+    // match losing "current" has to drop back to the weaker highlight — the two
+    // lists are identical then, so this collects each match's block once and
+    // repaints exactly the lines that can look different.
+    QSet<int> blockNumbers;
+    collectBlockNumbers(previous, blockNumbers);
+    collectBlockNumbers(matches, blockNumbers);
+    for (const int number : blockNumbers) {
+        const QTextBlock block = document()->findBlockByNumber(number);
+        if (block.isValid())
+            rehighlightBlock(block);
+    }
+}
+
+void MarkdownHighlighter::collectBlockNumbers(const QList<TextSearch::Match> &matches,
+                                              QSet<int> &out) const
+{
+    for (const TextSearch::Match &match : matches) {
+        // Every block the match touches, not just the one it starts in: a regex
+        // match can span lines. `position() <= match.end` can also pick up the
+        // block just past a match that ends exactly on a block boundary, which
+        // costs one extra rehighlight of a block whose local range is empty —
+        // cheaper than the arithmetic to exclude it.
+        for (QTextBlock block = document()->findBlock(match.start);
+             block.isValid() && block.position() <= match.end;
+             block = block.next()) {
+            out.insert(block.blockNumber());
+        }
+    }
+}
+
 bool MarkdownHighlighter::highlightTableRow(const QString &text)
 {
     const MarkdownTable::Region region =
@@ -347,6 +461,76 @@ bool MarkdownHighlighter::highlightTableRow(const QString &text)
 }
 
 void MarkdownHighlighter::highlightBlock(const QString &text)
+{
+    // Code mode turns the markdown pass off (see setMarkdownDecorationEnabled)
+    // — but ONLY that pass. Find/replace's match highlight below is not
+    // markdown decoration and has nothing to do with the mode: searching a
+    // code note is exactly as useful as searching a prose one, and skipping
+    // the whole of highlightBlock() here would silently break it.
+    if (m_markdownDecorationEnabled)
+        highlightMarkdown(text);
+
+    // Last, and outside highlightMarkdown()'s own early returns: the search
+    // highlight has to survive being merged over the markdown formatting rather
+    // than the other way round, and it applies to empty and table lines too.
+    applySearchHighlight(text);
+}
+
+void MarkdownHighlighter::setMarkdownDecorationEnabled(bool enabled)
+{
+    if (m_markdownDecorationEnabled == enabled)
+        return;
+    m_markdownDecorationEnabled = enabled;
+    // Whole-document, unlike setCursorBlockNumber's two-block repaint: this
+    // changes how EVERY line renders, and it is a mode flip a user does by
+    // hand once in a while, not something on any hot path.
+    rehighlight();
+}
+
+bool MarkdownHighlighter::markdownDecorationEnabled() const
+{
+    return m_markdownDecorationEnabled;
+}
+
+void MarkdownHighlighter::applySearchHighlight(const QString &text)
+{
+    if (m_searchMatches.isEmpty())
+        return;
+
+    // Matches carry ABSOLUTE document positions; setFormat() wants offsets
+    // within this block. Clipping each match to the block's own span is what
+    // renders a match spanning several lines as a highlight on each of them —
+    // every block it crosses paints its own slice.
+    const int blockStart = currentBlock().position();
+    const int blockEnd = blockStart + text.size();
+
+    for (int i = 0; i < m_searchMatches.size(); ++i) {
+        const TextSearch::Match &match = m_searchMatches.at(i);
+        const int start = qMax(match.start, blockStart);
+        const int end = qMin(match.end, blockEnd);
+        // No overlap with this block, or a zero-length match (a regex like
+        // "x*" can produce one — TextSearch::allMatches reports them). Either
+        // way there is no character here to paint.
+        if (start >= end)
+            continue;
+
+        const QTextCharFormat highlight =
+            i == m_currentSearchMatch ? currentSearchMatchFormat() : searchMatchFormat();
+        // Merged char by char against what this same pass has already set, for
+        // exactly the reason highlightMarkdown()'s own mergeFormat lambda
+        // documents: setFormat() REPLACES the format over its range, so
+        // applying this wholesale would strip the bold/heading/monospace off
+        // any match that happens to land on decorated text.
+        for (int position = start; position < end; ++position) {
+            const int offset = position - blockStart;
+            QTextCharFormat composed = format(offset);
+            composed.merge(highlight);
+            setFormat(offset, 1, composed);
+        }
+    }
+}
+
+void MarkdownHighlighter::highlightMarkdown(const QString &text)
 {
     if (text.isEmpty())
         return;
@@ -452,7 +636,10 @@ void MarkdownHighlighter::highlightBlock(const QString &text)
             // of "- [x] " into a single checkbox-wide column followed by one
             // ordinary space.
             setFormat(0, marker.glyphStart, hiddenMarkerFormat());
-            mergeFormat(marker.glyphStart, marker.glyphLength, reservedMarkerFormat());
+            mergeFormat(marker.glyphStart, marker.glyphLength,
+                        reservedMarkerFormat(marker.kind == MarkdownList::Kind::Checkbox
+                                                 ? kCheckboxSlotPercent
+                                                 : kBulletSlotPercent));
             setFormat(marker.glyphStart + marker.glyphLength,
                       marker.length - 1 - marker.glyphStart - marker.glyphLength,
                       hiddenMarkerFormat());

@@ -15,6 +15,21 @@ ApplicationWindow {
     required property NoteAppearance noteAppearance
     readonly property alias fontFamilyCombo: fontFamilyCombo
     readonly property alias fontFamilyOverrideCheckBox: fontFamilyOverride
+    // Exposed for tests only, same convention as the two above. Without
+    // these, a test has to find the boxes by walking the item tree for their
+    // label text — which cannot tell code mode's "Enabled" box apart from the
+    // identically-labelled one next to every other override here except by
+    // sibling index. Deliberately ITEM aliases, never a pass-through to
+    // `.checked`: see NoteHud.qml's pinGlyphItem for the AOT staleness trap a
+    // value alias hits under qmlcachegen.
+    readonly property alias codeModeOverrideCheckBox: codeModeOverride
+    readonly property alias codeModeEnabledCheckBox: codeModeEnabledBox
+    readonly property alias codeModeDisablesMarkdownOverrideCheckBox: codeModeDisablesMarkdownOverride
+    readonly property alias codeModeDisablesMarkdownCheckBox: codeModeDisablesMarkdownBox
+    readonly property alias codeModeDisablesAutoFormattingOverrideCheckBox: codeModeDisablesAutoFormattingOverride
+    readonly property alias codeModeDisablesAutoFormattingCheckBox: codeModeDisablesAutoFormattingBox
+    readonly property alias codeModeDisablesSpellcheckOverrideCheckBox: codeModeDisablesSpellcheckOverride
+    readonly property alias codeModeDisablesSpellcheckCheckBox: codeModeDisablesSpellcheckBox
 
     title: "Note Settings"
     width: 380
@@ -124,6 +139,110 @@ ApplicationWindow {
                     enabled: backgroundColorOverride.checked
                     anchors.verticalCenter: parent.verticalCenter
                     MouseArea { anchors.fill: parent; onClicked: backgroundColorDialog.open() }
+                }
+            }
+
+            // Code mode (feature request). Same two-checkbox idiom as every
+            // other override here, but grouped: code mode is the one setting on
+            // this popup that changes what the note IS rather than how it looks
+            // — it swaps the font, adds the line-number gutter, and switches
+            // off markdown styling, the as-you-type list rewrites and
+            // spellcheck.
+            //
+            // Those last three each get their own override too, so a note can
+            // both opt into code mode AND disagree with the global answer about
+            // what code mode entails (e.g. a code note that still wants
+            // spellcheck). They are NOT gated on codeModeOverride: they resolve
+            // independently of whether this note is currently in code mode, and
+            // the common case is a note that got there via the global default
+            // with no code-mode override of its own — greying them out then
+            // would make them look inapplicable to exactly the note they apply
+            // to. Same reasoning as the tray Settings dialog's own Code Mode
+            // section, which holds the global defaults these fall back to.
+            Column {
+                width: parent.width
+                spacing: 8
+
+                Row {
+                    spacing: 8
+                    CheckBox {
+                        id: codeModeOverride
+                        text: "Override code mode"
+                        checked: root.noteAppearance.hasCodeModeEnabledOverride
+                        onToggled: checked ? root.noteAppearance.setCodeModeEnabledOverride(root.noteAppearance.codeModeEnabled)
+                                           : root.noteAppearance.clearCodeModeEnabledOverride()
+                    }
+                    CheckBox {
+                        id: codeModeEnabledBox
+                        text: "Enabled"
+                        enabled: codeModeOverride.checked
+                        checked: root.noteAppearance.codeModeEnabled
+                        onToggled: root.noteAppearance.setCodeModeEnabledOverride(checked)
+                    }
+                }
+
+                Label { text: "While code mode is on, also:"; opacity: 0.7 }
+
+                Column {
+                    width: parent.width
+                    spacing: 4
+                    // Indented to read as belonging to the label above, the
+                    // same way the tray dialog indents these three.
+                    leftPadding: 12
+
+                    Row {
+                        spacing: 8
+                        CheckBox {
+                            id: codeModeDisablesMarkdownOverride
+                            text: "Override"
+                            checked: root.noteAppearance.hasCodeModeDisablesMarkdownHighlightingOverride
+                            onToggled: checked ? root.noteAppearance.setCodeModeDisablesMarkdownHighlightingOverride(root.noteAppearance.codeModeDisablesMarkdownHighlighting)
+                                               : root.noteAppearance.clearCodeModeDisablesMarkdownHighlightingOverride()
+                        }
+                        CheckBox {
+                            id: codeModeDisablesMarkdownBox
+                            text: "Turn off markdown styling"
+                            enabled: codeModeDisablesMarkdownOverride.checked
+                            checked: root.noteAppearance.codeModeDisablesMarkdownHighlighting
+                            onToggled: root.noteAppearance.setCodeModeDisablesMarkdownHighlightingOverride(checked)
+                        }
+                    }
+
+                    Row {
+                        spacing: 8
+                        CheckBox {
+                            id: codeModeDisablesAutoFormattingOverride
+                            text: "Override"
+                            checked: root.noteAppearance.hasCodeModeDisablesAutoFormattingOverride
+                            onToggled: checked ? root.noteAppearance.setCodeModeDisablesAutoFormattingOverride(root.noteAppearance.codeModeDisablesAutoFormatting)
+                                               : root.noteAppearance.clearCodeModeDisablesAutoFormattingOverride()
+                        }
+                        CheckBox {
+                            id: codeModeDisablesAutoFormattingBox
+                            text: "Turn off auto-formatting"
+                            enabled: codeModeDisablesAutoFormattingOverride.checked
+                            checked: root.noteAppearance.codeModeDisablesAutoFormatting
+                            onToggled: root.noteAppearance.setCodeModeDisablesAutoFormattingOverride(checked)
+                        }
+                    }
+
+                    Row {
+                        spacing: 8
+                        CheckBox {
+                            id: codeModeDisablesSpellcheckOverride
+                            text: "Override"
+                            checked: root.noteAppearance.hasCodeModeDisablesSpellcheckOverride
+                            onToggled: checked ? root.noteAppearance.setCodeModeDisablesSpellcheckOverride(root.noteAppearance.codeModeDisablesSpellcheck)
+                                               : root.noteAppearance.clearCodeModeDisablesSpellcheckOverride()
+                        }
+                        CheckBox {
+                            id: codeModeDisablesSpellcheckBox
+                            text: "Turn off spellcheck"
+                            enabled: codeModeDisablesSpellcheckOverride.checked
+                            checked: root.noteAppearance.codeModeDisablesSpellcheck
+                            onToggled: root.noteAppearance.setCodeModeDisablesSpellcheckOverride(checked)
+                        }
+                    }
                 }
             }
 

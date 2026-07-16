@@ -47,10 +47,30 @@ bool kwinScriptingAvailable()
 // mergeLivePosition's own comment for the original selectionToolbar case;
 // columnOptionsPopup reproduced the identical bug the moment it gained the
 // same right-click-drag capability without a matching exclusion here.
+//
+// findReplacePanel and noteContextMenu are listed even though neither has a
+// drag handle of its own, unlike the two windows that each learned this the
+// hard way: the compositor can start an interactive move on any window
+// regardless of what the client offers (alt+drag), and "it can't be dragged
+// today" is exactly the assumption that broke the second time. Registering the
+// exclusion up front costs one string.
+//
+// spellingSuggestionsPopup was missing here until it was spotted while adding
+// noteContextMenu — it has carried a "suopNotes-spellingSuggestionsPopup"
+// title (SelectionToolbar.qml) since it was written, so alt+dragging it
+// created the same phantom note the two documented cases above did. Nothing
+// else about that popup changed; this list is the whole fix.
+//
+// This list is now load-bearing enough to be worth a rule: every window whose
+// title starts with "suopNotes-" and is not a real note belongs here, added in
+// the same change that introduces the window. There is no way to be reminded
+// later — the failure is silent, and it shows up as a stray note in the
+// user's persisted session, nowhere near the window that caused it.
 const QStringList &pseudoNoteIds()
 {
     static const QStringList ids = { QStringLiteral("selectionToolbar"), QStringLiteral("columnOptionsPopup"),
-                                      QStringLiteral("toolbarTooltip") };
+                                      QStringLiteral("spellingSuggestionsPopup"), QStringLiteral("toolbarTooltip"),
+                                      QStringLiteral("findReplacePanel"), QStringLiteral("noteContextMenu") };
     return ids;
 }
 

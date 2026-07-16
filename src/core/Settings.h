@@ -51,6 +51,16 @@ class Settings : public QObject
     Q_PROPERTY(bool chromeGlassEnabled READ chromeGlassEnabled WRITE setChromeGlassEnabled NOTIFY chromeGlassEnabledChanged)
     Q_PROPERTY(bool hudAlwaysExpanded READ hudAlwaysExpanded WRITE setHudAlwaysExpanded NOTIFY hudAlwaysExpandedChanged)
 
+    // Code mode (feature request): the global DEFAULTS for every note's code
+    // mode — what it is (codeModeEnabled) and what it does (the three
+    // codeModeDisables* toggles). All four are overrideable per-note via
+    // NoteAppearanceOverride below, so a note can both opt into code mode on
+    // its own and disagree with the global answer about what that entails.
+    Q_PROPERTY(bool codeModeEnabled READ codeModeEnabled WRITE setCodeModeEnabled NOTIFY codeModeEnabledChanged)
+    Q_PROPERTY(bool codeModeDisablesMarkdownHighlighting READ codeModeDisablesMarkdownHighlighting WRITE setCodeModeDisablesMarkdownHighlighting NOTIFY codeModeDisablesMarkdownHighlightingChanged)
+    Q_PROPERTY(bool codeModeDisablesAutoFormatting READ codeModeDisablesAutoFormatting WRITE setCodeModeDisablesAutoFormatting NOTIFY codeModeDisablesAutoFormattingChanged)
+    Q_PROPERTY(bool codeModeDisablesSpellcheck READ codeModeDisablesSpellcheck WRITE setCodeModeDisablesSpellcheck NOTIFY codeModeDisablesSpellcheckChanged)
+
     // Editor formatting shortcuts (feature request): each is a QKeySequence
     // string (e.g. "Ctrl+B"), rebindable via the tray Settings dialog's
     // Keyboard Shortcuts section rather than hardcoded in NoteWindow.qml, so
@@ -142,6 +152,17 @@ public:
         QColor highlightColor;
         bool hasHighlightOpacity = false;
         qreal highlightOpacity = 0.55;
+        bool hasCodeModeEnabled = false;
+        bool codeModeEnabled = false;
+        // Defaults match the global kDefaultCodeModeDisables* in Settings.cpp,
+        // so a note whose has* flag is false still reads as the shipped answer
+        // if it is ever consulted without a Settings to fall back on.
+        bool hasCodeModeDisablesMarkdownHighlighting = false;
+        bool codeModeDisablesMarkdownHighlighting = true;
+        bool hasCodeModeDisablesAutoFormatting = false;
+        bool codeModeDisablesAutoFormatting = true;
+        bool hasCodeModeDisablesSpellcheck = false;
+        bool codeModeDisablesSpellcheck = true;
     };
 
     // Appearance properties
@@ -310,6 +331,37 @@ public:
     bool hudAlwaysExpanded() const;
     void setHudAlwaysExpanded(bool alwaysExpanded);
 
+    // Whether a note renders as code by default: a monospaced font and a
+    // line-number gutter, plus whichever of the three suppressions below are
+    // on. Defaults to false, and is the one code-mode field a single note can
+    // override — "is this note code" is a per-note fact.
+    bool codeModeEnabled() const;
+    void setCodeModeEnabled(bool enabled);
+
+    // What code mode turns OFF while it is on. Each defaults to true, because
+    // each is wrong for code by default: markdown styling would hide `**` and
+    // `#` (real syntax in most languages) behind live-preview collapsing,
+    // markdown's as-you-type rewrites would continue "lists" that are really
+    // just indented code, and spellcheck would underline every identifier.
+    //
+    // Global-only on purpose — deliberately NOT in NoteAppearanceOverride.
+    // These define what code mode MEANS, which is one answer for the whole
+    // app; the per-note question is only "is this note code", and that is
+    // codeModeEnabled's job. Same reasoning that keeps hudAlwaysExpanded out
+    // of the override struct.
+    //
+    // Each is inert while code mode is off — they gate nothing on their own,
+    // so a user who turns all three off gets a code mode that is purely the
+    // monospace font plus the gutter.
+    bool codeModeDisablesMarkdownHighlighting() const;
+    void setCodeModeDisablesMarkdownHighlighting(bool disables);
+
+    bool codeModeDisablesAutoFormatting() const;
+    void setCodeModeDisablesAutoFormatting(bool disables);
+
+    bool codeModeDisablesSpellcheck() const;
+    void setCodeModeDisablesSpellcheck(bool disables);
+
     // Editor formatting shortcuts. Each getter returns a QKeySequence-parsable
     // string; empty is never returned (falls back to the documented default),
     // so QML's Shortcut.sequence is never bound to an empty/invalid string.
@@ -394,6 +446,10 @@ signals:
     void chromeGlassFollowsNoteChanged();
     void chromeGlassEnabledChanged();
     void hudAlwaysExpandedChanged();
+    void codeModeEnabledChanged();
+    void codeModeDisablesMarkdownHighlightingChanged();
+    void codeModeDisablesAutoFormattingChanged();
+    void codeModeDisablesSpellcheckChanged();
     void openNotesChanged();
     void shortcutBoldChanged();
     void shortcutItalicChanged();

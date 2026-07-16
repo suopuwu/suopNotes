@@ -57,6 +57,14 @@ class NoteAppearance : public QObject
     Q_PROPERTY(bool hasHighlightColorOverride READ hasHighlightColorOverride NOTIFY highlightColorChanged)
     Q_PROPERTY(qreal highlightOpacity READ highlightOpacity NOTIFY highlightOpacityChanged)
     Q_PROPERTY(bool hasHighlightOpacityOverride READ hasHighlightOpacityOverride NOTIFY highlightOpacityChanged)
+    Q_PROPERTY(bool codeModeEnabled READ codeModeEnabled NOTIFY codeModeEnabledChanged)
+    Q_PROPERTY(bool hasCodeModeEnabledOverride READ hasCodeModeEnabledOverride NOTIFY codeModeEnabledChanged)
+    Q_PROPERTY(bool codeModeDisablesMarkdownHighlighting READ codeModeDisablesMarkdownHighlighting NOTIFY codeModeDisablesMarkdownHighlightingChanged)
+    Q_PROPERTY(bool hasCodeModeDisablesMarkdownHighlightingOverride READ hasCodeModeDisablesMarkdownHighlightingOverride NOTIFY codeModeDisablesMarkdownHighlightingChanged)
+    Q_PROPERTY(bool codeModeDisablesAutoFormatting READ codeModeDisablesAutoFormatting NOTIFY codeModeDisablesAutoFormattingChanged)
+    Q_PROPERTY(bool hasCodeModeDisablesAutoFormattingOverride READ hasCodeModeDisablesAutoFormattingOverride NOTIFY codeModeDisablesAutoFormattingChanged)
+    Q_PROPERTY(bool codeModeDisablesSpellcheck READ codeModeDisablesSpellcheck NOTIFY codeModeDisablesSpellcheckChanged)
+    Q_PROPERTY(bool hasCodeModeDisablesSpellcheckOverride READ hasCodeModeDisablesSpellcheckOverride NOTIFY codeModeDisablesSpellcheckChanged)
 
 public:
     explicit NoteAppearance(QObject *parent = nullptr);
@@ -100,6 +108,23 @@ public:
     bool hasHighlightColorOverride() const;
     qreal highlightOpacity() const;
     bool hasHighlightOpacityOverride() const;
+    // Whether this note renders as code. Resolves like every field above
+    // (own override, else the global default), but is also an INPUT to
+    // fontFamily() — see there for how the two interact.
+    bool codeModeEnabled() const;
+    bool hasCodeModeEnabledOverride() const;
+    // What code mode DOES for this note. Each resolves independently of
+    // codeModeEnabled() above and stays readable while this note is not in
+    // code mode: they answer "what would code mode switch off here", which is
+    // a question the settings popup asks whether or not the mode is currently
+    // on. NoteWindow is what combines them with codeModeEnabled() to decide
+    // whether anything is actually suppressed.
+    bool codeModeDisablesMarkdownHighlighting() const;
+    bool hasCodeModeDisablesMarkdownHighlightingOverride() const;
+    bool codeModeDisablesAutoFormatting() const;
+    bool hasCodeModeDisablesAutoFormattingOverride() const;
+    bool codeModeDisablesSpellcheck() const;
+    bool hasCodeModeDisablesSpellcheckOverride() const;
 
     Q_INVOKABLE void setWindowRadiusOverride(int radius);
     Q_INVOKABLE void clearWindowRadiusOverride();
@@ -135,6 +160,14 @@ public:
     Q_INVOKABLE void clearHighlightColorOverride();
     Q_INVOKABLE void setHighlightOpacityOverride(qreal opacity);
     Q_INVOKABLE void clearHighlightOpacityOverride();
+    Q_INVOKABLE void setCodeModeEnabledOverride(bool enabled);
+    Q_INVOKABLE void clearCodeModeEnabledOverride();
+    Q_INVOKABLE void setCodeModeDisablesMarkdownHighlightingOverride(bool disables);
+    Q_INVOKABLE void clearCodeModeDisablesMarkdownHighlightingOverride();
+    Q_INVOKABLE void setCodeModeDisablesAutoFormattingOverride(bool disables);
+    Q_INVOKABLE void clearCodeModeDisablesAutoFormattingOverride();
+    Q_INVOKABLE void setCodeModeDisablesSpellcheckOverride(bool disables);
+    Q_INVOKABLE void clearCodeModeDisablesSpellcheckOverride();
 
 signals:
     void settingsChanged();
@@ -156,6 +189,10 @@ signals:
     void fontFamilyChanged();
     void highlightColorChanged();
     void highlightOpacityChanged();
+    void codeModeEnabledChanged();
+    void codeModeDisablesMarkdownHighlightingChanged();
+    void codeModeDisablesAutoFormattingChanged();
+    void codeModeDisablesSpellcheckChanged();
 
 private:
     // Re-reads settings->noteOverride(m_noteId) and emits every field's

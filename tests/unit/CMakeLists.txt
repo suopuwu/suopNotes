@@ -10,6 +10,7 @@ qt_add_executable(suopNotes_unit_tests
     test_open_notes_model.cpp
     test_blur_region.cpp
     test_text_formatting.cpp
+    test_text_search.cpp
     test_spell_checker.cpp
     test_spell_check_highlighter.cpp
     test_markdown_highlighter.cpp

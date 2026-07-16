@@ -34,6 +34,38 @@ Window {
     // under someone who's still visibly working in/around the note.
     readonly property alias hovered: noteHoverHandler.hovered
 
+    // Find/replace requests from this note, wired up by Main.qml to the single
+    // app-wide FindReplacePanel window.
+    //
+    // Signals rather than a direct call, because a note has no handle on the
+    // panel and deliberately isn't given one: the chrome windows' data flow is
+    // strictly one-way — Main.qml pushes the focused note INTO the panel/
+    // toolbar, and they read out of it (see SelectionToolbar.qml's noteWindow).
+    // A back-reference here would make that a cycle. This mirrors how NoteHud
+    // already asks for things it cannot do itself (NoteHud.searchRequested,
+    // which this window turns straight into findRequested below).
+    //
+    // withReplace distinguishes Ctrl+H from Ctrl+F; findCloseRequested is
+    // Escape's, and is emitted whether or not the panel is actually open (the
+    // note has no way to know, and close() no-ops when it isn't).
+    signal findRequested(bool withReplace)
+    signal findCloseRequested()
+
+    // A stationary right-click in this note wants the app-wide context menu
+    // opened at that point, in SCREEN coordinates (already resolved through
+    // noteOrigin() below — a note cannot be trusted to know its own position
+    // via Window.x/y, see the position comment further down).
+    //
+    // A signal, not a direct call, for exactly the reason findRequested above
+    // is one: the menu is a single app-wide chrome window Main.qml owns, a
+    // note has no handle on it and deliberately isn't given one, and a
+    // back-reference would turn the chrome's strictly one-way data flow into
+    // a cycle.
+    //
+    // Emitted by mouseDragArea's own onReleased, which is the one place that
+    // knows the right-button gesture ended without becoming a window drag.
+    signal contextMenuRequested(int screenX, int screenY)
+
     // Live "is this format active at the current cursor/selection" state
     // (feature request: the toolbar should show, not just apply, formatting
     // — e.g. the Bold button should look pressed when the selection is
@@ -84,6 +116,33 @@ Window {
         refreshFormatState()
     }
 
+    // The checkbox glyph the pointer is genuinely ON TOP OF, in editor
+    // coordinates — or an empty rect for anywhere else. Drives both the hover
+    // highlight and the pointing-hand cursor, so the two can never disagree
+    // about whether there's a checkbox under the pointer.
+    //
+    // The containment test is the whole point, and it is not redundant with
+    // checkboxRectAt()'s own position check. TextEdit::positionAt() never
+    // fails: it CLAMPS, returning the nearest character position for a point
+    // that is nowhere near any text. So a pointer in the blank space above the
+    // editor (mouseDragArea covers the HUD strip too, which maps to a negative
+    // y here) resolves to position 0 — landing inside the first line's marker
+    // and lighting up a checkbox the pointer isn't within a hundred pixels of.
+    // Asking the rect whether it actually contains the point is what turns
+    // "which character is nearest" back into "is the pointer on the glyph".
+    //
+    // editor has zero padding (asserted in tst_NoteWindow), so its item
+    // coordinates and the document coordinates checkboxRectAt returns are the
+    // same space and are compared directly.
+    function checkboxRectUnderPointer(xInEditor, yInEditor) {
+        const rect = docHandler.checkboxRectAt(editor.positionAt(xInEditor, yInEditor))
+        if (rect.width <= 0 || rect.height <= 0)
+            return Qt.rect(0, 0, 0, 0)
+        const inside = xInEditor >= rect.x && xInEditor < rect.x + rect.width
+                    && yInEditor >= rect.y && yInEditor < rect.y + rect.height
+        return inside ? rect : Qt.rect(0, 0, 0, 0)
+    }
+
     function refreshFormatState() {
         const start = editor.selectionStart
         const end = editor.selectionEnd
@@ -112,6 +171,33 @@ Window {
     readonly property alias scrollIndicator: scrollIndicator
     readonly property alias scrollHandle: scrollHandle
     readonly property alias mainFrame: mainFrame
+    readonly property alias lineNumberGutter: lineNumberGutter
+
+    // Code mode (feature request): this note renders as code — a monospaced
+    // font (resolved in NoteAppearance::fontFamily, not here) and the
+    // line-number gutter below. Resolves the note's own override against the
+    // global default; see NoteAppearance::codeModeEnabled.
+    readonly property bool codeModeEnabled: noteAppearance.codeModeEnabled
+
+    // The three things code mode SWITCHES OFF, each gated by its own toggle so
+    // a user can re-enable any of them for their code notes. Read off
+    // noteAppearance rather than settings, so each resolves this note's own
+    // override against the global default exactly the way codeModeEnabled
+    // above does — "what does code mode do" gets a global answer that an
+    // individual note may disagree with.
+    //
+    // Derived here, once, rather than at each of the ~15 use sites below: the
+    // whole point of the pairing is that every consumer agrees on what code
+    // mode means, and a repeated `codeModeEnabled && noteAppearance.codeModeX`
+    // expression is exactly the kind of thing that drifts when one site is
+    // updated and another is missed. Each reads false whenever code mode is
+    // off, so every consumer is a plain "is this suppressed" check.
+    readonly property bool codeModeSuppressesMarkdown: noteWindow.codeModeEnabled
+        && noteAppearance.codeModeDisablesMarkdownHighlighting
+    readonly property bool codeModeSuppressesAutoFormatting: noteWindow.codeModeEnabled
+        && noteAppearance.codeModeDisablesAutoFormatting
+    readonly property bool codeModeSuppressesSpellcheck: noteWindow.codeModeEnabled
+        && noteAppearance.codeModeDisablesSpellcheck
 
     // Qt.Tool hides the window from the taskbar/switcher on Windows/macOS.
     // On KWin/Wayland it does not (a known Qt/KWin gap) — closed by the
@@ -250,6 +336,27 @@ Window {
     // repaint of the original, without flinging it across the screen.
     readonly property int duplicateOffset: 30
 
+    // This note's top-left in SCREEN coordinates — the one correct way to
+    // turn anything measured inside this window into a screen position.
+    //
+    // Prefers noteX/noteY (model-backed, and the only value updated after a
+    // compositor-driven drag — see the position comment below) and falls back
+    // to this window's own x/y, which is the sole record of where a
+    // never-dragged note sits. The pair is tested together, matching
+    // Component.onCompleted's own hasSavedPosition convention.
+    //
+    // Deliberately NOT Item.mapToGlobal(), which is the obvious-looking
+    // alternative and is wrong here: mapToGlobal resolves through
+    // QWindow::position(), which on Wayland is never updated after a
+    // compositor-driven move (the protocol simply doesn't tell clients where
+    // they are) — so it silently returns coordinates from wherever the note
+    // was when it opened, for any note the user has ever dragged.
+    function noteOrigin() {
+        const hasKnownPosition = (noteX !== 0 || noteY !== 0)
+        return Qt.point(hasKnownPosition ? noteX : noteWindow.x,
+                        hasKnownPosition ? noteY : noteWindow.y)
+    }
+
     // Duplicate (feature request): creates a genuinely independent note — its
     // own id, own file, own session state — that merely starts out with this
     // note's content. Nothing is shared afterward; editing either is a normal
@@ -265,19 +372,18 @@ Window {
     // assigning x/y at all; placement happens via the KWin rule the new
     // delegate writes during its own Component.onCompleted, so the position
     // must already be in Settings by then.
-    //
-    // Source position prefers noteX/noteY (model-backed, and the only value
-    // updated after a compositor-driven drag) and falls back to this window's
-    // own x/y, which is the sole record of where a never-dragged note sits.
-    // The pair is tested together, matching Component.onCompleted's own
-    // hasSavedPosition convention.
-    function duplicateNote() {
-        const hasKnownPosition = (noteX !== 0 || noteY !== 0)
-        const sourceX = hasKnownPosition ? noteX : noteWindow.x
-        const sourceY = hasKnownPosition ? noteY : noteWindow.y
-
+    function duplicateNoteAt(screenX, screenY) {
         const newId = noteStore.createNote(docHandler.toMarkdown())
-        openNotesModel.openNoteAt(newId, sourceX + duplicateOffset, sourceY + duplicateOffset)
+        openNotesModel.openNoteAt(newId, screenX, screenY)
+    }
+
+    // Duplicate at the conventional diagonal offset from this note — what the
+    // HUD's own duplicate glyph does. The context menu instead duplicates at
+    // the point the menu was opened, which is why the position is a parameter
+    // of duplicateNoteAt() above rather than baked in here.
+    function duplicateNote() {
+        const origin = noteOrigin()
+        duplicateNoteAt(origin.x + duplicateOffset, origin.y + duplicateOffset)
     }
 
     // Feature request: Copy — both the toolbar button and Ctrl+C, see
@@ -380,40 +486,63 @@ Window {
         // the app itself. Qt's default Shortcut context (Qt.WindowShortcut)
         // already scopes each of these to this specific NoteWindow, so
         // multiple open notes never fight over the same key press.
+        //
+        // All nine are disabled in code mode (subject to the same
+        // codeModeDisablesAutoFormatting toggle that gates DocumentHandler's
+        // own as-you-type rewrites, so the two can never disagree about
+        // whether this note formats markdown). A DISABLED Shortcut does not
+        // consume its sequence — it stops matching entirely — so Ctrl+B in a
+        // code note falls through to the editor rather than being swallowed
+        // as a silent no-op. That also frees the sequence for whatever else
+        // wants it, which is the correct behavior for a mode that says this
+        // note is not markdown.
+        //
+        // Ctrl+Y / Ctrl+F / Ctrl+H below are deliberately NOT gated: undo,
+        // find and replace are not markdown formatting and are, if anything,
+        // more useful in a code note.
         Shortcut {
             sequence: settings.shortcutBold
+            enabled: !noteWindow.codeModeSuppressesAutoFormatting
             onActivated: noteWindow.applyInlineToggle(r => docHandler.toggleBold(r.start, r.end))
         }
         Shortcut {
             sequence: settings.shortcutItalic
+            enabled: !noteWindow.codeModeSuppressesAutoFormatting
             onActivated: noteWindow.applyInlineToggle(r => docHandler.toggleItalic(r.start, r.end))
         }
         Shortcut {
             sequence: settings.shortcutStrikethrough
+            enabled: !noteWindow.codeModeSuppressesAutoFormatting
             onActivated: noteWindow.applyInlineToggle(r => docHandler.toggleStrikethrough(r.start, r.end))
         }
         Shortcut {
             sequence: settings.shortcutHeading1
+            enabled: !noteWindow.codeModeSuppressesAutoFormatting
             onActivated: docHandler.setHeadingLevel(editor.selectionStart, editor.selectionEnd, 1)
         }
         Shortcut {
             sequence: settings.shortcutHeading2
+            enabled: !noteWindow.codeModeSuppressesAutoFormatting
             onActivated: docHandler.setHeadingLevel(editor.selectionStart, editor.selectionEnd, 2)
         }
         Shortcut {
             sequence: settings.shortcutParagraph
+            enabled: !noteWindow.codeModeSuppressesAutoFormatting
             onActivated: docHandler.setHeadingLevel(editor.selectionStart, editor.selectionEnd, 0)
         }
         Shortcut {
             sequence: settings.shortcutBulletList
+            enabled: !noteWindow.codeModeSuppressesAutoFormatting
             onActivated: docHandler.toggleBulletList(editor.selectionStart, editor.selectionEnd)
         }
         Shortcut {
             sequence: settings.shortcutNumberedList
+            enabled: !noteWindow.codeModeSuppressesAutoFormatting
             onActivated: docHandler.toggleNumberedList(editor.selectionStart, editor.selectionEnd)
         }
         Shortcut {
             sequence: settings.shortcutInsertTable
+            enabled: !noteWindow.codeModeSuppressesAutoFormatting
             onActivated: docHandler.insertTable(editor.selectionEnd)
         }
 
@@ -425,6 +554,25 @@ Window {
         Shortcut {
             sequence: "Ctrl+Y"
             onActivated: editor.redo()
+        }
+
+        // Find/replace (feature request) — hardcoded like Ctrl+Y above
+        // rather than user-configurable, matching the near-universal
+        // editor convention for these two. Qt.WindowShortcut (the default
+        // context) scopes each to its own note window, so several open
+        // notes never fight over one press — which is exactly what makes
+        // "the focused note is the one the panel searches" work, given the
+        // panel itself is a single app-wide window.
+        //
+        // These only ASK (see findRequested's own comment): the panel lives
+        // in Main.qml, and a note cannot reach it.
+        Shortcut {
+            sequence: "Ctrl+F"
+            onActivated: noteWindow.findRequested(false)
+        }
+        Shortcut {
+            sequence: "Ctrl+H"
+            onActivated: noteWindow.findRequested(true)
         }
 
         Flickable {
@@ -479,10 +627,17 @@ Window {
 
             // Keeps the caret on-screen when it moves off the visible edge —
             // whether from typing past the bottom or from arrow-key/Home/End
-            // navigation. editor sits at content-coordinate (0,0) inside
-            // editorFlick (no offsetting ancestor between them), so
-            // editor.cursorRectangle can be compared directly against
+            // navigation. editor sits at content-coordinate y=0 inside
+            // editorFlick (no ancestor between them offsets y), so
+            // editor.cursorRectangle's y can be compared directly against
             // contentY/height without any coordinate mapping.
+            //
+            // Only y is guaranteed: code mode's line-number gutter shifts
+            // editorDragFilter's x (see lineNumberGutter.gutterWidth), so
+            // editor's content x is the gutter width, not 0. Nothing here
+            // reads x — this scrolls vertically only (contentWidth: width) —
+            // but a future x-axis comparison against contentX would need the
+            // offset that this one deliberately doesn't.
             function ensureCursorVisible(rect) {
                 if (rect.y < contentY)
                     contentY = rect.y
@@ -563,6 +718,165 @@ Window {
                 }
             }
 
+            // Line-number gutter (code mode). A sibling of editorDragFilter
+            // inside editorFlick's CONTENT, not a child of mainFrame, and
+            // that placement is the whole trick: content coordinates scroll
+            // with the text for free, so this needs no contentY tracking and
+            // no repositioning on scroll — which is also the only shape that
+            // obeys the repo's no-polling rule without a single timer.
+            //
+            // It reserves horizontal space by SHIFTING editorDragFilter (and
+            // therefore editor) right by its own width — see gutterWidth
+            // below — rather than by overlaying the text.
+            Item {
+                id: lineNumberGutter
+
+                // Zero-width when off, so every consumer of gutterWidth is a
+                // plain arithmetic term with no special case: a note that is
+                // not in code mode lays out exactly as it did before this
+                // existed, byte for byte.
+                readonly property real gutterWidth: noteWindow.codeModeEnabled
+                    ? digitMetrics.width + leftPadding + rightPadding
+                    : 0
+                readonly property real leftPadding: 2
+                // Separates the numbers from the first character of code.
+                // Generous on purpose: a number butted against the text reads
+                // as part of it, which is exactly what a gutter must not do.
+                readonly property real rightPadding: 8
+
+                // Document positions where each logical line starts — index i
+                // is line i+1's start. Derived from the buffer's own text, so
+                // it re-derives whenever the text changes and cannot drift out
+                // of sync with what is rendered.
+                //
+                // A logical (block) line, NOT a visual row: a wrapped line
+                // gets ONE number, at the row where it begins, which is what
+                // every code editor does — numbering wrapped continuation rows
+                // would make the gutter disagree with every compiler error
+                // message the user is trying to match against.
+                readonly property var lineStarts: {
+                    // Short-circuit before touching `text`, so an ordinary
+                    // note never scans its buffer on a keystroke for a gutter
+                    // it isn't showing. Reading editor.text below is what
+                    // subscribes this binding to every edit — returning first
+                    // means an ordinary note doesn't subscribe at all, rather
+                    // than subscribing and then discarding the result.
+                    if (!noteWindow.codeModeEnabled)
+                        return []
+
+                    // Depend on `text` explicitly: editor.length alone would
+                    // not re-evaluate this when an edit leaves the length
+                    // unchanged (typing over a selection of the same size,
+                    // replacing a newline with a character).
+                    const text = editor.text
+                    const starts = [0]
+                    for (let i = 0; i < text.length; i++) {
+                        if (text.charCodeAt(i) === 10 /* \n */)
+                            starts.push(i + 1)
+                    }
+                    return starts
+                }
+
+                // The numbers deliberately do NOT inherit the note's family:
+                // they are chrome, not content, and a proportional family
+                // would make them jitter horizontally line to line. Size and
+                // color still track the note so the gutter scales with the
+                // text it is numbering.
+                readonly property font numberFont: Qt.font({
+                    family: "monospace",
+                    pixelSize: noteAppearance.fontSize
+                })
+
+                // Measures the widest number the gutter will actually show, in
+                // the gutter's own font, instead of guessing from a per-digit
+                // constant — a monospace font is not guaranteed here (the user
+                // can override this note's family, see NoteAppearance::
+                // fontFamily) and a proportional font's digits are not the
+                // width of its "0".
+                //
+                // Sized to the digits the note ACTUALLY has, with no minimum:
+                // the delegates right-align inside this width, so reserving a
+                // two-digit box for a 9-line note would sit every number one
+                // whole digit clear of the left edge — read as a stray indent
+                // rather than as room for a tenth line that doesn't exist. The
+                // gutter therefore does widen as a note crosses 9 to 10 lines;
+                // that one-off shift is the accepted cost of not indenting
+                // every short note forever.
+                //
+                // Every reference to the gutter below is QUALIFIED
+                // (lineNumberGutter.x), never bare, and that is required
+                // rather than stylistic: an unqualified name inside a nested
+                // object resolves against that object, the ids in scope, and
+                // the COMPONENT ROOT (noteWindow) — an enclosing non-root
+                // object's properties are not in the chain at all. A bare
+                // `numberFont` here therefore threw "numberFont is not
+                // defined" at runtime, which no test caught: the QML suite
+                // never instantiated a note in code mode, and the app itself
+                // exits 255 with an EMPTY log under the wayland platform, so
+                // this only surfaced from an offscreen run.
+                TextMetrics {
+                    id: digitMetrics
+                    font: lineNumberGutter.numberFont
+                    text: "0".repeat(String(lineNumberGutter.lineStarts.length).length)
+                }
+
+                x: 0
+                y: 0
+                width: gutterWidth
+                height: editor.height
+                visible: noteWindow.codeModeEnabled
+
+                Repeater {
+                    // An INT model (the line count), not the lineStarts array
+                    // itself: a Repeater rebuilds every delegate whenever its
+                    // model identity changes, and lineStarts is a fresh array
+                    // on every keystroke — so binding the array directly would
+                    // tear down and rebuild every number in the note for each
+                    // character typed. With a count, delegates persist and
+                    // only their own y binding re-evaluates. This file has
+                    // been bitten by exactly this before; see DocumentHandler
+                    // ::emitListMarkerRangesChangedIfNeeded's comment for the
+                    // same lesson learned the hard way on the marker overlay.
+                    model: noteWindow.codeModeEnabled ? lineNumberGutter.lineStarts.length : 0
+
+                    delegate: Text {
+                        required property int index
+
+                        // positionToRectangle() reads the y straight off the
+                        // laid-out text, so a number tracks its line through
+                        // wrapping, font changes and reflow without this file
+                        // knowing anything about line heights. Guarded against
+                        // a transient index past the end: lineStarts and the
+                        // Repeater's own count update on separate passes, and
+                        // a delete that removes lines can evaluate this
+                        // between the two.
+                        readonly property real lineY: {
+                            const starts = lineNumberGutter.lineStarts
+                            if (index >= starts.length)
+                                return 0
+                            return editor.positionToRectangle(starts[index]).y
+                        }
+
+                        x: lineNumberGutter.leftPadding
+                        y: lineY
+                        width: digitMetrics.width
+                        horizontalAlignment: Text.AlignRight
+                        text: index + 1
+                        font: lineNumberGutter.numberFont
+                        // Dimmed against the note's own font color rather than
+                        // a fixed grey: the gutter has to stay legible on both
+                        // a light and a dark note, and the note's font color is
+                        // the only thing here that is already known to contrast
+                        // with its background. 0.4 is the same dimming the
+                        // context menu uses for a disabled row.
+                        color: Qt.rgba(noteAppearance.fontColor.r,
+                                       noteAppearance.fontColor.g,
+                                       noteAppearance.fontColor.b,
+                                       0.4)
+                    }
+                }
+            }
+
             // Sole purpose: gives EditorDragFilter below a place in the tree
             // where it's `editor`'s direct parent and nothing else's — see
             // EditorDragFilter's own class comment for why that's required
@@ -572,7 +886,13 @@ Window {
             // of it).
             EditorDragFilter {
                 id: editorDragFilter
-                width: editorFlick.width
+                // Shifted right to clear the gutter (0 when it is off, so
+                // this is a no-op for an ordinary note). x, never y: the
+                // editor-sits-at-content-(0,0) invariant ensureCursorVisible
+                // and onContentYChanged both rely on is specifically about y
+                // — see editorFlick's own comment above, which says so.
+                x: lineNumberGutter.gutterWidth
+                width: editorFlick.width - lineNumberGutter.gutterWidth
                 height: editor.height
 
                 TextArea {
@@ -580,7 +900,7 @@ Window {
 
                     property bool ready: false
 
-                    width: editorFlick.width
+                    width: editorFlick.width - lineNumberGutter.gutterWidth
                     // Qt bug workaround: TextArea's own implicitHeight (the
                     // default this would fall back to) does not reactively
                     // recompute after docHandler.setMarkdown() mutates the
@@ -663,6 +983,51 @@ Window {
                         onTapped: (eventPoint) => {
                             const position = editor.positionAt(eventPoint.position.x, eventPoint.position.y)
                             docHandler.tryToggleCheckboxAt(position)
+                        }
+                    }
+
+                    // A tap that lands inside a bullet's/checkbox's marker
+                    // places the caret at the item's text instead, where the
+                    // tap visibly aimed (bug found live: "the text cursor is
+                    // inside of the checkbox, causing any content typed to
+                    // break it"). The marker is invisible text under a drawn
+                    // glyph, so EVERY position in it renders at that glyph's
+                    // own left or right edge — measured on a fresh "- [ ] ",
+                    // the box spans x=0..14.69 while its label starts at
+                    // x=21.94, so every tap left of x≈20 (the box itself, and
+                    // the gap beside it where an empty item's label looks like
+                    // it starts) resolved into the marker. Typing there split
+                    // it — "- [ b] " — and the checkbox silently vanished.
+                    //
+                    // Runs as its own tap handler rather than inside the
+                    // toggle one above: these are separate rules that happen
+                    // to share a gesture (the toggle only fires on the box,
+                    // this fires on the whole marker, bullets included), and
+                    // TapHandler's passive grab lets both observe the same tap
+                    // without competing — the same reason the spell-check
+                    // handler below is also its own.
+                    //
+                    // Deliberately a TAP, not a press: a press-drag is a
+                    // selection, and a user dragging across a marker means to
+                    // select it (to copy or delete the item wholesale), which
+                    // snapping would silently prevent. TapHandler never fires
+                    // for a drag, so that keeps working untouched.
+                    // Deferred, and that is load-bearing rather than tidiness:
+                    // a pointer handler sees the release BEFORE the item's own
+                    // event handling, and TextArea then places the caret from
+                    // the click itself — so assigning cursorPosition directly
+                    // here is silently overwritten a moment later (measured:
+                    // the caret stayed at 2, the raw position of a click on the
+                    // box, instead of the 6 assigned). Qt.callLater runs it
+                    // once the whole event has been delivered, still within the
+                    // same frame, so the caret never renders in the marker.
+                    TapHandler {
+                        acceptedButtons: Qt.LeftButton
+                        onTapped: (eventPoint) => {
+                            const position = editor.positionAt(eventPoint.position.x, eventPoint.position.y)
+                            const labelStart = docHandler.listLabelPositionAt(position)
+                            if (labelStart !== position)
+                                Qt.callLater(() => editor.cursorPosition = labelStart)
                         }
                     }
 
@@ -761,7 +1126,22 @@ Window {
                     DocumentHandler {
                         id: docHandler
                         document: editor.textDocument
+                        // Code mode's spellcheck suppression rides on the
+                        // SAME property the global preference uses, rather
+                        // than a second gate inside DocumentHandler: "off
+                        // because this note is code" and "off because you
+                        // turned it off" are the same state as far as the
+                        // highlighter is concerned, and one property means
+                        // there is no way for two gates to disagree.
+                        //
+                        // Deliberately does not touch settings.spellcheckEnabled
+                        // itself — that is the user's app-wide preference, and
+                        // a note being code must not rewrite it for every
+                        // other note.
                         spellcheckEnabled: settings.spellcheckEnabled
+                            && !noteWindow.codeModeSuppressesSpellcheck
+                        markdownDecorationEnabled: !noteWindow.codeModeSuppressesMarkdown
+                        autoFormattingEnabled: !noteWindow.codeModeSuppressesAutoFormatting
                         spellcheckLanguage: settings.spellcheckLanguage
                         userDictionaryWords: settings.userDictionaryWords
                         // Controls how long a word must sit unedited before
@@ -1220,6 +1600,41 @@ Window {
                                 // collapsed, invisible characters.
                                 readonly property real glyphSize: Math.max(4, markerGlyph.height * 0.52)
 
+                                // The checkbox alone is drawn larger than the
+                                // shared glyphSize (feature request: "the
+                                // display for checkboxes should be a little
+                                // bigger"). Scaled here rather than by raising
+                                // glyphSize itself, which a bullet's dot also
+                                // derives from — nobody asked for bigger
+                                // bullets, and a list's dots are already the
+                                // right weight next to their text.
+                                //
+                                // Paired with kCheckboxSlotPercent in
+                                // MarkdownHighlighter.cpp, which reserves the
+                                // column this is centred in: that slot is
+                                // proportionally wider than the bullet's by
+                                // enough to fit this. Read that constant's
+                                // comment before retuning either.
+                                //
+                                // Clamped to the slot's own width because the
+                                // two are measured in different units and only
+                                // AGREE for a font the pair was tuned against:
+                                // the slot is a multiple of the "[" character's
+                                // advance, while this is a fraction of the line
+                                // height, and their ratio moves with whatever
+                                // (user-configurable, per note) font the note is
+                                // set to. A narrow-bracketed font would
+                                // otherwise draw a box wider than its column —
+                                // and since the slot starts at the editor's left
+                                // edge, the overflow isn't an overhang, it's the
+                                // box's left half clipped away (the exact defect
+                                // that reserved slot was introduced to fix). A
+                                // box that gives up a fraction of a pixel on
+                                // such a font still looks like a checkbox; half
+                                // a box does not.
+                                readonly property real checkboxSize:
+                                    Math.max(4, Math.min(markerGlyph.height * 0.62, markerGlyph.width))
+
                                 // A real bullet: a filled dot in the text's own
                                 // color, where the literal "-" would have been.
                                 Rectangle {
@@ -1241,7 +1656,7 @@ Window {
                                 Rectangle {
                                     id: checkboxBox
                                     visible: markerGlyph.kind === "checkbox"
-                                    width: markerGlyph.glyphSize
+                                    width: markerGlyph.checkboxSize
                                     height: width
                                     radius: Math.max(2, width * 0.22)
                                     anchors.centerIn: parent
@@ -1751,9 +2166,16 @@ Window {
 
                 property int dragAnchor: -1
 
-                x: 0
+                // Tracks editorDragFilter's own x rather than sitting at 0,
+                // which keeps reprojectedPosition()'s "both share the same
+                // parent and x" assumption below literally true once code
+                // mode's gutter shifts the editor right. Left at 0 it would
+                // hand positionAt() an x offset by the gutter width, so a
+                // click below the text would land the caret a few characters
+                // off — and only in code mode.
+                x: editorDragFilter.x
                 y: editor.contentHeight
-                width: editorFlick.width
+                width: editorFlick.width - lineNumberGutter.gutterWidth
                 height: Math.max(0, editorFlick.contentHeight - editor.contentHeight)
 
                 // mouse.y is relative to this area's own origin, which
@@ -2009,25 +2431,69 @@ Window {
             // matching the same deadzone the Timer below uses to decide
             // whether it's scrolling at all, so the cursor changes at
             // exactly the moment real scrolling starts.
+            // A checkbox is a control you click, so the pointer says so
+            // (feature request) — the same PointingHandCursor every other
+            // clickable in the app uses. It reads checkboxHighlight.active
+            // rather than re-hit-testing, so the cursor and the hover
+            // highlight are driven by one answer and always agree: wherever
+            // the box lights up, the hand shows, and clicking there really
+            // does toggle (see checkboxRectUnderPointer). Ranked BELOW the
+            // armed-autoscroll shapes, which own the cursor outright while
+            // a scroll gesture is live, and above the ordinary I-beam.
+            // The I-beam is additionally scoped to the right of code mode's
+            // line-number gutter: the gutter is not editable text and an
+            // I-beam over it would promise a caret that clicking there cannot
+            // produce. Compared in this MouseArea's own coordinates, which is
+            // why the gutter's x is mapped through mainFrame rather than used
+            // raw — the gutter lives in editorFlick's scrolling content, this
+            // area fills mainFrame, and the two origins differ by
+            // editorFlick's margins. gutterWidth is 0 outside code mode, so
+            // this collapses to the original editorFlick.x boundary there.
             cursorShape: middleScrollArmed
                 ? (Math.abs(middleScrollCurrentY - middleScrollOriginY) > middleScrollDeadzone
                        ? Qt.SizeVerCursor : Qt.SizeAllCursor)
-                : (mouseY >= editorFlick.y ? Qt.IBeamCursor : Qt.ArrowCursor)
+                : (checkboxHighlight.active
+                       ? Qt.PointingHandCursor
+                       : (mouseY >= editorFlick.y
+                          && mouseX >= editorFlick.x + lineNumberGutter.gutterWidth
+                              ? Qt.IBeamCursor : Qt.ArrowCursor))
 
-            // Right-click drags the window via startSystemMove(), deferred
-            // until a small movement threshold is exceeded (rather than
-            // fired unconditionally on press) so a plain click that never
-            // crosses the threshold doesn't hijack the gesture —
-            // startSystemMove() hands the whole gesture to the compositor
-            // the instant it's called (see project notes on Wayland
-            // interactive move: the client never reliably gets its own
-            // onReleased/onCanceled back afterward). A plain right-click
-            // (no drag) now does nothing — the copy/paste context menu this
-            // used to open was removed (feature request: cut/copy/paste
-            // live as toolbar buttons instead, see SelectionToolbar.qml).
+            // The right button does two jobs, told apart by MOVEMENT alone
+            // (feature request): drag the note if the pointer travels more
+            // than dragThreshold while held, open the context menu if it
+            // doesn't. Both are the standard convention for their own
+            // gesture, and they can share the button precisely because a
+            // stationary press and a drag are distinguishable before either
+            // has to commit.
+            //
+            // That split only works because startSystemMove() is DEFERRED
+            // until the threshold is crossed, rather than fired on press —
+            // and it was already written that way, for its own reason:
+            // startSystemMove() hands the whole gesture to the compositor the
+            // instant it's called and the client never reliably gets its own
+            // onReleased/onCanceled back afterward (see the position comment
+            // near the top of this file). A press-time startSystemMove()
+            // would swallow every stationary right-click's release too, so
+            // there would be no click left to open a menu with.
+            //
+            // The flip side of that same fact is what makes onReleased's
+            // check trustworthy: once a drag really has started, the release
+            // belongs to the compositor and never arrives here at all.
+            // rightDragStarted is still tested there rather than relying on
+            // that — a gesture this file is not the sole owner of is not one
+            // to make silent assumptions about.
             property real pressX: 0
             property real pressY: 0
             property bool rightDragStarted: false
+            // Whether the in-flight right-button gesture is still eligible to
+            // become a context-menu click. Distinct from !rightDragStarted,
+            // and not redundant with it: a right-click whose only job was to
+            // DISARM middle-click autoscroll (see onPressed) returns early
+            // without starting a menu gesture at all, while rightDragStarted
+            // still reads false from whatever gesture preceded it — so
+            // !rightDragStarted alone would pop a menu out of the very click
+            // the user meant as a cancel.
+            property bool rightClickCandidate: false
             readonly property int dragThreshold: 4
 
             // Middle-click autoscroll (feature request, Chrome-style):
@@ -2070,6 +2536,7 @@ Window {
             onPressed: (mouse) => {
                 if (middleScrollArmed) {
                     disarmMiddleScroll()
+                    rightClickCandidate = false
                     mouse.accepted = true
                     return
                 }
@@ -2083,6 +2550,7 @@ Window {
                     pressX = mouse.x
                     pressY = mouse.y
                     rightDragStarted = false
+                    rightClickCandidate = true
                 }
             }
             onReleased: (mouse) => {
@@ -2090,6 +2558,23 @@ Window {
                     middleButtonHeld = false
                     if (middleScrollDraggedWhileHeld)
                         disarmMiddleScroll()
+                    return
+                }
+                // A right-button release that reaches this file at all is a
+                // release the compositor never took — i.e. one that never
+                // became a window drag. See the gesture comment above for why
+                // rightClickCandidate, not !rightDragStarted, is the test.
+                //
+                // Reported in SCREEN coordinates: this MouseArea fills
+                // mainFrame, which fills the window's own content item, so
+                // mouse.x/y here ARE window coordinates and need only the
+                // note's own origin added. noteOrigin() is what makes that
+                // survive a drag — see its comment for why mapToGlobal()
+                // would not.
+                if (mouse.button === Qt.RightButton && rightClickCandidate) {
+                    rightClickCandidate = false
+                    const origin = noteWindow.noteOrigin()
+                    noteWindow.contextMenuRequested(origin.x + mouse.x, origin.y + mouse.y)
                 }
             }
             onPositionChanged: (mouse) => {
@@ -2101,7 +2586,8 @@ Window {
                 // has to drive the highlight rather than a handler on
                 // editor itself.
                 const posInEditor = mapToItem(editor, mouse.x, mouse.y)
-                checkboxHighlight.glyphRect = docHandler.checkboxRectAt(editor.positionAt(posInEditor.x, posInEditor.y))
+                checkboxHighlight.glyphRect =
+                    noteWindow.checkboxRectUnderPointer(posInEditor.x, posInEditor.y)
 
                 if (middleButtonHeld && !middleScrollDraggedWhileHeld
                         && Math.abs(middleScrollCurrentY - middleScrollOriginY) > dragThreshold) {
@@ -2111,6 +2597,11 @@ Window {
                     return
                 if (Math.abs(mouse.x - pressX) > dragThreshold || Math.abs(mouse.y - pressY) > dragThreshold) {
                     rightDragStarted = true
+                    // This gesture is a drag now and can never go back to
+                    // being a menu click — cleared here rather than relying
+                    // on the release never arriving (which is true, but is
+                    // the compositor's behavior to guarantee, not ours).
+                    rightClickCandidate = false
                     noteWindow.startSystemMove()
                 }
             }
@@ -2145,10 +2636,28 @@ Window {
 
         // Escape cancels an armed middle-click autoscroll without needing
         // another click — standard convention for backing out of an armed,
-        // modal-ish pointer mode.
+        // modal-ish pointer mode — and otherwise closes the find/replace
+        // panel.
+        //
+        // The panel is its own window and owns Escape while IT has focus
+        // (Qt.WindowShortcut is scoped per window, so this one is not even a
+        // candidate for a key typed into the panel). This branch is what
+        // covers Escape while focus is in the NOTE — most obviously having
+        // just clicked into the text to look at a match (bug found live:
+        // Escape did nothing at all there, since only the panel's own fields
+        // were listening).
+        //
+        // Autoscroll wins when both are live: it's a modal-ish pointer mode
+        // the user is actively in, and it can only be disarmed by Escape or
+        // another click, whereas the panel also has a visible close button.
         Shortcut {
             sequence: "Escape"
-            onActivated: if (mouseDragArea.middleScrollArmed) mouseDragArea.disarmMiddleScroll()
+            onActivated: {
+                if (mouseDragArea.middleScrollArmed)
+                    mouseDragArea.disarmMiddleScroll()
+                else
+                    noteWindow.findCloseRequested()
+            }
         }
 
         DragHandler {
@@ -2205,6 +2714,7 @@ Window {
             onPinToggleRequested: noteWindow.setPinned(!noteWindow.alwaysOnTop)
             onSettingsRequested: perNoteSettingsPopup.show()
             onDuplicateRequested: noteWindow.duplicateNote()
+            onSearchRequested: noteWindow.findRequested(false)
             onCloseRequested: noteWindow.deleteNote()
         }
 

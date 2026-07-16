@@ -1137,3 +1137,176 @@ SCENARIO("Per-note appearance overrides persist and can be cleared", "[settings]
         }
     }
 }
+
+// Code mode (feature request). Settings holds the global DEFAULTS for all four
+// code mode questions — whether a note is code (codeModeEnabled) and what that
+// does to it (the three codeModeDisables* toggles). Every one of them also
+// round-trips per-note through NoteAppearanceOverride, so a note can both opt
+// into code mode on its own and disagree about what code mode entails.
+SCENARIO("Code mode ships off, and its suppressions ship on", "[settings]")
+{
+    GIVEN("a Settings instance backed by a brand-new, empty config file")
+    {
+        QTemporaryDir dir;
+        REQUIRE(dir.isValid());
+        Settings settings(tempConfigPath(dir));
+
+        THEN("code mode is off, so no existing note changes appearance on upgrade")
+        {
+            CHECK_FALSE(settings.codeModeEnabled());
+        }
+
+        THEN("code mode suppresses markdown, auto-formatting and spellcheck by default")
+        {
+            CHECK(settings.codeModeDisablesMarkdownHighlighting());
+            CHECK(settings.codeModeDisablesAutoFormatting());
+            CHECK(settings.codeModeDisablesSpellcheck());
+        }
+    }
+}
+
+SCENARIO("Code mode settings persist and announce themselves", "[settings]")
+{
+    GIVEN("a Settings instance with spies on every code mode signal")
+    {
+        QTemporaryDir dir;
+        REQUIRE(dir.isValid());
+        Settings settings(tempConfigPath(dir));
+
+        QSignalSpy enabledSpy(&settings, &Settings::codeModeEnabledChanged);
+        QSignalSpy markdownSpy(&settings, &Settings::codeModeDisablesMarkdownHighlightingChanged);
+        QSignalSpy autoFormatSpy(&settings, &Settings::codeModeDisablesAutoFormattingChanged);
+        QSignalSpy spellcheckSpy(&settings, &Settings::codeModeDisablesSpellcheckChanged);
+
+        WHEN("each is flipped away from its default")
+        {
+            settings.setCodeModeEnabled(true);
+            settings.setCodeModeDisablesMarkdownHighlighting(false);
+            settings.setCodeModeDisablesAutoFormatting(false);
+            settings.setCodeModeDisablesSpellcheck(false);
+
+            THEN("each reports its new value")
+            {
+                CHECK(settings.codeModeEnabled());
+                CHECK_FALSE(settings.codeModeDisablesMarkdownHighlighting());
+                CHECK_FALSE(settings.codeModeDisablesAutoFormatting());
+                CHECK_FALSE(settings.codeModeDisablesSpellcheck());
+            }
+
+            THEN("each emitted its change signal")
+            {
+                CHECK(enabledSpy.count() == 1);
+                CHECK(markdownSpy.count() == 1);
+                CHECK(autoFormatSpy.count() == 1);
+                CHECK(spellcheckSpy.count() == 1);
+            }
+
+            THEN("a second Settings pointed at the same file sees them, so they survive a restart")
+            {
+                Settings reloaded(tempConfigPath(dir));
+                CHECK(reloaded.codeModeEnabled());
+                CHECK_FALSE(reloaded.codeModeDisablesMarkdownHighlighting());
+                CHECK_FALSE(reloaded.codeModeDisablesAutoFormatting());
+                CHECK_FALSE(reloaded.codeModeDisablesSpellcheck());
+            }
+        }
+    }
+}
+
+SCENARIO("A note's code mode override round-trips through the config file", "[settings]")
+{
+    GIVEN("a note with no override group at all")
+    {
+        QTemporaryDir dir;
+        REQUIRE(dir.isValid());
+        Settings settings(tempConfigPath(dir));
+
+        THEN("it reports no code mode override, meaning 'use the global default'")
+        {
+            const Settings::NoteAppearanceOverride override = settings.noteOverride("fresh-note");
+            CHECK_FALSE(override.hasCodeModeEnabled);
+            CHECK_FALSE(override.hasCodeModeDisablesMarkdownHighlighting);
+            CHECK_FALSE(override.hasCodeModeDisablesAutoFormatting);
+            CHECK_FALSE(override.hasCodeModeDisablesSpellcheck);
+        }
+    }
+
+    GIVEN("a note whose override turns code mode on")
+    {
+        QTemporaryDir dir;
+        REQUIRE(dir.isValid());
+        Settings settings(tempConfigPath(dir));
+
+        Settings::NoteAppearanceOverride override;
+        override.hasCodeModeEnabled = true;
+        override.codeModeEnabled = true;
+        settings.setNoteOverride("code-note", override);
+
+        THEN("reading it back reports the override")
+        {
+            const Settings::NoteAppearanceOverride read = settings.noteOverride("code-note");
+            CHECK(read.hasCodeModeEnabled);
+            CHECK(read.codeModeEnabled);
+        }
+
+        THEN("a second Settings on the same file agrees, so it survives a restart")
+        {
+            Settings reloaded(tempConfigPath(dir));
+            const Settings::NoteAppearanceOverride read = reloaded.noteOverride("code-note");
+            CHECK(read.hasCodeModeEnabled);
+            CHECK(read.codeModeEnabled);
+        }
+
+        THEN("a DIFFERENT note is unaffected")
+        {
+            CHECK_FALSE(settings.noteOverride("other-note").hasCodeModeEnabled);
+        }
+
+        AND_WHEN("the note's whole override group is cleared")
+        {
+            settings.clearNoteOverride("code-note");
+
+            THEN("its code mode override goes with it")
+            {
+                CHECK_FALSE(settings.noteOverride("code-note").hasCodeModeEnabled);
+            }
+        }
+    }
+
+    GIVEN("a note that is code, but wants to keep spellcheck and markdown styling")
+    {
+        QTemporaryDir dir;
+        REQUIRE(dir.isValid());
+        Settings settings(tempConfigPath(dir));
+
+        Settings::NoteAppearanceOverride override;
+        override.hasCodeModeEnabled = true;
+        override.codeModeEnabled = true;
+        override.hasCodeModeDisablesSpellcheck = true;
+        override.codeModeDisablesSpellcheck = false;
+        override.hasCodeModeDisablesMarkdownHighlighting = true;
+        override.codeModeDisablesMarkdownHighlighting = false;
+        settings.setNoteOverride("picky-code-note", override);
+
+        THEN("a second Settings on the same file agrees, so it survives a restart")
+        {
+            Settings reloaded(tempConfigPath(dir));
+            const Settings::NoteAppearanceOverride read = reloaded.noteOverride("picky-code-note");
+            CHECK(read.hasCodeModeEnabled);
+            CHECK(read.codeModeEnabled);
+            CHECK(read.hasCodeModeDisablesSpellcheck);
+            CHECK_FALSE(read.codeModeDisablesSpellcheck);
+            CHECK(read.hasCodeModeDisablesMarkdownHighlighting);
+            CHECK_FALSE(read.codeModeDisablesMarkdownHighlighting);
+        }
+
+        // The has*/value pairs are stored independently, so a toggle the user
+        // never touched must not be dragged along by the two that they did.
+        THEN("the toggle it never touched still reports no override at all")
+        {
+            const Settings::NoteAppearanceOverride read = settings.noteOverride("picky-code-note");
+            CHECK_FALSE(read.hasCodeModeDisablesAutoFormatting);
+            CHECK(read.codeModeDisablesAutoFormatting);
+        }
+    }
+}

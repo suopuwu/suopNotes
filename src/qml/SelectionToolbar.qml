@@ -380,6 +380,27 @@ Window {
     readonly property alias hovered: barHoverHandler.hovered
     HoverHandler { id: barHoverHandler }
 
+    // Whether the tracked note's code mode is currently suppressing markdown
+    // formatting — the same note-side property that disables NoteWindow's own
+    // formatting shortcuts, read here so the toolbar and the keyboard can't
+    // disagree about whether this note formats markdown.
+    //
+    // The nine formatting buttons below are DISABLED (dimmed), never hidden,
+    // and that is deliberate twice over. NoteContextMenu.qml states the UX
+    // half: a surface whose controls appear and disappear never lets the user
+    // build muscle memory for where anything is. The mechanical half is local
+    // to this file — barLength is derived from the button count, so hiding
+    // buttons would resize this window live, and a resize of a mapped window
+    // here is a real client<->compositor negotiation with a whole
+    // self-correcting size guard (see enforceSize) already devoted to the ways
+    // it goes wrong. Dimming costs one binding and races nothing.
+    //
+    // False when no note is tracked, which changes nothing on its own: the
+    // whole GridLayout is already disabled in that case (see content.enabled).
+    readonly property bool formattingSuppressed: bar.noteWindow
+        ? bar.noteWindow.codeModeSuppressesAutoFormatting
+        : false
+
     // Exposed for tests only (structural/behavioral verification), not used
     // by app code outside this file — same convention NoteWindow.qml's own
     // mouseDragArea/editor aliases follow.
@@ -1169,6 +1190,7 @@ Window {
             contentItem: ToolbarButtonLabel {}
             checkable: true
             checked: bar.noteWindow ? bar.noteWindow.currentBold : false
+            enabled: !bar.formattingSuppressed
             onClicked: bar.runAction(() => bar.noteWindow.applyInlineToggle(r => bar.noteWindow.docHandler.toggleBold(r.start, r.end)))
             ToolbarButtonTip { id: boldButtonTip; text: "Bold" }
         }
@@ -1184,6 +1206,7 @@ Window {
             contentItem: ToolbarButtonLabel {}
             checkable: true
             checked: bar.noteWindow ? bar.noteWindow.currentItalic : false
+            enabled: !bar.formattingSuppressed
             onClicked: bar.runAction(() => bar.noteWindow.applyInlineToggle(r => bar.noteWindow.docHandler.toggleItalic(r.start, r.end)))
             ToolbarButtonTip { id: italicButtonTip; text: "Italic" }
         }
@@ -1199,6 +1222,7 @@ Window {
             contentItem: ToolbarButtonLabel {}
             checkable: true
             checked: bar.noteWindow ? bar.noteWindow.currentStrikethrough : false
+            enabled: !bar.formattingSuppressed
             onClicked: bar.runAction(() => bar.noteWindow.applyInlineToggle(r => bar.noteWindow.docHandler.toggleStrikethrough(r.start, r.end)))
             ToolbarButtonTip { id: strikethroughButtonTip; text: "Strikethrough" }
         }
@@ -1212,6 +1236,7 @@ Window {
             contentItem: ToolbarButtonLabel {}
             checkable: true
             checked: bar.noteWindow ? bar.noteWindow.currentHeadingLevel === 1 : false
+            enabled: !bar.formattingSuppressed
             onClicked: bar.runAction(() => bar.noteWindow.docHandler.setHeadingLevel(bar.noteWindow.editor.selectionStart, bar.noteWindow.editor.selectionEnd, 1))
             ToolbarButtonTip { text: "Heading 1" }
         }
@@ -1225,6 +1250,7 @@ Window {
             contentItem: ToolbarButtonLabel {}
             checkable: true
             checked: bar.noteWindow ? bar.noteWindow.currentHeadingLevel === 2 : false
+            enabled: !bar.formattingSuppressed
             onClicked: bar.runAction(() => bar.noteWindow.docHandler.setHeadingLevel(bar.noteWindow.editor.selectionStart, bar.noteWindow.editor.selectionEnd, 2))
             ToolbarButtonTip { text: "Heading 2" }
         }
@@ -1239,6 +1265,7 @@ Window {
             }
             checkable: true
             checked: bar.noteWindow ? bar.noteWindow.currentBulletList : false
+            enabled: !bar.formattingSuppressed
             onClicked: bar.runAction(() => bar.noteWindow.docHandler.toggleBulletList(bar.noteWindow.editor.selectionStart, bar.noteWindow.editor.selectionEnd))
             ToolbarButtonTip { text: "Bullet List" }
         }
@@ -1253,6 +1280,7 @@ Window {
             }
             checkable: true
             checked: bar.noteWindow ? bar.noteWindow.currentNumberedList : false
+            enabled: !bar.formattingSuppressed
             onClicked: bar.runAction(() => bar.noteWindow.docHandler.toggleNumberedList(bar.noteWindow.editor.selectionStart, bar.noteWindow.editor.selectionEnd))
             ToolbarButtonTip { text: "Numbered List" }
         }
@@ -1267,6 +1295,7 @@ Window {
             }
             checkable: true
             checked: bar.noteWindow ? bar.noteWindow.currentCheckboxList : false
+            enabled: !bar.formattingSuppressed
             onClicked: bar.runAction(() => bar.noteWindow.docHandler.toggleCheckboxList(bar.noteWindow.editor.selectionStart, bar.noteWindow.editor.selectionEnd))
             ToolbarButtonTip { text: "Checkbox List" }
         }
@@ -1287,6 +1316,7 @@ Window {
             contentItem: ToolbarSvgIcon {
                 path: "M20 2H4c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zM8 20H4v-4h4v4zm0-6H4v-4h4v4zm0-6H4V4h4v4zm6 12h-4v-4h4v4zm0-6h-4v-4h4v4zm0-6h-4V4h4v4zm6 12h-4v-4h4v4zm0-6h-4v-4h4v4zm0-6h-4V4h4v4z"
             }
+            enabled: !bar.formattingSuppressed
             onClicked: bar.runAction(() => bar.noteWindow.docHandler.insertTable(bar.noteWindow.editor.selectionEnd))
             ToolbarButtonTip {
                 text: "Insert Table"
@@ -2505,7 +2535,20 @@ Window {
                     implicitHeight: bar.buttonSize
                     leftPadding: 10
                     rightPadding: 10
-                    Layout.alignment: Qt.AlignLeft | Qt.AlignVCenter
+                    // Layout.fillWidth, NOT Layout.alignment (bug found
+                    // live: "the suggestions' targets are only as large as
+                    // the text"): an aligned button keeps its own implicit,
+                    // text-derived width, so a short suggestion sitting in
+                    // a column sized by a much longer one left most of its
+                    // own row dead — the hover highlight stopped at the end
+                    // of the word and a click just past it hit nothing at
+                    // all, even though the popup visibly reserved that
+                    // space. Filling makes every button span the column's
+                    // full width, so the whole reserved row hovers and
+                    // clicks as one target. Text stays flush left via the
+                    // contentItem's own AlignLeft below, which is what the
+                    // alignment was really there for.
+                    Layout.fillWidth: true
                     background: ToolbarButtonHighlight {}
                     hoverEnabled: true
                     contentItem: ToolbarButtonLabel { horizontalAlignment: Text.AlignLeft }
@@ -2555,7 +2598,9 @@ Window {
                 implicitHeight: bar.buttonSize
                 leftPadding: 10
                 rightPadding: 10
-                Layout.alignment: Qt.AlignLeft | Qt.AlignVCenter
+                // Same full-row target as each suggestion button above —
+                // see that Layout.fillWidth's own comment.
+                Layout.fillWidth: true
                 background: ToolbarButtonHighlight {}
                 hoverEnabled: true
                 contentItem: ToolbarButtonLabel { horizontalAlignment: Text.AlignLeft }

@@ -195,6 +195,91 @@ Item {
                     "the field should clear itself once the word is added")
         }
 
+        // ------------------------------------------------------------------
+        // Code Mode section (feature request)
+        //
+        // The first checkbox is the global DEFAULT for every note (each note
+        // can override it from its own settings popup). The three below it
+        // define what code mode MEANS, app-wide.
+        // ------------------------------------------------------------------
+
+        // One test, not two — same ordering hazard the spinbox test above
+        // documents: ticking the box severs its `checked: settings.
+        // codeModeEnabled` binding for the rest of this control's life, so
+        // "reflects the setting" has to be asserted before "writing it
+        // updates the setting", in this order, in one function.
+        function test_code_mode_default_checkbox_reflects_and_updates_the_global_setting() {
+            var box = dialog.codeModeDefaultCheckBox
+
+            try {
+                compare(settings.codeModeEnabled, false, "precondition: code mode ships off by default")
+                compare(box.checked, false, "should reflect the setting before any interaction")
+
+                box.checked = true
+                box.toggled()
+                compare(settings.codeModeEnabled, true,
+                        "ticking it should make every note a code note by default, immediately")
+
+                box.checked = false
+                box.toggled()
+                compare(settings.codeModeEnabled, false,
+                        "unticking it should turn the default back off, immediately")
+            } finally {
+                settings.codeModeEnabled = false
+            }
+        }
+
+        // Same "one test, not two" reasoning as above, for all three boxes:
+        // each assertion pair is reflect-then-write, in that order.
+        function test_the_three_suppression_checkboxes_reflect_and_update_their_own_global_settings() {
+            var markdownBox = dialog.codeModeDisablesMarkdownCheckBox
+            var autoFormattingBox = dialog.codeModeDisablesAutoFormattingCheckBox
+            var spellcheckBox = dialog.codeModeDisablesSpellcheckCheckBox
+
+            try {
+                compare(settings.codeModeDisablesMarkdownHighlighting, true, "precondition: ships on")
+                compare(settings.codeModeDisablesAutoFormatting, true, "precondition: ships on")
+                compare(settings.codeModeDisablesSpellcheck, true, "precondition: ships on")
+                compare(markdownBox.checked, true, "should reflect its setting before any interaction")
+                compare(autoFormattingBox.checked, true, "should reflect its setting before any interaction")
+                compare(spellcheckBox.checked, true, "should reflect its setting before any interaction")
+
+                markdownBox.checked = false
+                markdownBox.toggled()
+                compare(settings.codeModeDisablesMarkdownHighlighting, false,
+                        "unticking it should let code notes keep markdown styling")
+                compare(settings.codeModeDisablesAutoFormatting, true,
+                        "and must not disturb the other two")
+                compare(settings.codeModeDisablesSpellcheck, true)
+
+                autoFormattingBox.checked = false
+                autoFormattingBox.toggled()
+                compare(settings.codeModeDisablesAutoFormatting, false)
+
+                spellcheckBox.checked = false
+                spellcheckBox.toggled()
+                compare(settings.codeModeDisablesSpellcheck, false)
+            } finally {
+                settings.codeModeDisablesMarkdownHighlighting = true
+                settings.codeModeDisablesAutoFormatting = true
+                settings.codeModeDisablesSpellcheck = true
+            }
+        }
+
+        // Deliberate: the three describe what code mode does for ANY note in
+        // code mode — including one that got there by its own per-note
+        // override while the global default is off, which is the common case
+        // since the default ships off. Graying them out whenever the global
+        // default is unticked would make them look inapplicable to exactly
+        // the notes they do apply to.
+        function test_the_suppression_checkboxes_stay_usable_while_the_global_default_is_off() {
+            compare(settings.codeModeEnabled, false, "precondition: the global default is off")
+
+            verify(dialog.codeModeDisablesMarkdownCheckBox.enabled)
+            verify(dialog.codeModeDisablesAutoFormattingCheckBox.enabled)
+            verify(dialog.codeModeDisablesSpellcheckCheckBox.enabled)
+        }
+
         function test_clicking_remove_on_a_words_row_removes_it_from_the_setting_and_shrinks_the_repeater() {
             settings.addUserDictionaryWord("zaphod")
             var countBefore = dialog.userDictionaryWordsRepeater.count

@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 #include <QColor>
+#include <QSignalSpy>
 #include <QTemporaryDir>
 
 #include "core/NoteAppearance.h"
@@ -256,6 +257,283 @@ SCENARIO("A note's highlightOpacity override diverges from the global default", 
                     CHECK(appearance.highlightOpacity() == 0.55);
                     CHECK_FALSE(appearance.hasHighlightOpacityOverride());
                 }
+            }
+        }
+    }
+}
+
+// Code mode (feature request): "default off, overrideable per note and
+// globally". These document that resolution, and — the part that is easy to
+// get wrong — how code mode's monospace font interacts with the font family
+// the user may have chosen for a note themselves.
+SCENARIO("Code mode is off by default and can be overridden for one note", "[note_appearance]")
+{
+    GIVEN("a fresh Settings instance and a note with no override")
+    {
+        QTemporaryDir dir;
+        REQUIRE(dir.isValid());
+        Settings settings(tempConfigPath(dir));
+
+        NoteAppearance appearance;
+        appearance.setSettings(&settings);
+        appearance.setNoteId("code-mode-note");
+
+        THEN("the note is not in code mode, and says it is not overriding it")
+        {
+            CHECK_FALSE(appearance.codeModeEnabled());
+            CHECK_FALSE(appearance.hasCodeModeEnabledOverride());
+        }
+
+        WHEN("code mode is turned on globally")
+        {
+            settings.setCodeModeEnabled(true);
+
+            THEN("the note follows the new global default without overriding it")
+            {
+                CHECK(appearance.codeModeEnabled());
+                CHECK_FALSE(appearance.hasCodeModeEnabledOverride());
+            }
+        }
+
+        WHEN("this one note overrides code mode on, while the global default stays off")
+        {
+            appearance.setCodeModeEnabledOverride(true);
+
+            THEN("only this note is in code mode")
+            {
+                CHECK(appearance.codeModeEnabled());
+                CHECK(appearance.hasCodeModeEnabledOverride());
+                CHECK_FALSE(settings.codeModeEnabled());
+            }
+
+            AND_WHEN("the override is cleared")
+            {
+                appearance.clearCodeModeEnabledOverride();
+
+                THEN("the note reverts to the global default of off")
+                {
+                    CHECK_FALSE(appearance.codeModeEnabled());
+                    CHECK_FALSE(appearance.hasCodeModeEnabledOverride());
+                }
+            }
+        }
+
+        WHEN("a note overrides code mode OFF while the global default is on")
+        {
+            settings.setCodeModeEnabled(true);
+            appearance.setCodeModeEnabledOverride(false);
+
+            THEN("the note is not in code mode — an override off outranks a global on")
+            {
+                CHECK_FALSE(appearance.codeModeEnabled());
+                CHECK(appearance.hasCodeModeEnabledOverride());
+            }
+        }
+    }
+}
+
+// The other half of code mode: not whether a note IS code, but what being code
+// DOES to it. Each of the three resolves per-note against a global default the
+// same way codeModeEnabled does, so one note can be code without giving up
+// spellcheck while every other code note does.
+SCENARIO("What code mode switches off can be overridden per note", "[note_appearance]")
+{
+    GIVEN("a note with no overrides of its own")
+    {
+        QTemporaryDir dir;
+        REQUIRE(dir.isValid());
+        Settings settings(tempConfigPath(dir));
+
+        NoteAppearance appearance;
+        appearance.setSettings(&settings);
+        appearance.setNoteId("code-mode-disables-note");
+
+        THEN("all three follow the shipped global defaults, which are all on")
+        {
+            CHECK(appearance.codeModeDisablesMarkdownHighlighting());
+            CHECK(appearance.codeModeDisablesAutoFormatting());
+            CHECK(appearance.codeModeDisablesSpellcheck());
+            CHECK_FALSE(appearance.hasCodeModeDisablesMarkdownHighlightingOverride());
+            CHECK_FALSE(appearance.hasCodeModeDisablesAutoFormattingOverride());
+            CHECK_FALSE(appearance.hasCodeModeDisablesSpellcheckOverride());
+        }
+
+        WHEN("a global toggle is turned off")
+        {
+            settings.setCodeModeDisablesSpellcheck(false);
+
+            THEN("the note follows it without overriding it")
+            {
+                CHECK_FALSE(appearance.codeModeDisablesSpellcheck());
+                CHECK_FALSE(appearance.hasCodeModeDisablesSpellcheckOverride());
+            }
+        }
+
+        WHEN("this one note says its code mode should keep spellcheck")
+        {
+            appearance.setCodeModeDisablesSpellcheckOverride(false);
+
+            THEN("only this note stops suppressing spellcheck")
+            {
+                CHECK_FALSE(appearance.codeModeDisablesSpellcheck());
+                CHECK(appearance.hasCodeModeDisablesSpellcheckOverride());
+                CHECK(settings.codeModeDisablesSpellcheck());
+            }
+
+            THEN("the other two toggles are untouched — each overrides independently")
+            {
+                CHECK(appearance.codeModeDisablesMarkdownHighlighting());
+                CHECK(appearance.codeModeDisablesAutoFormatting());
+                CHECK_FALSE(appearance.hasCodeModeDisablesMarkdownHighlightingOverride());
+                CHECK_FALSE(appearance.hasCodeModeDisablesAutoFormattingOverride());
+            }
+
+            AND_WHEN("the override is cleared")
+            {
+                appearance.clearCodeModeDisablesSpellcheckOverride();
+
+                THEN("the note reverts to the global default")
+                {
+                    CHECK(appearance.codeModeDisablesSpellcheck());
+                    CHECK_FALSE(appearance.hasCodeModeDisablesSpellcheckOverride());
+                }
+            }
+        }
+
+        WHEN("a note overrides a toggle ON while the global default is off")
+        {
+            settings.setCodeModeDisablesMarkdownHighlighting(false);
+            appearance.setCodeModeDisablesMarkdownHighlightingOverride(true);
+
+            THEN("the note suppresses markdown — an override outranks the global either way")
+            {
+                CHECK(appearance.codeModeDisablesMarkdownHighlighting());
+                CHECK(appearance.hasCodeModeDisablesMarkdownHighlightingOverride());
+            }
+        }
+
+        // These resolve independently of whether the note is in code mode at
+        // all: they answer "what WOULD code mode switch off here", which the
+        // settings popup asks whether or not the mode is on. NoteWindow is the
+        // one that ANDs them with codeModeEnabled to decide what is actually
+        // suppressed.
+        WHEN("the note is not in code mode")
+        {
+            REQUIRE_FALSE(appearance.codeModeEnabled());
+            appearance.setCodeModeDisablesSpellcheckOverride(false);
+
+            THEN("the toggle still reads back what it was set to")
+            {
+                CHECK_FALSE(appearance.codeModeDisablesSpellcheck());
+                CHECK(appearance.hasCodeModeDisablesSpellcheckOverride());
+            }
+        }
+    }
+}
+
+SCENARIO("Code mode defaults a note's font to monospace", "[note_appearance]")
+{
+    GIVEN("a global font family, and a note with no family override")
+    {
+        QTemporaryDir dir;
+        REQUIRE(dir.isValid());
+        Settings settings(tempConfigPath(dir));
+        settings.setFontFamily("Noto Sans");
+
+        NoteAppearance appearance;
+        appearance.setSettings(&settings);
+        appearance.setNoteId("font-note");
+
+        THEN("an ordinary note uses the global family")
+        {
+            CHECK(appearance.fontFamily() == "Noto Sans");
+        }
+
+        WHEN("the note is put into code mode")
+        {
+            appearance.setCodeModeEnabledOverride(true);
+
+            THEN("its family becomes the system monospace alias, outranking the global family")
+            {
+                CHECK(appearance.fontFamily() == "monospace");
+            }
+
+            THEN("the global family itself is untouched, so other notes are unaffected")
+            {
+                CHECK(settings.fontFamily() == "Noto Sans");
+            }
+
+            AND_WHEN("code mode is turned back off")
+            {
+                appearance.clearCodeModeEnabledOverride();
+
+                THEN("the note goes back to the global family")
+                {
+                    CHECK(appearance.fontFamily() == "Noto Sans");
+                }
+            }
+        }
+    }
+
+    GIVEN("a note that has its OWN font family override and is in code mode")
+    {
+        QTemporaryDir dir;
+        REQUIRE(dir.isValid());
+        Settings settings(tempConfigPath(dir));
+        settings.setFontFamily("Noto Sans");
+
+        NoteAppearance appearance;
+        appearance.setSettings(&settings);
+        appearance.setNoteId("explicit-family-note");
+        appearance.setFontFamilyOverride("Comic Sans MS");
+        appearance.setCodeModeEnabledOverride(true);
+
+        THEN("the note's own chosen family wins — code mode only supplies a DEFAULT")
+        {
+            CHECK(appearance.fontFamily() == "Comic Sans MS");
+        }
+
+        AND_WHEN("that family override is cleared, leaving code mode on")
+        {
+            appearance.clearFontFamilyOverride();
+
+            THEN("code mode's monospace default takes over")
+            {
+                CHECK(appearance.fontFamily() == "monospace");
+            }
+        }
+    }
+}
+
+SCENARIO("Turning code mode on re-resolves the note's font family", "[note_appearance]")
+{
+    GIVEN("a note listening for font family changes")
+    {
+        QTemporaryDir dir;
+        REQUIRE(dir.isValid());
+        Settings settings(tempConfigPath(dir));
+
+        NoteAppearance appearance;
+        appearance.setSettings(&settings);
+        appearance.setNoteId("signal-note");
+
+        QSignalSpy familySpy(&appearance, &NoteAppearance::fontFamilyChanged);
+        QSignalSpy codeModeSpy(&appearance, &NoteAppearance::codeModeEnabledChanged);
+        REQUIRE(familySpy.isValid());
+        REQUIRE(codeModeSpy.isValid());
+
+        WHEN("code mode is switched on")
+        {
+            appearance.setCodeModeEnabledOverride(true);
+
+            THEN("both code mode AND font family announce themselves")
+            {
+                // fontFamily depends on codeModeEnabled, so a QML binding on
+                // the family has to be told to re-evaluate — otherwise the
+                // editor would keep the old font until something unrelated
+                // happened to change it.
+                CHECK(codeModeSpy.count() > 0);
+                CHECK(familySpy.count() > 0);
             }
         }
     }

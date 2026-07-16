@@ -64,6 +64,12 @@ Item {
         signalName: "closeRequested"
     }
 
+    SignalSpy {
+        id: searchSpy
+        target: hud
+        signalName: "searchRequested"
+    }
+
     TestCase {
         name: "NoteHud"
         when: windowShown
@@ -73,6 +79,7 @@ Item {
             settingsSpy.clear()
             duplicateSpy.clear()
             closeSpy.clear()
+            searchSpy.clear()
             behindArea.behindClickCount = 0
             hud._closeArmed = false
         }
@@ -108,18 +115,33 @@ Item {
             compare(closeSpy.count, 0)
         }
 
+        // Tapping the search glyph asks the host to open its find/replace
+        // panel (once, and without also triggering any other action).
+        function test_tapping_search_glyph_emits_searchRequested() {
+            const glyph = hud.searchGlyphItem
+            mouseClick(glyph, glyph.width / 2, glyph.height / 2)
+            compare(searchSpy.count, 1)
+            compare(pinSpy.count, 0)
+            compare(settingsSpy.count, 0)
+            compare(duplicateSpy.count, 0)
+            compare(closeSpy.count, 0)
+        }
+
         // The close glyph deletes the note's file, so it must stay the
-        // rightmost (last-reached) icon in the row — a copy or settings tap
-        // must never sit past it where a stray click meant for close could
-        // land. Verified by comparing the glyphs' scene-mapped x positions.
+        // rightmost (last-reached) icon in the row — a copy, settings or
+        // search tap must never sit past it where a stray click meant for
+        // close could land. Verified by comparing the glyphs' scene-mapped
+        // x positions.
         function test_close_glyph_stays_rightmost_of_all_icons() {
             const closePos = hud.closeGlyphItem.mapToItem(root, 0, 0)
             const pinPos = hud.pinGlyphItem.mapToItem(root, 0, 0)
             const gearPos = hud.gearGlyphItem.mapToItem(root, 0, 0)
             const duplicatePos = hud.duplicateGlyphItem.mapToItem(root, 0, 0)
+            const searchPos = hud.searchGlyphItem.mapToItem(root, 0, 0)
             verify(closePos.x > pinPos.x)
             verify(closePos.x > gearPos.x)
             verify(closePos.x > duplicatePos.x)
+            verify(closePos.x > searchPos.x)
         }
 
         // Reads pinGlyph's color via the pinGlyphItem alias (a live item

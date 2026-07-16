@@ -28,6 +28,22 @@ class DocumentHandler : public QObject
     Q_OBJECT
     Q_PROPERTY(QQuickTextDocument *document READ document WRITE setDocument NOTIFY documentChanged)
     Q_PROPERTY(bool spellcheckEnabled READ spellcheckEnabled WRITE setSpellcheckEnabled NOTIFY spellcheckEnabledChanged)
+    // Code mode's two document-level gates (feature request). Both default to
+    // true — an ordinary note is a markdown note — and NoteWindow.qml binds
+    // them to `codeMode && settings.codeModeDisablesX`, so this class never
+    // needs to know what code mode is; it only knows what is switched off.
+    //
+    // markdownDecorationEnabled forwards straight to MarkdownHighlighter (see
+    // its own setMarkdownDecorationEnabled for what it does and does not
+    // cover — find/replace highlighting keeps working either way).
+    Q_PROPERTY(bool markdownDecorationEnabled READ markdownDecorationEnabled WRITE setMarkdownDecorationEnabled NOTIFY markdownDecorationEnabledChanged)
+    // autoFormattingEnabled gates the four behaviors that REWRITE the buffer
+    // on their own as the user types — list continuation, list shorthand
+    // conversion, numbering maintenance, and heading reset on Return. Nothing
+    // the user explicitly asks for (the toolbar, the shortcuts) is gated here;
+    // those are QML's own call, and NoteWindow.qml gates them from the same
+    // binding so the two can't disagree.
+    Q_PROPERTY(bool autoFormattingEnabled READ autoFormattingEnabled WRITE setAutoFormattingEnabled NOTIFY autoFormattingEnabledChanged)
     Q_PROPERTY(QString spellcheckLanguage READ spellcheckLanguage WRITE setSpellcheckLanguage NOTIFY spellcheckLanguageChanged)
     Q_PROPERTY(QStringList userDictionaryWords READ userDictionaryWords WRITE setUserDictionaryWords NOTIFY userDictionaryWordsChanged)
     // Every currently-misspelled word's range in the document, as a list of
@@ -86,6 +102,12 @@ public:
 
     bool spellcheckEnabled() const;
     void setSpellcheckEnabled(bool enabled);
+
+    bool markdownDecorationEnabled() const;
+    void setMarkdownDecorationEnabled(bool enabled);
+
+    bool autoFormattingEnabled() const;
+    void setAutoFormattingEnabled(bool enabled);
 
     QString spellcheckLanguage() const;
     void setSpellcheckLanguage(const QString &language);
@@ -146,6 +168,55 @@ public:
     // `replacement` — a single atomic cursor edit, same shape as the other
     // simple mutators below.
     Q_INVOKABLE void replaceRange(int start, int end, const QString &replacement);
+
+    // Find/replace, delegating to the pure TextSearch functions the same way
+    // the formatting toolbar delegates to TextFormatting. Every occurrence of
+    // `pattern` in the document, as a list of {"start": int, "end": int}
+    // maps (same shape as misspelledWordRanges) — literal unless useRegex,
+    // case-insensitive unless caseSensitive; empty/invalid patterns just
+    // yield an empty list.
+    Q_INVOKABLE QVariantList searchMatches(const QString &pattern, bool useRegex, bool caseSensitive);
+    // Whether the pattern compiles at all — drives the search field's error
+    // state. Only a malformed regex is invalid; literal and empty patterns
+    // always pass (see TextSearch::patternValid).
+    Q_INVOKABLE bool searchPatternValid(const QString &pattern, bool useRegex);
+    // Replaces one match from searchMatches. Regex mode expands $1/$2
+    // capture references and $$ in the replacement, which is why the pattern
+    // rides along: the captures are re-derived by matching it at [start,
+    // end). Returns the inserted replacement's own {"start", "end"} so the
+    // UI can reselect it, or an empty map if nothing was replaced (stale
+    // range, invalid pattern). One cursor edit = one undo step, and the edit
+    // flows through contentsChange like typing does, so it autosaves.
+    Q_INVOKABLE QVariantMap replaceSearchMatch(int start, int end, const QString &pattern,
+                                               const QString &replacement, bool useRegex,
+                                               bool caseSensitive);
+    // Replaces every match and returns how many. Exactly ONE undo step no
+    // matter the count — TextSearch::replaceAll batches the whole loop in a
+    // single edit block, coalescing contentsChange to one emission. Must not
+    // be called from inside another edit block.
+    Q_INVOKABLE int replaceAllMatches(const QString &pattern, const QString &replacement,
+                                      bool useRegex, bool caseSensitive);
+    // Paints every match the find/replace panel is showing, so the user can see
+    // where else their term appears instead of only the one match the editor's
+    // selection is sitting on. `matches` is a searchMatches() list straight
+    // back; `currentIndex` is which entry the panel's counter is pointing at
+    // (-1 for none), and gets a stronger highlight than the rest.
+    //
+    // The panel must push a fresh list after anything that moves the matches
+    // (a re-search, a replace, stepping to the next match) and call
+    // clearSearchHighlight() when it closes or stops tracking this note —
+    // nothing here observes the document on its own. See MarkdownHighlighter::
+    // setSearchMatches() for why the highlighting lives in the markdown
+    // highlighter, and for how stale positions between an edit and the panel's
+    // re-search behave.
+    Q_INVOKABLE void setSearchHighlight(const QVariantList &matches, int currentIndex);
+    Q_INVOKABLE void clearSearchHighlight();
+    // What setSearchHighlight() last applied, in the same {"start", "end"} map
+    // shape searchMatches() returns. Exposed for the QML test suite, which
+    // otherwise has no way to see this state at all: the highlight lands in a
+    // QTextLayout char format, which QML cannot read back.
+    Q_INVOKABLE QVariantList searchHighlightRanges() const;
+    Q_INVOKABLE int searchHighlightCurrentIndex() const;
     // Forces an immediate re-check of the current document against the active
     // spellcheck backend (e.g. right after the user adds a word to their
     // personal dictionary from the suggestion popup, so the underline under
@@ -201,6 +272,13 @@ public:
     // glyph (not elsewhere in its text, where a click should just place
     // the cursor normally). Returns true if a toggle actually happened.
     Q_INVOKABLE bool tryToggleCheckboxAt(int position);
+    // Where a click resolved to `position` should actually leave the caret:
+    // the item's own text start when `position` fell inside a bullet's or
+    // checkbox's (invisible, glyph-covered) marker, and `position` itself
+    // otherwise. See TextFormatting::listLabelPosition for why a click that
+    // looks like it landed on the box resolves inside the marker at all, and
+    // why typing there destroys the checkbox.
+    Q_INVOKABLE int listLabelPositionAt(int position) const;
     // Drives whether the toolbar's row/column-editing buttons show at all
     // (feature request) — they used to render permanently, acting as
     // silent no-ops (per TextFormatting.h) whenever the cursor wasn't
@@ -260,6 +338,8 @@ public:
 signals:
     void documentChanged();
     void spellcheckEnabledChanged();
+    void markdownDecorationEnabledChanged();
+    void autoFormattingEnabledChanged();
     void spellcheckLanguageChanged();
     void userDictionaryWordsChanged();
     // Emitted whenever the set of misspelled words in the document may have
@@ -463,6 +543,12 @@ private:
     // same document, (re)constructed alongside it in setDocument().
     std::unique_ptr<MarkdownHighlighter> m_markdownHighlighter;
     bool m_spellcheckEnabled = true;
+    // Mirrors MarkdownHighlighter's own default. Held here as well as there
+    // because setDocument() rebuilds the highlighter from scratch (see its
+    // ctor comment) — the gate has to be re-applied to the new instance, and
+    // this is what it is re-applied FROM.
+    bool m_markdownDecorationEnabled = true;
+    bool m_autoFormattingEnabled = true;
     QString m_spellcheckLanguage;
     QStringList m_userDictionaryWords;
 };

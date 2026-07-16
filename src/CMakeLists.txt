@@ -15,6 +15,8 @@ qt_add_library(suopNotesCore STATIC
     core/WindowInputMask.cpp
     core/TextFormatting.h
     core/TextFormatting.cpp
+    core/TextSearch.h
+    core/TextSearch.cpp
     core/SpellChecker.h
     core/SpellChecker.cpp
     core/SpellCheckHighlighter.h
@@ -91,6 +93,8 @@ qt_add_qml_module(suopNotes
         qml/NoteWindow.qml
         qml/SettingsDialog.qml
         qml/NoteHud.qml
+        qml/NoteContextMenu.qml
+        qml/FindReplacePanel.qml
         qml/PerNoteSettingsPopup.qml
         qml/GlassOverlay.qml
         qml/InteractableHighlight.qml

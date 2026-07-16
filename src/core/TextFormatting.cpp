@@ -635,6 +635,18 @@ bool tryToggleCheckboxAtPosition(QTextCursor cursor)
     return toggleCheckboxChecked(cursor);
 }
 
+int listLabelPosition(QTextCursor cursor)
+{
+    const QTextBlock block = cursor.block();
+    const MarkdownList::Marker marker = MarkdownList::parse(block.text());
+    // Numbered items are deliberately excluded — see the header comment.
+    if (marker.kind != MarkdownList::Kind::Bullet && marker.kind != MarkdownList::Kind::Checkbox)
+        return cursor.position();
+
+    const int labelStart = block.position() + marker.length;
+    return qMax(cursor.position(), labelStart);
+}
+
 bool continueHandRolledList(QTextCursor cursor)
 {
     const QTextBlock block = cursor.block();
@@ -1028,8 +1040,19 @@ QRectF checkboxMarkerRect(QTextCursor cursor)
     if (marker.kind != MarkdownList::Kind::Checkbox)
         return QRectF();
 
+    // Exactly the region tryToggleCheckboxAtPosition accepts — bracketEnd, NOT
+    // marker.length. These two must agree or the highlight lies: marker.length
+    // also covers the marker's trailing space, which that function deliberately
+    // excludes (it reads as label padding), so accepting it here lit the box up
+    // over a position where clicking did nothing at all. Worse, that one extra
+    // position is where TextEdit::positionAt() *clamps* to for a note whose last
+    // line is a still-empty "- [ ] " — i.e. every checkbox the moment it's
+    // added — so the highlight appeared, and stayed, while the pointer rested
+    // anywhere in the blank space below the text (reported as "adding a checkbox
+    // leaves a blue highlight behind it").
+    const int bracketEnd = block.text().indexOf(QLatin1Char(']')) + 1;
     const int offsetInBlock = cursor.position() - block.position();
-    if (offsetInBlock < 0 || offsetInBlock > marker.length)
+    if (offsetInBlock < 0 || bracketEnd <= 0 || offsetInBlock > bracketEnd)
         return QRectF();
 
     const QTextDocument *document = block.document();
@@ -1048,8 +1071,7 @@ QRectF checkboxMarkerRect(QTextCursor cursor)
     // The marker is always on the block's own first visual line — a checkbox
     // item's marker never wraps, however long its label text runs on
     // afterward. The rect covers "- [x]" but not its trailing space, matching
-    // the hit region tryToggleCheckboxAtPosition accepts.
-    const int bracketEnd = block.text().indexOf(QLatin1Char(']')) + 1;
+    // the hit region accepted above.
     const QTextLine line = layout->lineAt(0);
     const qreal startX = line.cursorToX(0);
     const qreal endX = line.cursorToX(bracketEnd);

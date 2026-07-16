@@ -1,5 +1,16 @@
 #include "NoteAppearance.h"
 
+namespace {
+// The family code mode resolves to. "monospace" is not an installed family
+// name — it is the generic alias fontconfig (and Qt's font matching on top of
+// it) resolves to whatever the desktop has configured as its monospace font.
+// Deliberately not a hardcoded real family like "DejaVu Sans Mono": that would
+// break on a machine without it, and would override the user's own desktop-wide
+// monospace choice for no reason. Not a Settings key either — resolving through
+// the system is exactly the behavior wanted, so there is nothing to configure.
+const char *kCodeModeFontFamily = "monospace";
+}
+
 NoteAppearance::NoteAppearance(QObject *parent)
     : QObject(parent)
 {
@@ -38,6 +49,10 @@ void NoteAppearance::setSettings(Settings *settings)
         connect(m_settings, &Settings::fontFamilyChanged, this, &NoteAppearance::resync);
         connect(m_settings, &Settings::highlightColorChanged, this, &NoteAppearance::resync);
         connect(m_settings, &Settings::highlightOpacityChanged, this, &NoteAppearance::resync);
+        connect(m_settings, &Settings::codeModeEnabledChanged, this, &NoteAppearance::resync);
+        connect(m_settings, &Settings::codeModeDisablesMarkdownHighlightingChanged, this, &NoteAppearance::resync);
+        connect(m_settings, &Settings::codeModeDisablesAutoFormattingChanged, this, &NoteAppearance::resync);
+        connect(m_settings, &Settings::codeModeDisablesSpellcheckChanged, this, &NoteAppearance::resync);
         connect(m_settings, &Settings::noteOverrideChanged, this, [this](const QString &noteId) {
             if (noteId == m_noteId)
                 resync();
@@ -225,13 +240,77 @@ bool NoteAppearance::hasFontColorOverride() const
 
 QString NoteAppearance::fontFamily() const
 {
-    return m_override.hasFontFamily ? m_override.fontFamily
-                                     : (m_settings ? m_settings->fontFamily() : m_override.fontFamily);
+    // A note's own explicit family override wins over code mode — code mode
+    // "defaults to a monospaced font" (the feature request's words), so a
+    // user who deliberately picked a family for THIS note still gets it.
+    if (m_override.hasFontFamily)
+        return m_override.fontFamily;
+
+    // Code mode's monospace default outranks the GLOBAL family, though: the
+    // global family is what every ordinary note gets by default, and a note
+    // marked as code is saying it is not an ordinary note. Without this, a
+    // user who sets a global proportional family would find code mode's
+    // headline promise silently doing nothing.
+    if (codeModeEnabled())
+        return QString::fromLatin1(kCodeModeFontFamily);
+
+    return m_settings ? m_settings->fontFamily() : m_override.fontFamily;
 }
 
 bool NoteAppearance::hasFontFamilyOverride() const
 {
     return m_override.hasFontFamily;
+}
+
+bool NoteAppearance::codeModeEnabled() const
+{
+    return m_override.hasCodeModeEnabled
+        ? m_override.codeModeEnabled
+        : (m_settings ? m_settings->codeModeEnabled() : m_override.codeModeEnabled);
+}
+
+bool NoteAppearance::hasCodeModeEnabledOverride() const
+{
+    return m_override.hasCodeModeEnabled;
+}
+
+bool NoteAppearance::codeModeDisablesMarkdownHighlighting() const
+{
+    return m_override.hasCodeModeDisablesMarkdownHighlighting
+        ? m_override.codeModeDisablesMarkdownHighlighting
+        : (m_settings ? m_settings->codeModeDisablesMarkdownHighlighting()
+                      : m_override.codeModeDisablesMarkdownHighlighting);
+}
+
+bool NoteAppearance::hasCodeModeDisablesMarkdownHighlightingOverride() const
+{
+    return m_override.hasCodeModeDisablesMarkdownHighlighting;
+}
+
+bool NoteAppearance::codeModeDisablesAutoFormatting() const
+{
+    return m_override.hasCodeModeDisablesAutoFormatting
+        ? m_override.codeModeDisablesAutoFormatting
+        : (m_settings ? m_settings->codeModeDisablesAutoFormatting()
+                      : m_override.codeModeDisablesAutoFormatting);
+}
+
+bool NoteAppearance::hasCodeModeDisablesAutoFormattingOverride() const
+{
+    return m_override.hasCodeModeDisablesAutoFormatting;
+}
+
+bool NoteAppearance::codeModeDisablesSpellcheck() const
+{
+    return m_override.hasCodeModeDisablesSpellcheck
+        ? m_override.codeModeDisablesSpellcheck
+        : (m_settings ? m_settings->codeModeDisablesSpellcheck()
+                      : m_override.codeModeDisablesSpellcheck);
+}
+
+bool NoteAppearance::hasCodeModeDisablesSpellcheckOverride() const
+{
+    return m_override.hasCodeModeDisablesSpellcheck;
 }
 
 QColor NoteAppearance::highlightColor() const
@@ -280,6 +359,14 @@ void NoteAppearance::resync()
     emit fontFamilyChanged();
     emit highlightColorChanged();
     emit highlightOpacityChanged();
+    // Emitted after fontFamilyChanged above rather than beside it for
+    // readability only — resync() emits every field unconditionally, so
+    // fontFamily's dependency on code mode (see fontFamily()) is already
+    // covered no matter which of the two actually changed.
+    emit codeModeEnabledChanged();
+    emit codeModeDisablesMarkdownHighlightingChanged();
+    emit codeModeDisablesAutoFormattingChanged();
+    emit codeModeDisablesSpellcheckChanged();
 }
 
 void NoteAppearance::writeOverride(const std::function<void(Settings::NoteAppearanceOverride &)> &mutate)
@@ -514,4 +601,62 @@ void NoteAppearance::setHighlightOpacityOverride(qreal opacity)
 void NoteAppearance::clearHighlightOpacityOverride()
 {
     writeOverride([](Settings::NoteAppearanceOverride &o) { o.hasHighlightOpacity = false; });
+}
+
+void NoteAppearance::setCodeModeEnabledOverride(bool enabled)
+{
+    writeOverride([enabled](Settings::NoteAppearanceOverride &o) {
+        o.hasCodeModeEnabled = true;
+        o.codeModeEnabled = enabled;
+    });
+}
+
+void NoteAppearance::clearCodeModeEnabledOverride()
+{
+    writeOverride([](Settings::NoteAppearanceOverride &o) { o.hasCodeModeEnabled = false; });
+}
+
+void NoteAppearance::setCodeModeDisablesMarkdownHighlightingOverride(bool disables)
+{
+    writeOverride([disables](Settings::NoteAppearanceOverride &o) {
+        o.hasCodeModeDisablesMarkdownHighlighting = true;
+        o.codeModeDisablesMarkdownHighlighting = disables;
+    });
+}
+
+void NoteAppearance::clearCodeModeDisablesMarkdownHighlightingOverride()
+{
+    writeOverride([](Settings::NoteAppearanceOverride &o) {
+        o.hasCodeModeDisablesMarkdownHighlighting = false;
+    });
+}
+
+void NoteAppearance::setCodeModeDisablesAutoFormattingOverride(bool disables)
+{
+    writeOverride([disables](Settings::NoteAppearanceOverride &o) {
+        o.hasCodeModeDisablesAutoFormatting = true;
+        o.codeModeDisablesAutoFormatting = disables;
+    });
+}
+
+void NoteAppearance::clearCodeModeDisablesAutoFormattingOverride()
+{
+    writeOverride([](Settings::NoteAppearanceOverride &o) {
+        o.hasCodeModeDisablesAutoFormatting = false;
+    });
+}
+
+void NoteAppearance::setCodeModeDisablesSpellcheckOverride(bool disables)
+{
+    writeOverride([disables](Settings::NoteAppearanceOverride &o) {
+        o.hasCodeModeDisablesSpellcheck = true;
+        o.codeModeDisablesSpellcheck = disables;
+    });
+}
+
+void NoteAppearance::clearCodeModeDisablesSpellcheckOverride()
+{
+    writeOverride([](Settings::NoteAppearanceOverride &o) {
+        o.hasCodeModeDisablesSpellcheck = false;
+    });
 }

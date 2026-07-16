@@ -1278,12 +1278,14 @@ Item {
                     "the popup should close itself immediately after a replacement is applied")
         }
 
-        // Feature request: suggestion buttons of very different text
-        // lengths used to each be individually centered in the popup's
-        // ColumnLayout, so their left edges landed at different x
-        // positions and the list read as jagged/staggered. They should
-        // instead all start flush against the same left edge.
-        function test_spelling_suggestion_buttons_are_left_aligned_rather_than_centered() {
+        // Every suggestion button — plus the always-present "Add to
+        // dictionary" one — spans the popup's full content width, however
+        // short its own text is, so the entire reserved row is a single
+        // hover/click target. Bug found live: each button used to keep its
+        // own text-derived width, so a short suggestion listed beside a
+        // long one left most of its visibly-reserved row dead to both
+        // hover and clicks.
+        function test_spelling_suggestion_buttons_fill_the_popups_full_width() {
             noteA.docHandler.setMarkdown("I teh best")
             wait(50)
 
@@ -1299,10 +1301,44 @@ Item {
             const shortButton = bar.spellingSuggestionsPopup.repeater.itemAt(0)
             const longButton = bar.spellingSuggestionsPopup.repeater.itemAt(1)
             verify(shortButton !== null && longButton !== null, "precondition: both suggestion buttons must exist")
-            verify(shortButton.width < longButton.width,
-                   "precondition: the two suggestions must actually differ in rendered width")
-            compare(shortButton.x, longButton.x,
-                    "buttons of different widths should share the same left edge, not be individually centered")
+            verify(shortButton.implicitWidth < longButton.implicitWidth,
+                   "precondition: the two suggestions' texts must actually differ in natural width")
+
+            const contentWidth = bar.spellingSuggestionsPopup.content.width
+            verify(contentWidth > 0, "precondition: the popup's content column has a real width")
+            compare(shortButton.width, contentWidth,
+                    "the short suggestion should fill the popup's full width, not just its own text's")
+            compare(longButton.width, contentWidth,
+                    "the long suggestion should fill the popup's full width")
+
+            noteA.currentMisspelledWord = ""
+            noteA.docHandler.setMarkdown("")
+            wait(50)
+        }
+
+        // The buttons filling the popup's width (see the test above) must
+        // not re-center their text: a suggestion list reads as jagged and
+        // staggered unless every word starts flush against the same left
+        // edge.
+        function test_spelling_suggestion_text_stays_flush_left() {
+            noteA.docHandler.setMarkdown("I teh best")
+            wait(50)
+
+            noteA.currentMisspelledWord = "teh"
+            noteA.currentSpellingSuggestions = ["a", "a much longer suggestion"]
+            noteA.misspelledWordStart = 2
+            noteA.misspelledWordEnd = 5
+
+            bar.noteWindow = noteA
+            tryCompare(bar.spellingSuggestionsPopup.background, "visible", true, 2000)
+            compare(bar.spellingSuggestionsPopup.repeater.count, 2, "precondition: both suggestions rendered")
+
+            const shortLabel = bar.spellingSuggestionsPopup.repeater.itemAt(0).contentItem
+            const longLabel = bar.spellingSuggestionsPopup.repeater.itemAt(1).contentItem
+            compare(shortLabel.horizontalAlignment, Text.AlignLeft,
+                    "the short suggestion's text should be left-aligned within its full-width button")
+            compare(longLabel.horizontalAlignment, Text.AlignLeft,
+                    "the long suggestion's text should be left-aligned within its full-width button")
 
             noteA.currentMisspelledWord = ""
             noteA.docHandler.setMarkdown("")

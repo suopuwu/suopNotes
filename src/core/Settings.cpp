@@ -58,6 +58,23 @@ constexpr qreal kDefaultInteractableHighlightOpacity = 0.18;
 constexpr bool kDefaultInteractableHighlightGlassEnabled = false;
 constexpr bool kDefaultChromeGlassFollowsNote = true;
 constexpr bool kDefaultChromeGlassEnabled = false;
+// Code mode is off by default — it is a deliberate per-note choice ("this
+// note holds code"), not a preference most notes want, so a default of true
+// would silently reformat every existing note on upgrade.
+constexpr bool kDefaultCodeModeEnabled = false;
+// What code mode SUPPRESSES while it is on. All three default to true —
+// markdown styling, markdown's as-you-type rewrites and spellcheck are each
+// actively wrong for code (`**` is an operator, `1.` starts no list, and
+// identifiers are not misspelled words) — but each is an independent global
+// escape hatch for a user who disagrees about their own code notes.
+//
+// Deliberately global-only, NOT fields in NoteAppearanceOverride: these
+// answer "what does code mode MEAN", which is one answer for the whole app,
+// while "is this note code" is the per-note question and is what
+// codeModeEnabled overrides. Same rule hudAlwaysExpanded is filed under.
+constexpr bool kDefaultCodeModeDisablesMarkdownHighlighting = true;
+constexpr bool kDefaultCodeModeDisablesAutoFormatting = true;
+constexpr bool kDefaultCodeModeDisablesSpellcheck = true;
 
 const char *kGroupAppearance = "Appearance";
 const char *kKeyNotesFolder = "notesFolder";
@@ -90,6 +107,10 @@ const char *kKeyInteractableHighlightGlassEnabled = "interactableHighlightGlassE
 const char *kKeyChromeGlassFollowsNote = "chromeGlassFollowsNote";
 const char *kKeyChromeGlassEnabled = "chromeGlassEnabled";
 const char *kKeyHudAlwaysExpanded = "hudAlwaysExpanded";
+const char *kKeyCodeModeEnabled = "codeModeEnabled";
+const char *kKeyCodeModeDisablesMarkdownHighlighting = "codeModeDisablesMarkdownHighlighting";
+const char *kKeyCodeModeDisablesAutoFormatting = "codeModeDisablesAutoFormatting";
+const char *kKeyCodeModeDisablesSpellcheck = "codeModeDisablesSpellcheck";
 
 const char *kGroupShortcuts = "Shortcuts";
 const char *kKeyShortcutBold = "bold";
@@ -627,6 +648,54 @@ void Settings::setHudAlwaysExpanded(bool alwaysExpanded)
     emit hudAlwaysExpandedChanged();
 }
 
+bool Settings::codeModeEnabled() const
+{
+    return m_settings->value(QString("%1/%2").arg(kGroupAppearance, kKeyCodeModeEnabled), kDefaultCodeModeEnabled).toBool();
+}
+
+void Settings::setCodeModeEnabled(bool enabled)
+{
+    m_settings->setValue(QString("%1/%2").arg(kGroupAppearance, kKeyCodeModeEnabled), enabled);
+    m_settings->sync();
+    emit codeModeEnabledChanged();
+}
+
+bool Settings::codeModeDisablesMarkdownHighlighting() const
+{
+    return m_settings->value(QString("%1/%2").arg(kGroupAppearance, kKeyCodeModeDisablesMarkdownHighlighting), kDefaultCodeModeDisablesMarkdownHighlighting).toBool();
+}
+
+void Settings::setCodeModeDisablesMarkdownHighlighting(bool disables)
+{
+    m_settings->setValue(QString("%1/%2").arg(kGroupAppearance, kKeyCodeModeDisablesMarkdownHighlighting), disables);
+    m_settings->sync();
+    emit codeModeDisablesMarkdownHighlightingChanged();
+}
+
+bool Settings::codeModeDisablesAutoFormatting() const
+{
+    return m_settings->value(QString("%1/%2").arg(kGroupAppearance, kKeyCodeModeDisablesAutoFormatting), kDefaultCodeModeDisablesAutoFormatting).toBool();
+}
+
+void Settings::setCodeModeDisablesAutoFormatting(bool disables)
+{
+    m_settings->setValue(QString("%1/%2").arg(kGroupAppearance, kKeyCodeModeDisablesAutoFormatting), disables);
+    m_settings->sync();
+    emit codeModeDisablesAutoFormattingChanged();
+}
+
+bool Settings::codeModeDisablesSpellcheck() const
+{
+    return m_settings->value(QString("%1/%2").arg(kGroupAppearance, kKeyCodeModeDisablesSpellcheck), kDefaultCodeModeDisablesSpellcheck).toBool();
+}
+
+void Settings::setCodeModeDisablesSpellcheck(bool disables)
+{
+    m_settings->setValue(QString("%1/%2").arg(kGroupAppearance, kKeyCodeModeDisablesSpellcheck), disables);
+    m_settings->sync();
+    emit codeModeDisablesSpellcheckChanged();
+}
+
 QString Settings::shortcutBold() const
 {
     const QString stored = m_settings->value(QString("%1/%2").arg(kGroupShortcuts, kKeyShortcutBold)).toString();
@@ -878,6 +947,27 @@ Settings::NoteAppearanceOverride Settings::noteOverride(const QString &noteId) c
     override.hasHighlightOpacity = m_settings->value(group + "/hasHighlightOpacity", false).toBool();
     override.highlightOpacity = m_settings->value(group + "/highlightOpacity", override.highlightOpacity).toReal();
 
+    override.hasCodeModeEnabled = m_settings->value(group + "/hasCodeModeEnabled", false).toBool();
+    override.codeModeEnabled = m_settings->value(group + "/codeModeEnabled", override.codeModeEnabled).toBool();
+
+    override.hasCodeModeDisablesMarkdownHighlighting =
+        m_settings->value(group + "/hasCodeModeDisablesMarkdownHighlighting", false).toBool();
+    override.codeModeDisablesMarkdownHighlighting =
+        m_settings->value(group + "/codeModeDisablesMarkdownHighlighting",
+                          override.codeModeDisablesMarkdownHighlighting).toBool();
+
+    override.hasCodeModeDisablesAutoFormatting =
+        m_settings->value(group + "/hasCodeModeDisablesAutoFormatting", false).toBool();
+    override.codeModeDisablesAutoFormatting =
+        m_settings->value(group + "/codeModeDisablesAutoFormatting",
+                          override.codeModeDisablesAutoFormatting).toBool();
+
+    override.hasCodeModeDisablesSpellcheck =
+        m_settings->value(group + "/hasCodeModeDisablesSpellcheck", false).toBool();
+    override.codeModeDisablesSpellcheck =
+        m_settings->value(group + "/codeModeDisablesSpellcheck",
+                          override.codeModeDisablesSpellcheck).toBool();
+
     return override;
 }
 
@@ -935,6 +1025,24 @@ void Settings::setNoteOverride(const QString &noteId, const NoteAppearanceOverri
 
     m_settings->setValue(group + "/hasHighlightOpacity", override.hasHighlightOpacity);
     m_settings->setValue(group + "/highlightOpacity", override.highlightOpacity);
+
+    m_settings->setValue(group + "/hasCodeModeEnabled", override.hasCodeModeEnabled);
+    m_settings->setValue(group + "/codeModeEnabled", override.codeModeEnabled);
+
+    m_settings->setValue(group + "/hasCodeModeDisablesMarkdownHighlighting",
+                         override.hasCodeModeDisablesMarkdownHighlighting);
+    m_settings->setValue(group + "/codeModeDisablesMarkdownHighlighting",
+                         override.codeModeDisablesMarkdownHighlighting);
+
+    m_settings->setValue(group + "/hasCodeModeDisablesAutoFormatting",
+                         override.hasCodeModeDisablesAutoFormatting);
+    m_settings->setValue(group + "/codeModeDisablesAutoFormatting",
+                         override.codeModeDisablesAutoFormatting);
+
+    m_settings->setValue(group + "/hasCodeModeDisablesSpellcheck",
+                         override.hasCodeModeDisablesSpellcheck);
+    m_settings->setValue(group + "/codeModeDisablesSpellcheck",
+                         override.codeModeDisablesSpellcheck);
 
     m_settings->sync();
     emit noteOverrideChanged(noteId);

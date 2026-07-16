@@ -50,10 +50,53 @@ Item {
         alwaysOnTop: false
     }
 
+    // A note whose origin is deliberately NON-ZERO, unlike the Instantiator's
+    // notes above (which have no persisted position at all). The
+    // screen-coordinate tests below need it: with an origin of (0, 0) a
+    // window-local coordinate and a screen coordinate are numerically
+    // identical, so a test using those notes would pass even if the origin
+    // were dropped from the math entirely.
+    NoteWindow {
+        id: contextMenuTestWindow
+        noteId: "context-menu-test-note"
+        index: 52
+        noteX: 300
+        noteY: 400
+        noteWidth: 260
+        noteHeight: 260
+        screenName: ""
+        alwaysOnTop: false
+    }
+
+    // A note dedicated to the code-mode tests at the end of this file. Kept
+    // apart from the Instantiator's notes and from soloWindow: code mode is a
+    // per-note override persisted against a note's OWN id, so the tests need
+    // one note they can turn into a code note (swapping its font, adding a
+    // gutter, shifting its editor) without changing what any other test in
+    // this file sees.
+    NoteWindow {
+        id: codeModeTestWindow
+        noteId: "code-mode-test-note"
+        index: 53
+        noteX: 0
+        noteY: 0
+        noteWidth: 260
+        noteHeight: 260
+        screenName: ""
+        alwaysOnTop: false
+    }
+
     SignalSpy {
         id: blurSpy
         target: blurEffect
         signalName: "appliedTo"
+    }
+
+    // Targeted per-test (the notes come from an Instantiator, so there's no
+    // one instance to bind to at load time).
+    SignalSpy {
+        id: contextMenuSpy
+        signalName: "contextMenuRequested"
     }
 
     // Deferred (not instantiated until createObject() is called) so each
@@ -190,21 +233,170 @@ Item {
             mouseRelease(editor, cx, cy, Qt.RightButton)
         }
 
-        // Right-click drag past the threshold should move the window, same
-        // as before the context menu (removed — feature request: cut/copy/
-        // paste live as toolbar buttons instead, see SelectionToolbar.qml)
-        // used to compete with it for a plain (non-drag) right-click.
-        function test_right_click_drag_past_threshold_starts_a_move() {
+        // The right button does two jobs (feature request), told apart by
+        // MOVEMENT alone: a right-drag moves the note, a stationary
+        // right-click opens the context menu. The next few tests pin down
+        // that split from both sides — it is the whole reason
+        // startSystemMove() stays deferred behind a threshold rather than
+        // firing on press.
+        function test_right_click_drag_past_threshold_starts_a_move_and_asks_for_no_menu() {
             const win = instantiator.objectAt(0)
             const area = win.mouseDragArea
             const editor = win.editor
             const cx = editor.width / 2
             const cy = editor.height / 2
 
+            contextMenuSpy.target = win
+            contextMenuSpy.clear()
+
             mouseDrag(editor, cx, cy, 20, 20, Qt.RightButton, Qt.NoModifier, 50)
 
             verify(area.rightDragStarted,
                    "moving past the threshold while right-button is held should start a drag")
+            compare(contextMenuSpy.count, 0,
+                    "a right-click that became a drag must not ALSO open the menu on release")
+        }
+
+        function test_stationary_right_click_asks_for_the_context_menu() {
+            const win = instantiator.objectAt(0)
+            const area = win.mouseDragArea
+            const editor = win.editor
+            const cx = editor.width / 2
+            const cy = editor.height / 2
+
+            contextMenuSpy.target = win
+            contextMenuSpy.clear()
+
+            mousePress(editor, cx, cy, Qt.RightButton)
+            mouseRelease(editor, cx, cy, Qt.RightButton)
+
+            compare(contextMenuSpy.count, 1,
+                    "a right-click that never moved is a click, and asks for the menu")
+            verify(!area.rightDragStarted, "and it must not have moved the note")
+        }
+
+        // Movement UNDER the threshold is still a click — a plain right-click
+        // carries a pixel or two of hand tremor, and treating that as a drag
+        // would make the menu feel like it randomly refused to open.
+        function test_right_click_that_barely_moves_is_still_a_menu_click() {
+            const win = instantiator.objectAt(0)
+            const area = win.mouseDragArea
+            const editor = win.editor
+            const cx = editor.width / 2
+            const cy = editor.height / 2
+
+            contextMenuSpy.target = win
+            contextMenuSpy.clear()
+
+            // 2px, inside the 4px threshold.
+            mousePress(editor, cx, cy, Qt.RightButton)
+            mouseMove(editor, cx + 2, cy + 2)
+            mouseRelease(editor, cx + 2, cy + 2, Qt.RightButton)
+
+            verify(!area.rightDragStarted, "a tremor is not a drag")
+            compare(contextMenuSpy.count, 1, "so it still opens the menu")
+        }
+
+        // The menu point is reported in SCREEN coordinates, resolved through
+        // the note's own model-backed origin — NOT through mapToGlobal(),
+        // which reads a Window position Wayland never updates after a
+        // compositor-driven drag. See NoteWindow.noteOrigin().
+        //
+        // Uses contextMenuTestWindow, whose origin is deliberately non-zero:
+        // with an origin of (0, 0) a window coordinate and a screen coordinate
+        // are numerically identical, and this test would pass even if the
+        // origin were dropped from the math entirely.
+        function test_the_context_menu_point_is_the_click_in_screen_coordinates() {
+            const win = contextMenuTestWindow
+            const editor = win.editor
+            const cx = editor.width / 2
+            const cy = editor.height / 2
+
+            contextMenuSpy.target = win
+            contextMenuSpy.clear()
+
+            mousePress(editor, cx, cy, Qt.RightButton)
+            mouseRelease(editor, cx, cy, Qt.RightButton)
+
+            compare(contextMenuSpy.count, 1)
+
+            // mapToItem(null) is the click in the note's own WINDOW
+            // coordinates; the note's origin is what turns that into a point
+            // on the screen.
+            const inWindow = editor.mapToItem(null, cx, cy)
+            const origin = win.noteOrigin()
+            compare(origin.x, 300, "precondition: this note's origin really is offset")
+            compare(origin.y, 400)
+
+            compare(contextMenuSpy.signalArguments[0][0], Math.round(origin.x + inWindow.x))
+            compare(contextMenuSpy.signalArguments[0][1], Math.round(origin.y + inWindow.y))
+        }
+
+        // Chrome's convention (which this app's autoscroll follows) is that
+        // ANY button cancels an armed autoscroll rather than also performing
+        // that button's normal action — so the right-click that cancels must
+        // not leave a context menu behind. This is the case that
+        // rightClickCandidate exists for: rightDragStarted alone still reads
+        // false here, from whatever gesture came before.
+        function test_right_click_that_cancels_an_armed_autoscroll_asks_for_no_menu() {
+            const win = instantiator.objectAt(0)
+            const area = win.mouseDragArea
+            const editor = win.editor
+            const cx = editor.width / 2
+            const cy = editor.height / 2
+
+            contextMenuSpy.target = win
+            contextMenuSpy.clear()
+
+            mouseClick(editor, cx, cy, Qt.MiddleButton)
+            verify(area.middleScrollArmed, "precondition: middle-click arms autoscroll")
+
+            mousePress(editor, cx, cy, Qt.RightButton)
+            mouseRelease(editor, cx, cy, Qt.RightButton)
+
+            verify(!area.middleScrollArmed, "the right-click disarms the autoscroll")
+            compare(contextMenuSpy.count, 0,
+                    "and that click is spent on the cancel — it must not also open the menu")
+        }
+
+        // duplicateNote() (the HUD's glyph) and duplicateNoteAt() (the context
+        // menu's row) are the same operation with a different position, which
+        // is why the position is a parameter rather than baked in.
+        function test_duplicate_at_an_explicit_position_seeds_the_copy_there() {
+            const win = contextMenuTestWindow
+            win.docHandler.setMarkdown("duplicate me")
+            const idsBefore = openNotesModel.openNoteIds()
+
+            win.duplicateNoteAt(640, 480)
+
+            const idsAfter = openNotesModel.openNoteIds()
+            compare(idsAfter.length, idsBefore.length + 1)
+
+            let newId = ""
+            for (let i = 0; i < idsAfter.length; ++i) {
+                if (idsBefore.indexOf(idsAfter[i]) === -1)
+                    newId = idsAfter[i]
+            }
+            verify(newId !== "")
+            compare(noteStore.loadNoteContent(newId), "duplicate me",
+                    "the copy starts out with the source note's content")
+
+            openNotesModel.closeNote(newId)
+            noteStore.deleteNote(newId)
+        }
+
+        // noteOrigin() is what every screen-coordinate consumer in this file
+        // goes through, so its fallback rule is worth stating outright: a note
+        // that has never been positioned has no model-backed origin to read,
+        // and its own Window x/y is the only record of where it sits.
+        function test_note_origin_falls_back_to_the_window_position_for_a_never_positioned_note() {
+            const win = instantiator.objectAt(0)
+            compare(win.noteX, 0, "precondition: this note has no persisted position")
+            compare(win.noteY, 0)
+
+            const origin = win.noteOrigin()
+            compare(origin.x, win.x)
+            compare(origin.y, win.y)
         }
 
         // Middle-mouse autoscroll (feature request, Chrome-style): a
@@ -1679,6 +1871,106 @@ Item {
                    "clicking the checkbox glyph should check it: " + win.docHandler.toMarkdown())
         }
 
+        // Bug found live: "upon the creation of a new checkbox list, the text
+        // cursor is inside of the checkbox, causing any content typed to break
+        // it". A checkbox's "- [ ] " is invisible text under a drawn box, so
+        // every position inside it renders at the box's own left or right edge
+        // — measured on a fresh "- [ ] ", the box spans x=0..14.69 while its
+        // label only starts at position 6, x=21.94. A click aimed at the box,
+        // or at the gap beside it where an empty item's label looks like it
+        // begins, therefore used to land the caret in the middle of the marker
+        // text, and the next keystroke split it ("- [ b] "), destroying the
+        // checkbox. Clicking there now puts the caret where the label starts.
+        function test_clicking_a_checkbox_leaves_the_caret_at_its_label_not_inside_the_marker() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+
+            win.docHandler.setMarkdown("- [ ] ")
+            wait(50)
+            win.requestActivate()
+            tryCompare(win, "active", true)
+
+            // Clicking the box itself. Every position this can resolve to (0-5,
+            // all of which render at one edge of the box or the other) is also
+            // inside click-to-toggle's own hit region, so for a checkbox the
+            // snap and the toggle always come together — hence the checked box
+            // asserted below. That is the pre-existing feature, not a side
+            // effect of the snap: what changed is only where the caret lands.
+            const box = editor.positionToRectangle(2)
+            mouseClick(editor, box.x + 2, box.y + box.height / 2, Qt.LeftButton)
+            wait(50)
+
+            compare(editor.cursorPosition, 6,
+                    "a click on the box should place the caret at the label, after '- [x] '")
+
+            // The point of all of the above: typing extends the label instead
+            // of splitting the marker, so the checkbox survives.
+            keyClick(Qt.Key_B)
+            verify(win.docHandler.toMarkdown().indexOf("- [x] b") !== -1,
+                   "typing after clicking the box should extend the label, not split "
+                   + "the marker: " + win.docHandler.toMarkdown())
+
+            win.docHandler.setMarkdown("")
+            wait(50)
+        }
+
+        // The other half of the reported flow: the toolbar's Checkbox List
+        // button is in a separate window that takes focus, so the way back into
+        // a brand-new, still-label-less checkbox is a click on the note — and
+        // the only thing to aim at is the box and the blank line beside it.
+        // A click out in that blank space must land ready to type: no toggle
+        // (it is nowhere near the box), and the caret at the label, not
+        // clamped back into the marker.
+        function test_clicking_the_empty_space_beside_a_new_checkbox_is_ready_to_type() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+
+            win.docHandler.setMarkdown("- [ ] ")
+            wait(50)
+            win.requestActivate()
+            tryCompare(win, "active", true)
+
+            const line = editor.positionToRectangle(6)
+            mouseClick(editor, line.x + 60, line.y + line.height / 2, Qt.LeftButton)
+            wait(50)
+
+            compare(editor.cursorPosition, 6, "the caret should sit at the empty label")
+            verify(win.docHandler.toMarkdown().indexOf("- [ ] ") !== -1,
+                   "a click out in the blank space should not toggle the box: "
+                   + win.docHandler.toMarkdown())
+
+            keyClick(Qt.Key_B)
+            verify(win.docHandler.toMarkdown().indexOf("- [ ] b") !== -1,
+                   "typing should extend the label: " + win.docHandler.toMarkdown())
+
+            win.docHandler.setMarkdown("")
+            wait(50)
+        }
+
+        // The same snap for a bullet, whose "- " is invisible under a drawn dot
+        // for the identical reason — and, unlike the two above, a numbered
+        // item's "1. " is real visible text, so a click in it is left exactly
+        // where the user put it (see TextFormatting::listLabelPosition).
+        function test_clicking_a_bullets_dot_leaves_the_caret_at_its_label() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+
+            win.docHandler.setMarkdown("- milk")
+            wait(50)
+            win.requestActivate()
+            tryCompare(win, "active", true)
+
+            const dot = editor.positionToRectangle(0)
+            mouseClick(editor, dot.x, dot.y + dot.height / 2, Qt.LeftButton)
+            wait(50)
+
+            compare(editor.cursorPosition, 2,
+                    "a click on the dot should place the caret at the label, after '- '")
+
+            win.docHandler.setMarkdown("")
+            wait(50)
+        }
+
         // On-hover highlight (feature request: "real checkboxes with on
         // hover animations") — a small highlight (the same
         // InteractableHighlight every other bit of interactable chrome in
@@ -1710,6 +2002,93 @@ Item {
 
             win.docHandler.setMarkdown("")
             wait(50)
+        }
+
+        // The pointer says a checkbox is clickable (feature request), using the
+        // same hand cursor as every other clickable in the app. It is derived
+        // from the highlight rather than hit-tested separately, so the two can
+        // never disagree — wherever the box lights up, the hand shows.
+        function test_hovering_the_checkbox_glyph_shows_a_pointing_hand_cursor() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+
+            win.docHandler.setMarkdown("- [ ] milk")
+            wait(50)
+            win.requestActivate()
+            tryCompare(win, "active", true)
+
+            const rect = editor.positionToRectangle(0)
+            mouseMove(editor, rect.x, rect.y + rect.height / 2)
+            wait(20)
+            compare(win.mouseDragArea.cursorShape, Qt.PointingHandCursor,
+                    "the checkbox is a control you click, so the pointer should say so")
+
+            // Out in the label text it is ordinary editable prose again.
+            const labelRect = editor.positionToRectangle(9)
+            mouseMove(editor, labelRect.x, labelRect.y + labelRect.height / 2)
+            wait(20)
+            compare(win.mouseDragArea.cursorShape, Qt.IBeamCursor,
+                    "the item's own label text is still text, and gets the I-beam")
+
+            win.docHandler.setMarkdown("")
+            wait(50)
+        }
+
+        // Regression (reported as "adding a checkbox leaves a blue highlight
+        // behind it"). TextEdit.positionAt() never fails — it CLAMPS, handing
+        // back the nearest character position for a point nowhere near any
+        // text. So resolving the pointer to a position and asking "is that
+        // position inside a marker?" is not the same question as "is the
+        // pointer on the checkbox?", and for a note whose last line is a
+        // freshly-added, still-empty "- [ ] " the two answers disagreed: the
+        // whole blank area below the text clamps onto that marker, so the
+        // highlight lit up behind the checkbox and stayed lit while the pointer
+        // sat somewhere else entirely — over a spot where clicking did nothing.
+        function test_the_checkbox_highlight_ignores_a_pointer_that_is_not_on_the_glyph() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+
+            // Exactly the state right after adding a checkbox at the end of a
+            // note: a marker with no label typed yet, on the last line.
+            win.docHandler.setMarkdown("hello\n- [ ] ")
+            wait(50)
+
+            const glyph = editor.positionToRectangle(6)
+            verify(editor.height > glyph.y + glyph.height * 4,
+                   "precondition: there is real blank space below the text to hover over")
+
+            const below = win.checkboxRectUnderPointer(4, editor.height - 5)
+            compare(below.width, 0,
+                    "the blank space far below the text is not the checkbox")
+
+            // mouseDragArea covers the HUD strip above the editor too, which
+            // maps to a negative y here and clamps to position 0 — the first
+            // line's start.
+            const above = win.checkboxRectUnderPointer(4, -40)
+            compare(above.width, 0, "the space above the editor is not the checkbox either")
+
+            const beside = win.checkboxRectUnderPointer(editor.width - 5,
+                                                        glyph.y + glyph.height / 2)
+            compare(beside.width, 0, "the empty run of the line past the marker is not the checkbox")
+
+            // ...and the glyph itself still highlights, which is the point.
+            const onGlyph = win.checkboxRectUnderPointer(3, glyph.y + glyph.height / 2)
+            verify(onGlyph.width > 0, "the checkbox glyph itself must still highlight")
+
+            win.docHandler.setMarkdown("")
+            wait(50)
+        }
+
+        // checkboxRectUnderPointer compares a pointer in the editor's own item
+        // coordinates against a rect the document layout reports in document
+        // coordinates, and simply assumes they are the same space. They are —
+        // but only because nothing has given this TextArea any padding, which
+        // is easy to change by accident and would silently offset every
+        // checkbox hit test by that padding.
+        function test_the_editor_has_no_padding_so_item_and_document_coordinates_agree() {
+            const editor = instantiator.objectAt(0).editor
+            compare(editor.leftPadding, 0)
+            compare(editor.topPadding, 0)
         }
 
         // Selectable numbers (feature request): unlike Qt's own QTextList
@@ -2497,6 +2876,43 @@ Item {
             compare(ranges[0].end, 3)
         }
 
+        // Bug found live ("the turn off spellcheck option doesn't seem to
+        // actually do that"): switching spellcheck off used to leave every
+        // squiggle on screen. SpellCheckHighlighter::setActive(false) was the
+        // only thing being switched off, and QtQuick never paints a
+        // highlighter's underline anyway — the visible underline is the overlay
+        // driven by misspelledWordRanges, so THAT is what has to go empty. This
+        // asserts at the data level for the reason the test above documents.
+        function test_turning_spellcheck_off_clears_the_words_it_had_flagged() {
+            const win = instantiator.objectAt(0)
+            const originalSpellcheckEnabled = settings.spellcheckEnabled
+            try {
+                settings.spellcheckEnabled = true
+                win.docHandler.setMarkdown("teh normal")
+                wait(50)
+                compare(win.docHandler.misspelledWordRanges.length, 1,
+                        "precondition: \"teh\" is flagged while spellcheck is on")
+
+                settings.spellcheckEnabled = false
+                wait(50)
+
+                compare(win.docHandler.spellcheckEnabled, false)
+                compare(win.docHandler.misspelledWordRanges.length, 0,
+                        "with spellcheck off there must be nothing left for the underline overlay " +
+                        "to draw, and nothing left for tap-to-suggest to find")
+
+                // And it comes back, rather than being lost until the next edit.
+                settings.spellcheckEnabled = true
+                wait(50)
+                compare(win.docHandler.misspelledWordRanges.length, 1,
+                        "turning it back on should re-flag text that is already there")
+            } finally {
+                settings.spellcheckEnabled = originalSpellcheckEnabled
+                win.docHandler.setMarkdown("")
+                wait(50)
+            }
+        }
+
         // Bug found live ("spellcheck checks as you type, including the
         // word you're working on... partial in-progress words are flagged
         // as misspelled"): a word still being typed is, by definition, an
@@ -3104,6 +3520,415 @@ Item {
                 verify(delegate.x > rectBefore.x, "precondition: \"teh\" actually shifted right")
             } finally {
                 win.docHandler.setMarkdown("")
+                wait(50)
+            }
+        }
+
+        // ------------------------------------------------------------------
+        // Code mode (feature request)
+        //
+        // A code note renders as code: a monospaced font (resolved in
+        // NoteAppearance::fontFamily) and a line-number gutter down its left
+        // edge, with markdown styling, as-you-type auto-formatting and
+        // spellcheck switched off. It is a PER-NOTE setting resolved against
+        // a global default (settings.codeModeEnabled) that ships OFF, so
+        // every test below restores both the note's own override and any
+        // global setting it touched before it finishes — the Settings
+        // instance is shared by every note here and by every other qml test
+        // file in this process.
+        // ------------------------------------------------------------------
+
+        // The numbers the gutter is actually showing, in line order. The
+        // Repeater's delegates are parented to the gutter itself (and the
+        // Repeater, which has no `text`, sits among them), so this picks out
+        // the delegates and sorts them by the line they point at rather than
+        // trusting child order — nothing promises children are in index
+        // order, and this test file should not start depending on it.
+        function gutterNumbers(gutter) {
+            const delegates = []
+            for (let i = 0; i < gutter.children.length; ++i) {
+                const child = gutter.children[i]
+                if (child.text !== undefined)
+                    delegates.push(child)
+            }
+            delegates.sort(function(a, b) { return Number(a.text) - Number(b.text) })
+            return delegates.map(function(d) { return String(d.text) })
+        }
+
+        function test_a_note_is_not_in_code_mode_unless_something_turns_it_on() {
+            compare(settings.codeModeEnabled, false,
+                    "the global code-mode default ships off")
+            compare(codeModeTestWindow.noteAppearance.hasCodeModeEnabledOverride, false,
+                    "a note has no code-mode override of its own until the user sets one")
+            compare(codeModeTestWindow.codeModeEnabled, false)
+        }
+
+        // The gutter must be entirely free for an ordinary note: it collapses
+        // to zero width so every consumer of gutterWidth stays plain
+        // arithmetic, and a note that isn't code lays out exactly as it did
+        // before the gutter existed.
+        function test_an_ordinary_note_has_an_invisible_zero_width_gutter_and_an_unshifted_editor() {
+            const win = codeModeTestWindow
+            compare(win.codeModeEnabled, false, "precondition: this note is not a code note")
+
+            compare(win.lineNumberGutter.gutterWidth, 0)
+            compare(win.lineNumberGutter.visible, false)
+            // An ordinary note doesn't even derive its line starts: the
+            // binding short-circuits before it reads editor.text, so it never
+            // subscribes to the buffer and never scans it on a keystroke for
+            // a gutter it isn't showing. The empty array here is what proves
+            // that early return is still in place.
+            compare(win.lineNumberGutter.lineStarts.length, 0)
+            // The gutter reserves space by shifting the editor's own parent
+            // (the EditorDragFilter it's wrapped in) rightward, so with no
+            // gutter the editor must still sit at the flickable's content
+            // origin and span its full width.
+            compare(win.editor.parent.x, 0)
+            compare(win.editor.width, win.editorFlick.width)
+        }
+
+        function test_turning_on_code_mode_shows_the_gutter_and_shifts_the_editor_right_by_its_width() {
+            const win = codeModeTestWindow
+            try {
+                win.noteAppearance.setCodeModeEnabledOverride(true)
+                tryCompare(win, "codeModeEnabled", true)
+
+                verify(win.lineNumberGutter.gutterWidth > 0,
+                       "the gutter must reserve real width once code mode is on")
+                compare(win.lineNumberGutter.visible, true)
+                compare(win.editor.parent.x, win.lineNumberGutter.gutterWidth,
+                        "the editor should be pushed right by exactly the gutter's width — the gutter " +
+                        "reserves space beside the text, it does not overlay it")
+                compare(win.editor.width, win.editorFlick.width - win.lineNumberGutter.gutterWidth,
+                        "the editor should give up exactly the width the gutter took")
+            } finally {
+                win.noteAppearance.clearCodeModeEnabledOverride()
+            }
+        }
+
+        function test_the_gutter_shows_one_number_per_newline_separated_line() {
+            const win = codeModeTestWindow
+            try {
+                win.noteAppearance.setCodeModeEnabledOverride(true)
+                tryCompare(win, "codeModeEnabled", true)
+
+                win.docHandler.setMarkdown("one\ntwo\nthree")
+                wait(50)
+
+                compare(win.lineNumberGutter.lineStarts.length, 3,
+                        "three newline-separated lines should produce three line starts")
+                compare(win.lineNumberGutter.lineStarts[0], 0,
+                        "line 1 starts at the very top of the document")
+                compare(win.lineNumberGutter.lineStarts[1], win.editor.text.indexOf("two"),
+                        "line 2's start is the document position of its first character")
+                compare(win.lineNumberGutter.lineStarts[2], win.editor.text.indexOf("three"))
+                compare(gutterNumbers(win.lineNumberGutter), ["1", "2", "3"],
+                        "the gutter should render a number for each of those lines, counting from 1")
+            } finally {
+                win.docHandler.setMarkdown("")
+                win.noteAppearance.clearCodeModeEnabledOverride()
+                wait(50)
+            }
+        }
+
+        // The whole point of numbering LOGICAL lines rather than visual rows:
+        // a long line that the editor wraps across several rows is still one
+        // line as far as any compiler error message the user is trying to
+        // match against is concerned, so it gets exactly ONE number, at the
+        // row where it begins.
+        function test_a_wrapped_line_still_gets_exactly_one_number() {
+            const win = codeModeTestWindow
+            try {
+                win.noteAppearance.setCodeModeEnabledOverride(true)
+                tryCompare(win, "codeModeEnabled", true)
+
+                // One logical line with no newline in it at all, deliberately
+                // far too long for this 260px-wide note.
+                win.docHandler.setMarkdown("wrap ".repeat(60).trim())
+                wait(50)
+
+                // Proves the line genuinely wrapped onto more than one visual
+                // row — read off the laid-out text itself, so it doesn't
+                // depend on what lineCount counts.
+                const firstRowY = win.editor.positionToRectangle(0).y
+                const lastRowY = win.editor.positionToRectangle(win.editor.length).y
+                verify(lastRowY > firstRowY,
+                       "precondition: the single long line must actually be wrapped across several rows")
+
+                compare(win.lineNumberGutter.lineStarts.length, 1,
+                        "a wrapped line is ONE logical line, so it gets ONE line start — not one per visual row")
+                compare(gutterNumbers(win.lineNumberGutter), ["1"],
+                        "and exactly one number is rendered for it")
+            } finally {
+                win.docHandler.setMarkdown("")
+                win.noteAppearance.clearCodeModeEnabledOverride()
+                wait(50)
+            }
+        }
+
+        function test_a_per_note_override_makes_one_note_a_code_note_while_the_global_default_stays_off() {
+            const codeNote = codeModeTestWindow
+            const ordinaryNote = instantiator.objectAt(0)
+            try {
+                compare(settings.codeModeEnabled, false, "precondition: the global default is off")
+
+                codeNote.noteAppearance.setCodeModeEnabledOverride(true)
+                tryCompare(codeNote, "codeModeEnabled", true)
+                compare(codeNote.noteAppearance.hasCodeModeEnabledOverride, true)
+
+                compare(settings.codeModeEnabled, false,
+                        "turning one note into a code note must not touch the global default")
+                compare(ordinaryNote.codeModeEnabled, false,
+                        "every other note must stay out of code mode")
+                compare(ordinaryNote.lineNumberGutter.gutterWidth, 0,
+                        "and must not grow a gutter")
+            } finally {
+                codeNote.noteAppearance.clearCodeModeEnabledOverride()
+            }
+            compare(codeNote.codeModeEnabled, false,
+                    "clearing the override should drop the note back to the global default")
+        }
+
+        function test_turning_on_the_global_default_puts_every_note_without_an_override_into_code_mode() {
+            try {
+                settings.codeModeEnabled = true
+
+                tryCompare(codeModeTestWindow, "codeModeEnabled", true)
+                tryCompare(instantiator.objectAt(0), "codeModeEnabled", true)
+                verify(codeModeTestWindow.lineNumberGutter.gutterWidth > 0)
+            } finally {
+                settings.codeModeEnabled = false
+            }
+            compare(codeModeTestWindow.codeModeEnabled, false)
+            compare(instantiator.objectAt(0).codeModeEnabled, false)
+        }
+
+        // Code mode "defaults to a monospaced font": it outranks the global
+        // family (a code note is saying it is not an ordinary note), but a
+        // family the user deliberately picked for THIS note still wins.
+        function test_a_code_notes_editor_uses_a_monospaced_font_unless_the_note_overrides_its_family() {
+            const win = codeModeTestWindow
+            const families = Qt.fontFamilies()
+            const originalGlobalFamily = settings.fontFamily
+            try {
+                settings.fontFamily = families[0]
+                win.noteAppearance.setCodeModeEnabledOverride(true)
+                tryCompare(win, "codeModeEnabled", true)
+
+                compare(win.editor.font.family, "monospace",
+                        "a code note's font should be monospaced even though a global family is set")
+
+                win.noteAppearance.setFontFamilyOverride(families[1])
+                wait(50)
+                compare(win.editor.font.family, families[1],
+                        "a family picked for this note specifically still wins over code mode's monospace default")
+            } finally {
+                win.noteAppearance.clearFontFamilyOverride()
+                win.noteAppearance.clearCodeModeEnabledOverride()
+                settings.fontFamily = originalGlobalFamily
+                wait(50)
+            }
+        }
+
+        function test_code_mode_switches_off_markdown_styling_auto_formatting_and_spellcheck() {
+            const win = codeModeTestWindow
+            const originalSpellcheckEnabled = settings.spellcheckEnabled
+            try {
+                compare(settings.codeModeDisablesMarkdownHighlighting, true, "precondition: ships on")
+                compare(settings.codeModeDisablesAutoFormatting, true, "precondition: ships on")
+                compare(settings.codeModeDisablesSpellcheck, true, "precondition: ships on")
+                settings.spellcheckEnabled = true
+
+                compare(win.codeModeSuppressesMarkdown, false,
+                        "nothing is suppressed while the note isn't a code note...")
+                compare(win.codeModeSuppressesAutoFormatting, false)
+                compare(win.codeModeSuppressesSpellcheck, false)
+                compare(win.docHandler.markdownDecorationEnabled, true)
+                compare(win.docHandler.autoFormattingEnabled, true)
+                compare(win.docHandler.spellcheckEnabled, true)
+
+                win.noteAppearance.setCodeModeEnabledOverride(true)
+                tryCompare(win, "codeModeEnabled", true)
+
+                compare(win.codeModeSuppressesMarkdown, true, "...and all three are once it is")
+                compare(win.codeModeSuppressesAutoFormatting, true)
+                compare(win.codeModeSuppressesSpellcheck, true)
+                // The suppressions aren't just derived properties — they
+                // actually reach the document handler that does the work.
+                compare(win.docHandler.markdownDecorationEnabled, false)
+                compare(win.docHandler.autoFormattingEnabled, false)
+                compare(win.docHandler.spellcheckEnabled, false)
+
+                compare(settings.spellcheckEnabled, true,
+                        "a note being code must not rewrite the user's app-wide spellcheck preference")
+            } finally {
+                win.noteAppearance.clearCodeModeEnabledOverride()
+                settings.spellcheckEnabled = originalSpellcheckEnabled
+            }
+        }
+
+        // Each of the three is independently gated by its own toggle, so a user
+        // who wants, say, spellcheck in their code notes can keep it without
+        // giving up the rest of code mode. That toggle resolves per-note
+        // against a global default, exactly like code mode itself — this test
+        // covers the global half, the one below it the per-note half.
+        function test_each_suppression_can_be_switched_back_on_globally_while_code_mode_stays_on() {
+            const win = codeModeTestWindow
+            const originalSpellcheckEnabled = settings.spellcheckEnabled
+            try {
+                settings.spellcheckEnabled = true
+                win.noteAppearance.setCodeModeEnabledOverride(true)
+                tryCompare(win, "codeModeEnabled", true)
+
+                settings.codeModeDisablesMarkdownHighlighting = false
+                compare(win.codeModeSuppressesMarkdown, false,
+                        "markdown styling should come back for code notes when its global toggle is off")
+                compare(win.docHandler.markdownDecorationEnabled, true)
+                compare(win.codeModeSuppressesAutoFormatting, true,
+                        "and the other two suppressions should be unaffected")
+                compare(win.codeModeSuppressesSpellcheck, true)
+
+                settings.codeModeDisablesAutoFormatting = false
+                compare(win.codeModeSuppressesAutoFormatting, false)
+                compare(win.docHandler.autoFormattingEnabled, true)
+
+                settings.codeModeDisablesSpellcheck = false
+                compare(win.codeModeSuppressesSpellcheck, false)
+                compare(win.docHandler.spellcheckEnabled, true)
+
+                // The note is still a code note throughout: the three toggles
+                // say what code mode DOES, not whether it's on.
+                compare(win.codeModeEnabled, true)
+                verify(win.lineNumberGutter.gutterWidth > 0, "the gutter is still there")
+            } finally {
+                settings.codeModeDisablesMarkdownHighlighting = true
+                settings.codeModeDisablesAutoFormatting = true
+                settings.codeModeDisablesSpellcheck = true
+                settings.spellcheckEnabled = originalSpellcheckEnabled
+                win.noteAppearance.clearCodeModeEnabledOverride()
+            }
+        }
+
+        // The per-note half: one code note can disagree with the global answer
+        // about what code mode does to it, and the disagreement has to reach
+        // the document handler that actually does the suppressing — not just
+        // the derived property.
+        function test_one_note_can_keep_spellcheck_while_the_global_answer_says_code_notes_lose_it() {
+            const win = codeModeTestWindow
+            const originalSpellcheckEnabled = settings.spellcheckEnabled
+            try {
+                settings.spellcheckEnabled = true
+                compare(settings.codeModeDisablesSpellcheck, true,
+                        "precondition: globally, code notes lose spellcheck")
+
+                win.noteAppearance.setCodeModeEnabledOverride(true)
+                tryCompare(win, "codeModeEnabled", true)
+                compare(win.docHandler.spellcheckEnabled, false,
+                        "so this code note starts out without spellcheck")
+
+                win.noteAppearance.setCodeModeDisablesSpellcheckOverride(false)
+
+                tryCompare(win, "codeModeSuppressesSpellcheck", false)
+                compare(win.docHandler.spellcheckEnabled, true,
+                        "this one note keeps spellcheck...")
+                compare(settings.codeModeDisablesSpellcheck, true,
+                        "...without changing the global answer for every other code note")
+                compare(win.codeModeSuppressesMarkdown, true,
+                        "and the other two suppressions still follow the global answer")
+                compare(win.codeModeSuppressesAutoFormatting, true)
+                compare(win.codeModeEnabled, true, "the note is still a code note throughout")
+            } finally {
+                win.noteAppearance.clearCodeModeDisablesSpellcheckOverride()
+                win.noteAppearance.clearCodeModeEnabledOverride()
+                settings.spellcheckEnabled = originalSpellcheckEnabled
+            }
+        }
+
+        // The end of the chain the popup's "Turn off spellcheck" box drives:
+        // override -> NoteAppearance -> codeModeSuppressesSpellcheck ->
+        // docHandler.spellcheckEnabled -> the ranges the underline overlay
+        // draws. Asserting the derived property alone is what let the live bug
+        // through — spellcheckEnabled went false correctly while the squiggles
+        // stayed on screen, because misspelledWordRanges ignored it.
+        function test_a_code_notes_spellcheck_suppression_clears_the_underlines_it_had_drawn() {
+            const win = codeModeTestWindow
+            const originalSpellcheckEnabled = settings.spellcheckEnabled
+            try {
+                settings.spellcheckEnabled = true
+                win.docHandler.setMarkdown("teh normal")
+                wait(50)
+                compare(win.docHandler.misspelledWordRanges.length, 1,
+                        "precondition: an ordinary note flags \"teh\"")
+
+                win.noteAppearance.setCodeModeEnabledOverride(true)
+                tryCompare(win, "codeModeSuppressesSpellcheck", true)
+                wait(50)
+
+                compare(win.docHandler.misspelledWordRanges.length, 0,
+                        "a code note that suppresses spellcheck must have no underlines left to draw")
+
+                // The note keeping spellcheck brings them back, which is the
+                // per-note override's whole point.
+                win.noteAppearance.setCodeModeDisablesSpellcheckOverride(false)
+                tryCompare(win, "codeModeSuppressesSpellcheck", false)
+                wait(50)
+                compare(win.docHandler.misspelledWordRanges.length, 1,
+                        "a code note that keeps spellcheck should flag \"teh\" like any other note")
+            } finally {
+                win.docHandler.setMarkdown("")
+                win.noteAppearance.clearCodeModeDisablesSpellcheckOverride()
+                win.noteAppearance.clearCodeModeEnabledOverride()
+                settings.spellcheckEnabled = originalSpellcheckEnabled
+                wait(50)
+            }
+        }
+
+        // The gutter is sized to the digits the note actually has. It reserved
+        // a two-digit box unconditionally once, which right-aligned every
+        // number one whole digit clear of the left edge and read as a stray
+        // indent on any note under ten lines.
+        function test_the_gutter_is_no_wider_for_one_line_than_for_nine() {
+            const win = codeModeTestWindow
+            try {
+                win.noteAppearance.setCodeModeEnabledOverride(true)
+                tryCompare(win, "codeModeEnabled", true)
+
+                win.docHandler.setMarkdown("x")
+                wait(50)
+                const oneLineWidth = win.lineNumberGutter.gutterWidth
+
+                win.docHandler.setMarkdown("x\n".repeat(8) + "x")
+                wait(50)
+                compare(win.lineNumberGutter.lineStarts.length, 9, "precondition: nine lines")
+                compare(win.lineNumberGutter.gutterWidth, oneLineWidth,
+                        "1 and 9 are both single digits, so the gutter must be exactly as wide for " +
+                        "both — no space reserved for a tenth line that doesn't exist")
+            } finally {
+                win.docHandler.setMarkdown("")
+                win.noteAppearance.clearCodeModeEnabledOverride()
+                wait(50)
+            }
+        }
+
+        function test_the_gutter_widens_once_a_tenth_line_needs_a_second_digit() {
+            const win = codeModeTestWindow
+            try {
+                win.noteAppearance.setCodeModeEnabledOverride(true)
+                tryCompare(win, "codeModeEnabled", true)
+
+                win.docHandler.setMarkdown("x\n".repeat(8) + "x")
+                wait(50)
+                const nineLineWidth = win.lineNumberGutter.gutterWidth
+
+                win.docHandler.setMarkdown("x\n".repeat(9) + "x")
+                wait(50)
+                compare(win.lineNumberGutter.lineStarts.length, 10, "precondition: ten lines")
+                verify(win.lineNumberGutter.gutterWidth > nineLineWidth,
+                       "a two-digit line count genuinely needs the extra digit, so here the gutter " +
+                       "does grow — that one-off shift is the cost of not indenting every short note")
+            } finally {
+                win.docHandler.setMarkdown("")
+                win.noteAppearance.clearCodeModeEnabledOverride()
                 wait(50)
             }
         }

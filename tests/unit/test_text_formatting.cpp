@@ -818,6 +818,132 @@ SCENARIO("Click-to-toggle hit-tests against the checkbox marker itself", "[text_
     }
 }
 
+SCENARIO("A click inside a drawn marker places the caret at the item's text", "[text_formatting]")
+{
+    // The bug this pins down (reported as "the text cursor is inside of the
+    // checkbox, causing any content typed to break it"): a bullet's "- " and a
+    // checkbox's "- [ ] " are invisible text under a drawn glyph, so every
+    // position inside one renders at that glyph's own left or right edge.
+    // Measured on a fresh "- [ ] " at the default font, the box spans x=0 to
+    // x=14.69 and the item's text starts at position 6, x=21.94 — so every
+    // click left of x≈20 (the box, and the gap beside it where an empty item's
+    // label looks like it begins) landed the caret INSIDE the marker, where
+    // typing splits it ("- [ ] " + "b" at position 4 gives "- [ b] ", which no
+    // longer parses as a checkbox at all, so the box silently disappears).
+
+    GIVEN("an empty checkbox item, '- [ ] ' — a checkbox the instant it's added")
+    {
+        QTextDocument doc;
+        doc.setPlainText("- [ ] ");
+
+        WHEN("a click lands on the box itself")
+        {
+            QTextCursor cursor(&doc);
+            cursor.setPosition(2); // the reserved slot the box is drawn into
+
+            THEN("the caret goes to where the label starts, not into the marker")
+            {
+                CHECK(TextFormatting::listLabelPosition(cursor) == 6);
+            }
+        }
+
+        WHEN("a click lands in the gap between the box and where its label begins")
+        {
+            QTextCursor cursor(&doc);
+            cursor.setPosition(4); // "- [ |] " — renders at the box's right edge
+
+            THEN("the caret still goes to the label start")
+            {
+                CHECK(TextFormatting::listLabelPosition(cursor) == 6);
+            }
+        }
+
+        WHEN("a click lands at the label start already")
+        {
+            QTextCursor cursor(&doc);
+            cursor.setPosition(6);
+
+            THEN("it stays put")
+            {
+                CHECK(TextFormatting::listLabelPosition(cursor) == 6);
+            }
+        }
+    }
+
+    GIVEN("a checkbox item with a label, '- [ ] Buy milk'")
+    {
+        QTextDocument doc;
+        doc.setPlainText("- [ ] Buy milk");
+
+        WHEN("a click lands inside the item's own text")
+        {
+            QTextCursor cursor(&doc);
+            cursor.setPosition(9); // inside "Buy milk"
+
+            THEN("it is left exactly where the user aimed")
+            {
+                CHECK(TextFormatting::listLabelPosition(cursor) == 9);
+            }
+        }
+    }
+
+    GIVEN("a bullet item, '- Buy milk' — the same invisible marker under a drawn dot")
+    {
+        QTextDocument doc;
+        doc.setPlainText("- Buy milk");
+
+        WHEN("a click lands on the dot")
+        {
+            QTextCursor cursor(&doc);
+            cursor.setPosition(0);
+
+            THEN("the caret goes to the item's text")
+            {
+                CHECK(TextFormatting::listLabelPosition(cursor) == 2);
+            }
+        }
+    }
+
+    GIVEN("a numbered item, '1. Buy milk'")
+    {
+        QTextDocument doc;
+        doc.setPlainText("1. Buy milk");
+
+        WHEN("a click lands inside the '1. '")
+        {
+            QTextCursor cursor(&doc);
+            cursor.setPosition(1);
+
+            THEN("it is left alone — a number is visible text the user may be aiming to edit")
+            {
+                // Unlike a bullet/checkbox, a numbered marker is never replaced
+                // by a drawn glyph (see MarkdownHighlighter): it renders as
+                // ordinary text, so a click in it is a click on what the user
+                // can actually see, and snapping past it would make the number
+                // uneditable by mouse.
+                CHECK(TextFormatting::listLabelPosition(cursor) == 1);
+            }
+        }
+    }
+
+    GIVEN("a plain paragraph")
+    {
+        QTextDocument doc;
+        doc.setPlainText("plain line");
+
+        WHEN("a click lands anywhere in it")
+        {
+            QTextCursor cursor(&doc);
+            cursor.setPosition(3);
+
+            THEN("nothing snaps")
+            {
+                CHECK(TextFormatting::listLabelPosition(cursor) == 3);
+            }
+        }
+    }
+}
+
 SCENARIO("checkboxMarkerRect locates the checkbox marker for a hover highlight", "[text_formatting]")
 {
     GIVEN("a checkbox item")
@@ -848,6 +974,69 @@ SCENARIO("checkboxMarkerRect locates the checkbox marker for a hover highlight",
             THEN("no rect is returned — there is no marker to highlight there")
             {
                 CHECK(TextFormatting::checkboxMarkerRect(cursor).isEmpty());
+            }
+        }
+
+        WHEN("the rect is queried at every position across the whole line")
+        {
+            THEN("it is offered at exactly the positions that actually toggle")
+            {
+                // The highlight is a promise that clicking here does something,
+                // so the region it covers must be the region
+                // tryToggleCheckboxAtPosition accepts — not one character more.
+                // "- [ ] Buy milk": positions 0..5 are "- [ ]" and toggle;
+                // position 5 is the closing bracket's far edge. Position 6 is
+                // the marker's trailing space, which reads as label padding.
+                for (int position = 0; position <= 5; ++position) {
+                    QTextCursor cursor(&doc);
+                    cursor.setPosition(position);
+                    CAPTURE(position);
+                    CHECK_FALSE(TextFormatting::checkboxMarkerRect(cursor).isEmpty());
+                }
+                for (int position = 6; position <= 14; ++position) {
+                    QTextCursor cursor(&doc);
+                    cursor.setPosition(position);
+                    CAPTURE(position);
+                    CHECK(TextFormatting::checkboxMarkerRect(cursor).isEmpty());
+                }
+            }
+        }
+    }
+
+    GIVEN("a checkbox item with no label typed yet — a checkbox the instant it's added")
+    {
+        // The regression this pins down (reported as "adding a checkbox leaves
+        // a blue highlight behind it"): TextEdit::positionAt() never fails, it
+        // CLAMPS, so a pointer resting anywhere in the blank space below a note
+        // resolves to the last line's final position. When the last line is a
+        // marker with nothing after it, that position is the marker's trailing
+        // space — and while the rect was offered there, the hover highlight lit
+        // up behind the checkbox and stayed lit, over a spot where clicking did
+        // nothing at all.
+        QTextDocument doc;
+        doc.setPlainText("- [ ] ");
+
+        WHEN("the rect is queried at the end of the line, where a pointer below the text lands")
+        {
+            QTextCursor cursor(&doc);
+            cursor.setPosition(6);
+
+            THEN("no rect is returned, and clicking there agrees by doing nothing")
+            {
+                CHECK(TextFormatting::checkboxMarkerRect(cursor).isEmpty());
+                CHECK_FALSE(TextFormatting::tryToggleCheckboxAtPosition(cursor));
+            }
+        }
+
+        WHEN("the rect is queried on the box itself")
+        {
+            QTextCursor cursor(&doc);
+            cursor.setPosition(2);
+
+            THEN("the highlight is still offered — the box is still clickable")
+            {
+                CHECK_FALSE(TextFormatting::checkboxMarkerRect(cursor).isEmpty());
+                CHECK(TextFormatting::tryToggleCheckboxAtPosition(cursor));
             }
         }
     }

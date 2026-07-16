@@ -20,6 +20,7 @@
 //   settingsRequested()  — gear glyph tapped (from collapsed placeholder
 //                          or the expanded row)
 //   duplicateRequested() — duplicate glyph tapped
+//   searchRequested()    — search glyph tapped (host opens find/replace)
 //   closeRequested()     — close glyph tapped TWICE (armed, then confirmed)
 //                          within closeArmTimeoutMs — see closeArmed below.
 //                          Deleting a note's file is irreversible, so a
@@ -66,6 +67,7 @@ Rectangle {
     signal pinToggleRequested()
     signal settingsRequested()
     signal duplicateRequested()
+    signal searchRequested()
     signal closeRequested()
 
     Timer {
@@ -95,6 +97,7 @@ Rectangle {
     readonly property alias pinGlyphItem: pinGlyph
     readonly property alias gearGlyphItem: gearGlyph
     readonly property alias duplicateGlyphItem: duplicateGlyph
+    readonly property alias searchGlyphItem: searchGlyph
     readonly property alias closeGlyphItem: closeGlyph
 
     height: 26
@@ -131,10 +134,10 @@ Rectangle {
 
     Row {
         id: hudRow
-        // Right-anchor keeps the row flush against the right edge; gear
-        // stays last/rightmost. Only shown when expanded (hover or
-        // always-expanded) — the collapsed state shows the standalone
-        // gear above instead.
+        // Right-anchor keeps the row flush against the right edge; close
+        // stays last/rightmost (see its own comment below). Only shown
+        // when expanded (hover or always-expanded) — the collapsed state
+        // shows the standalone gear above instead.
         visible: hud.expanded
         anchors.right:          parent.right
         anchors.rightMargin:    6
@@ -233,6 +236,34 @@ Rectangle {
 
             HoverHandler { id: duplicateHov; cursorShape: Qt.PointingHandCursor }
             TapHandler { onTapped: hud.duplicateRequested() }
+        }
+
+        Item {
+            width: 22
+            height: 22
+            anchors.verticalCenter: parent.verticalCenter
+
+            InteractableHighlight {
+                anchors.fill: parent
+                active: searchHov.hovered
+            }
+
+            // "⌕" for the same reason "⚲"/"⧉" are used above rather than
+            // the 🔍 emoji: plain-presentation, so it honors the `color`
+            // binding instead of rendering in fixed emoji color.
+            Text {
+                id: searchGlyph
+                objectName: "searchGlyph"
+                text: "⌕"
+                font.pixelSize: 16
+                color: hud.iconColor
+                opacity: searchHov.hovered ? 1.0 : 0.7
+                anchors.centerIn: parent
+                Behavior on opacity { NumberAnimation { duration: 120 } }
+            }
+
+            HoverHandler { id: searchHov; cursorShape: Qt.PointingHandCursor }
+            TapHandler { onTapped: hud.searchRequested() }
         }
 
         // Rightmost, matching the reference ribbon's own convention of

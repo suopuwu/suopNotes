@@ -131,6 +131,83 @@ SCENARIO("mergeLivePosition ignores the shared tooltip window's own pseudo-note 
     }
 }
 
+SCENARIO("mergeLivePosition ignores the find/replace panel's own pseudo-note title",
+         "[position_event_service]")
+{
+    GIVEN("FindReplacePanel.qml's app-wide singleton window, titled "
+          "\"suopNotes-findReplacePanel\" (a fixed KWinRuleApplier rule-group key, "
+          "never a real note)")
+    {
+        WHEN("a KWin drag-finished event fires for it, same as it would for a real note")
+        {
+            const auto result =
+                PositionEventService::mergeLivePosition({}, "suopNotes-findReplacePanel", 100, 200, "DP-1");
+
+            THEN("the returned state has an empty noteId, signaling \"ignore this\" — "
+                 "registered up front rather than after the fact: like toolbarTooltip above "
+                 "this panel offers no drag of its own, but every window here is hooked by "
+                 "the watcher script purely by its \"suopNotes-\" title prefix, and a "
+                 "compositor-initiated move (alt+drag) would otherwise upsert a phantom "
+                 "\"findReplacePanel\" note — the same bug selectionToolbar and "
+                 "columnOptionsPopup each shipped once")
+            {
+                CHECK(result.noteId.isEmpty());
+            }
+        }
+    }
+}
+
+SCENARIO("mergeLivePosition ignores the spelling-suggestions popup's own pseudo-note title",
+         "[position_event_service]")
+{
+    GIVEN("SelectionToolbar.qml's spellingSuggestionsPopup child window, titled "
+          "\"suopNotes-spellingSuggestionsPopup\" (a fixed KWinRuleApplier rule-group key, "
+          "never a real note)")
+    {
+        WHEN("a KWin drag-finished event fires for it, same as it would for a real note")
+        {
+            const auto result = PositionEventService::mergeLivePosition(
+                {}, "suopNotes-spellingSuggestionsPopup", 100, 200, "DP-1");
+
+            THEN("the returned state has an empty noteId, signaling \"ignore this\" — "
+                 "this one was genuinely MISSING from pseudoNoteIds() until it was spotted "
+                 "while adding noteContextMenu below, despite having carried its "
+                 "\"suopNotes-\" title since it was written: an alt+drag of this popup "
+                 "upserted a phantom \"spellingSuggestionsPopup\" note into the user's "
+                 "persisted session, exactly the bug selectionToolbar and columnOptionsPopup "
+                 "each shipped once before it")
+            {
+                CHECK(result.noteId.isEmpty());
+            }
+        }
+    }
+}
+
+SCENARIO("mergeLivePosition ignores the note context menu's own pseudo-note title",
+         "[position_event_service]")
+{
+    GIVEN("NoteContextMenu.qml's app-wide singleton window, titled "
+          "\"suopNotes-noteContextMenu\" (a fixed KWinRuleApplier rule-group key, "
+          "never a real note)")
+    {
+        WHEN("a KWin drag-finished event fires for it, same as it would for a real note")
+        {
+            const auto result =
+                PositionEventService::mergeLivePosition({}, "suopNotes-noteContextMenu", 100, 200, "DP-1");
+
+            THEN("the returned state has an empty noteId, signaling \"ignore this\" — "
+                 "registered in the same change that introduced the window rather than after "
+                 "the fourth recurrence: this menu offers no drag of its own, but every "
+                 "window here is hooked by the watcher script purely by its \"suopNotes-\" "
+                 "title prefix, and a compositor-initiated move (alt+drag) would otherwise "
+                 "upsert a phantom \"noteContextMenu\" note")
+            {
+                CHECK(result.noteId.isEmpty());
+            }
+        }
+    }
+}
+
 SCENARIO("mergeLivePosition handles a note not yet present in the session list",
          "[position_event_service]")
 {

@@ -5,6 +5,7 @@
 #include "SpellCheckHighlighter.h"
 #include "SpellChecker.h"
 #include "TextFormatting.h"
+#include "TextSearch.h"
 
 #include <QAbstractTextDocumentLayout>
 #include <QRegularExpression>
@@ -154,6 +155,12 @@ void DocumentHandler::setDocument(QQuickTextDocument *document)
         // highlighter instance. See rehighlightAll() for the ordering rule
         // this implies everywhere else.
         m_markdownHighlighter = std::make_unique<MarkdownHighlighter>(document->textDocument());
+        // Re-apply the mode to the FRESH highlighter, exactly as the line
+        // above does for spellcheck's own setActive(). The highlighter is
+        // rebuilt per document and starts at its own default (decoration on),
+        // so without this a note in code mode would silently render as
+        // markdown again from whenever QML happened to assign `document:`.
+        m_markdownHighlighter->setMarkdownDecorationEnabled(m_markdownDecorationEnabled);
         // Real text edits are the one trigger for misspelledWordRangesChanged
         // that isn't already covered by an explicit setter/invokable below —
         // connect once per document so the underline overlay knows to
@@ -197,6 +204,42 @@ void DocumentHandler::setSpellcheckEnabled(bool enabled)
         m_highlighter->setActive(enabled);
     emit spellcheckEnabledChanged();
     emitMisspelledWordRangesChangedIfNeeded();
+}
+
+bool DocumentHandler::markdownDecorationEnabled() const
+{
+    return m_markdownDecorationEnabled;
+}
+
+void DocumentHandler::setMarkdownDecorationEnabled(bool enabled)
+{
+    if (m_markdownDecorationEnabled == enabled)
+        return;
+    m_markdownDecorationEnabled = enabled;
+    // Guarded, not assumed: the highlighter only exists once a document has
+    // been attached, and QML sets this property from a binding that can
+    // evaluate before `document:` does. setDocument() re-applies the stored
+    // value to the fresh highlighter, so an early set is not lost.
+    if (m_markdownHighlighter)
+        m_markdownHighlighter->setMarkdownDecorationEnabled(enabled);
+    emit markdownDecorationEnabledChanged();
+}
+
+bool DocumentHandler::autoFormattingEnabled() const
+{
+    return m_autoFormattingEnabled;
+}
+
+void DocumentHandler::setAutoFormattingEnabled(bool enabled)
+{
+    if (m_autoFormattingEnabled == enabled)
+        return;
+    m_autoFormattingEnabled = enabled;
+    // Nothing to re-apply and nothing to repaint: this gates future calls
+    // only. Turning it off deliberately does NOT un-format text an earlier
+    // auto-conversion already wrote — that text is the user's own buffer
+    // content now, and rewriting it here would be a destructive surprise.
+    emit autoFormattingEnabledChanged();
 }
 
 QString DocumentHandler::spellcheckLanguage() const
@@ -448,6 +491,19 @@ void DocumentHandler::setCursorPosition(int position)
 QVariantList DocumentHandler::computeMisspelledWordRanges() const
 {
     QVariantList result;
+    // Spellcheck being off has to be honoured HERE, not only by
+    // SpellCheckHighlighter::setActive(): QtQuick never paints a
+    // QSyntaxHighlighter's underline at all (see misspelledWordRanges' own
+    // comment in the header), so deactivating the highlighter removes nothing
+    // the user can actually see. THIS property is the visible underline — the
+    // overlay in NoteWindow.qml is driven entirely by it — and it also feeds
+    // tap-to-suggest and the suggestion popup. Without this gate, switching
+    // spellcheck off (by app-wide preference OR by a note being in code mode)
+    // left every squiggle on screen and every misspelled word still tappable,
+    // which is exactly how it was reported: "the turn off spellcheck option
+    // doesn't seem to actually do that".
+    if (!m_spellcheckEnabled)
+        return result;
     if (!m_document || !m_document->textDocument() || !m_spellCheckerBackend || !m_spellCheckerBackend->isValid())
         return result;
 
@@ -698,6 +754,96 @@ void DocumentHandler::replaceRange(int start, int end, const QString &replacemen
     cursor.insertText(replacement);
 }
 
+QVariantList DocumentHandler::searchMatches(const QString &pattern, bool useRegex, bool caseSensitive)
+{
+    QVariantList result;
+    if (!m_document || !m_document->textDocument())
+        return result;
+
+    const QList<TextSearch::Match> matches = TextSearch::allMatches(
+        m_document->textDocument()->toPlainText(), pattern, useRegex, caseSensitive);
+    for (const TextSearch::Match &match : matches) {
+        QVariantMap map;
+        map.insert(QStringLiteral("start"), match.start);
+        map.insert(QStringLiteral("end"), match.end);
+        result.append(map);
+    }
+    return result;
+}
+
+bool DocumentHandler::searchPatternValid(const QString &pattern, bool useRegex)
+{
+    return TextSearch::patternValid(pattern, useRegex);
+}
+
+QVariantMap DocumentHandler::replaceSearchMatch(int start, int end, const QString &pattern,
+                                                const QString &replacement, bool useRegex,
+                                                bool caseSensitive)
+{
+    if (!m_document || !m_document->textDocument())
+        return QVariantMap();
+
+    const std::optional<TextSearch::Match> replaced = TextSearch::replaceMatch(
+        m_document->textDocument(), start, end, pattern, replacement, useRegex, caseSensitive);
+    if (!replaced)
+        return QVariantMap();
+
+    QVariantMap map;
+    map.insert(QStringLiteral("start"), replaced->start);
+    map.insert(QStringLiteral("end"), replaced->end);
+    return map;
+}
+
+int DocumentHandler::replaceAllMatches(const QString &pattern, const QString &replacement,
+                                       bool useRegex, bool caseSensitive)
+{
+    if (!m_document || !m_document->textDocument())
+        return 0;
+
+    return TextSearch::replaceAll(m_document->textDocument(), pattern, replacement, useRegex, caseSensitive);
+}
+
+void DocumentHandler::setSearchHighlight(const QVariantList &matches, int currentIndex)
+{
+    if (!m_markdownHighlighter)
+        return;
+
+    QList<TextSearch::Match> parsed;
+    parsed.reserve(matches.size());
+    for (const QVariant &entry : matches) {
+        const QVariantMap map = entry.toMap();
+        parsed.append({map.value(QStringLiteral("start")).toInt(),
+                       map.value(QStringLiteral("end")).toInt()});
+    }
+    m_markdownHighlighter->setSearchMatches(parsed, currentIndex);
+}
+
+void DocumentHandler::clearSearchHighlight()
+{
+    if (m_markdownHighlighter)
+        m_markdownHighlighter->setSearchMatches({}, -1);
+}
+
+QVariantList DocumentHandler::searchHighlightRanges() const
+{
+    QVariantList result;
+    if (!m_markdownHighlighter)
+        return result;
+
+    for (const TextSearch::Match &match : m_markdownHighlighter->searchMatches()) {
+        QVariantMap map;
+        map.insert(QStringLiteral("start"), match.start);
+        map.insert(QStringLiteral("end"), match.end);
+        result.append(map);
+    }
+    return result;
+}
+
+int DocumentHandler::searchHighlightCurrentIndex() const
+{
+    return m_markdownHighlighter ? m_markdownHighlighter->currentSearchMatch() : -1;
+}
+
 QString DocumentHandler::toMarkdown() const
 {
     if (!m_document || !m_document->textDocument())
@@ -923,6 +1069,13 @@ void DocumentHandler::deleteTable(int position)
 
 bool DocumentHandler::tryContinueList(int cursorPosition)
 {
+    // Code mode: returning false is exactly the existing "cursor isn't in a
+    // list" answer, which QML's Return handler already knows means "fall
+    // through to TextArea's own default" — so Enter in a code note inserts a
+    // plain newline instead of a new bullet, with no new QML path needed.
+    if (!m_autoFormattingEnabled)
+        return false;
+
     ListMutationGuard guard(m_handlingListMutation, m_document ? m_document->textDocument() : nullptr);
     if (guard.reentrant())
         return false;
@@ -948,6 +1101,12 @@ bool DocumentHandler::tryContinueList(int cursorPosition)
 
 bool DocumentHandler::tryAutoConvertListShorthand(int cursorPosition)
 {
+    // The single most disruptive auto-behavior in a code note: "- " opens a
+    // YAML entry and "1. " a numbered step in a comment, and converting either
+    // into a real list eats the characters the user just typed.
+    if (!m_autoFormattingEnabled)
+        return false;
+
     ListMutationGuard guard(m_handlingListMutation, m_document ? m_document->textDocument() : nullptr);
     if (guard.reentrant())
         return false;
@@ -996,6 +1155,14 @@ bool DocumentHandler::tryAutoConvertListShorthand(int cursorPosition)
 
 void DocumentHandler::maintainListNumbering(int cursorPosition)
 {
+    // Nothing here writes anything if no numbered list exists, so this gate is
+    // mostly redundant for a real code note — kept anyway so that "code mode
+    // suppresses auto-formatting" is one honest statement rather than one with
+    // an exception, e.g. for a note toggled into code mode that still holds a
+    // list from before.
+    if (!m_autoFormattingEnabled)
+        return;
+
     ListMutationGuard guard(m_handlingListMutation, m_document ? m_document->textDocument() : nullptr);
     if (guard.reentrant())
         return;
@@ -1028,6 +1195,10 @@ void DocumentHandler::maintainListNumbering(int cursorPosition)
 
 bool DocumentHandler::tryResetHeadingOnReturn(int cursorPosition)
 {
+    // Same false-means-fall-through contract as tryContinueList above.
+    if (!m_autoFormattingEnabled)
+        return false;
+
     if (!m_document || !m_document->textDocument())
         return false;
 
@@ -1097,6 +1268,22 @@ bool DocumentHandler::tryToggleCheckboxAt(int position)
     if (toggled)
         emit formattingChanged();
     return toggled;
+}
+
+int DocumentHandler::listLabelPositionAt(int position) const
+{
+    if (!m_document || !m_document->textDocument())
+        return position;
+
+    // Clamped rather than trusted: this is fed straight from
+    // TextEdit::positionAt(), and a caller can reach it before the editor has
+    // any layout to resolve against — the same "Position '-1' out of range"
+    // warning the spell-check tap path hit live. An unresolvable position
+    // simply snaps to nothing.
+    QTextDocument *document = m_document->textDocument();
+    QTextCursor cursor(document);
+    cursor.setPosition(qBound(0, position, document->characterCount() - 1));
+    return TextFormatting::listLabelPosition(cursor);
 }
 
 bool DocumentHandler::isInTable(int position) const

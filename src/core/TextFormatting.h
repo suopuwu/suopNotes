@@ -60,6 +60,28 @@ bool toggleCheckboxChecked(QTextCursor cursor);
 // space, which reads as label padding) — a click anywhere else in a checkbox
 // item should just place the cursor normally, not toggle it.
 bool tryToggleCheckboxAtPosition(QTextCursor cursor);
+// Where a click that resolved to `cursor` should actually leave the caret.
+//
+// A bullet's "- " and a checkbox's "- [ ] " are invisible text sitting under a
+// drawn glyph (see MarkdownList::Marker::glyphStart): every character of the
+// marker except the reserved slot collapses to zero width, so EVERY position
+// inside one renders at the glyph's own left or right edge. Measured on a
+// checkbox at the default font: positions 0-2 all draw at x=0 and positions
+// 3-5 all draw at x=14.69 — the box itself spans x=0 to x=14.69, and the
+// item's text only starts at position 6, x=21.94. So a click on the box, or
+// in the gap beside it where an empty item's label visibly begins, lands the
+// caret INSIDE the marker while looking like it landed on (or just after) the
+// checkbox. Typing then splits the marker — "- [ ] " with a "b" typed at
+// position 4 becomes "- [ b] " — which no longer parses as a checkbox, so the
+// box silently disappears (reported as "the cursor is inside of the checkbox,
+// causing any content typed to break it").
+//
+// Returns the item's own text start for those two kinds, and `cursor`'s
+// position unchanged everywhere else — including inside a NUMBERED item's
+// "1. ", which MarkdownHighlighter deliberately leaves as ordinary visible
+// text (its number is content, not syntax to read past), and which a user
+// therefore has a real reason to click into and edit.
+int listLabelPosition(QTextCursor cursor);
 // Inserts a new item after the cursor's current list item, inheriting its
 // kind, and renumbers the run. Now covers bullets too (they are marker text
 // like everything else), so callers no longer need a separate QTextList path.

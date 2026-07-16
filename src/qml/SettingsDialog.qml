@@ -17,6 +17,11 @@ ApplicationWindow {
     readonly property alias newUserDictionaryWordField: newUserDictionaryWordField
     readonly property alias addUserDictionaryWordButton: addUserDictionaryWordButton
     readonly property alias userDictionaryWordsRepeater: userDictionaryWordsRepeater
+    // Code Mode section, exposed for tests only like every alias above.
+    readonly property alias codeModeDefaultCheckBox: codeModeDefaultCheckBox
+    readonly property alias codeModeDisablesMarkdownCheckBox: codeModeDisablesMarkdownCheckBox
+    readonly property alias codeModeDisablesAutoFormattingCheckBox: codeModeDisablesAutoFormattingCheckBox
+    readonly property alias codeModeDisablesSpellcheckCheckBox: codeModeDisablesSpellcheckCheckBox
 
     title: "suopNotes Settings"
     width: 400
@@ -310,6 +315,76 @@ ApplicationWindow {
                 text: "Always show note controls (pin/settings/close)"
                 checked: settings.hudAlwaysExpanded
                 onToggled: settings.hudAlwaysExpanded = checked
+            }
+
+            // Code mode (feature request). The first checkbox is the global
+            // DEFAULT for every note — each note can override it from its own
+            // hover settings popup, which is where a single note is turned
+            // into a code note. The three below define what code mode MEANS,
+            // app-wide: they are deliberately not per-note (see Settings.h),
+            // since "what does code mode do" wants one answer, not one per
+            // note.
+            //
+            // Grouped in their own section rather than sitting beside the
+            // other appearance checkboxes precisely because of that split —
+            // the indent and the enabled-gate below are what make it readable
+            // as "these three describe the thing above".
+            Column {
+                width: parent.width
+                spacing: 8
+
+                Label { text: "Code Mode"; font.bold: true }
+
+                CheckBox {
+                    id: codeModeDefaultCheckBox
+                    text: "Enable code mode by default"
+                    checked: settings.codeModeEnabled
+                    onToggled: settings.codeModeEnabled = checked
+                }
+
+                Label {
+                    text: "Code mode uses a monospaced font and shows line numbers."
+                    // Wraps rather than eliding: this is the one place that
+                    // explains what the mode actually does, so it must stay
+                    // readable at any dialog width.
+                    width: parent.width
+                    wrapMode: Text.WordWrap
+                    opacity: 0.7
+                }
+
+                Label { text: "While code mode is on, also:"; opacity: 0.7 }
+
+                Column {
+                    width: parent.width
+                    spacing: 4
+                    // Indented to read as belonging to the label above.
+                    leftPadding: 12
+                    // NOT gated on codeModeDefaultCheckBox: these apply to any
+                    // note in code mode, including one that got there by its
+                    // own per-note override while the global default is off —
+                    // which is the common case, since the default ships off.
+                    // Disabling them here would make them look inapplicable to
+                    // exactly the notes they do apply to.
+
+                    CheckBox {
+                        id: codeModeDisablesMarkdownCheckBox
+                        text: "Turn off markdown styling"
+                        checked: settings.codeModeDisablesMarkdownHighlighting
+                        onToggled: settings.codeModeDisablesMarkdownHighlighting = checked
+                    }
+                    CheckBox {
+                        id: codeModeDisablesAutoFormattingCheckBox
+                        text: "Turn off list and heading auto-formatting"
+                        checked: settings.codeModeDisablesAutoFormatting
+                        onToggled: settings.codeModeDisablesAutoFormatting = checked
+                    }
+                    CheckBox {
+                        id: codeModeDisablesSpellcheckCheckBox
+                        text: "Turn off spellcheck"
+                        checked: settings.codeModeDisablesSpellcheck
+                        onToggled: settings.codeModeDisablesSpellcheck = checked
+                    }
+                }
             }
 
             Column {

@@ -97,6 +97,23 @@ bool isReservedMarkerAt(const QTextBlock &block, int position)
     return format.foreground().color().alpha() == 0 && format.fontPointSize() == 0.0;
 }
 
+// Whether a collapsed marker opts out of Qt's automatic font fallback.
+// Performance, not appearance — see the freeze scenario below.
+bool hasFontFallbackDisabledAt(const QTextBlock &block, int position)
+{
+    return (formatAt(block, position).fontStyleStrategy() & QFont::NoFontMerging) != 0;
+}
+
+// How wide a reserved slot is, as a percentage of the reserved character's own
+// natural advance — the knob that decides how much room the drawn control gets.
+qreal slotPercentAt(const QTextBlock &block, int position)
+{
+    const QTextCharFormat format = formatAt(block, position);
+    if (format.fontLetterSpacingType() != QFont::PercentageSpacing)
+        return 0.0;
+    return format.fontLetterSpacing();
+}
+
 // How many extra pixels of advance a character has been given. This is how a
 // table cell is padded out to its column's width: the cell's last character is
 // widened, so the columns line up without a single byte of the buffer moving.
@@ -106,6 +123,27 @@ qreal extraWidthAt(const QTextBlock &block, int position)
     if (format.fontLetterSpacingType() != QFont::AbsoluteSpacing)
         return 0.0;
     return format.fontLetterSpacing();
+}
+
+// The find/replace match wash. Read as "has any background at all" plus its
+// alpha, rather than against an exact QColor: the two match highlights differ
+// only in strength, and pinning the literal ARGB here would turn a palette
+// tweak into a test failure for no behavioral reason.
+//
+// Inline code carries a background of its own, so this cannot tell a code span
+// apart from a match — the scenarios below only ask it about plain or
+// emphasized text, never a code span.
+int searchHighlightAlphaAt(const QTextBlock &block, int position)
+{
+    const QBrush background = formatAt(block, position).background();
+    if (background.style() == Qt::NoBrush)
+        return 0;
+    return background.color().alpha();
+}
+
+bool isSearchHighlightedAt(const QTextBlock &block, int position)
+{
+    return searchHighlightAlphaAt(block, position) > 0;
 }
 
 }
@@ -454,8 +492,7 @@ SCENARIO("A checkbox collapses to a single drawn control, and a numbered marker 
             {
                 // "- [ ] todo": the "[" at index 2 is the reserved slot the
                 // drawn checkbox lands in; "- " before it and " ]" after it
-                // disappear entirely, leaving a control exactly one column
-                // wide — the same width a bullet gets, so mixed lists line up.
+                // disappear entirely, leaving a control exactly one column wide.
                 for (const int blockNumber : {1, 2}) {
                     const QTextBlock item = doc.findBlockByNumber(blockNumber);
                     CHECK(isCollapsedMarkerAt(item, 0));
@@ -469,6 +506,80 @@ SCENARIO("A checkbox collapses to a single drawn control, and a numbered marker 
             THEN("the item text after a checkbox marker is left unstyled")
             {
                 CHECK_FALSE(isRevealedMarkerAt(doc.findBlockByNumber(1), 6));
+            }
+
+            THEN("a checkbox's slot is wider than a bullet's, because its control is bigger")
+            {
+                // Not an accident of which character each one reserves, and not
+                // free to drift: NoteWindow.qml draws the checkbox at a larger
+                // fraction of the line height than the bullet's dot (feature
+                // request: "the display for checkboxes should be a little
+                // bigger"), and centres it in exactly this slot. The slot starts
+                // at the editor's left edge, so a control wider than its slot
+                // does not overhang — its left half is clipped off. This is the
+                // C++ half of that pairing; NoteWindow.qml's checkboxSize is the
+                // other, and it clamps to the slot so the two can never disagree
+                // badly enough to draw half a checkbox.
+                QTextDocument mixed;
+                mixed.setPlainText("- bullet\n- [ ] todo");
+                MarkdownHighlighter mixedHighlighter(&mixed);
+                highlightNow(mixedHighlighter);
+
+                const qreal bulletSlot = slotPercentAt(mixed.findBlockByNumber(0), 0);
+                const qreal checkboxSlot = slotPercentAt(mixed.findBlockByNumber(1), 2);
+                CHECK(bulletSlot > 100.0);
+                CHECK(checkboxSlot > bulletSlot);
+            }
+        }
+    }
+}
+
+SCENARIO("Collapsing a marker never sends Qt hunting through every font on the system",
+         "[markdown_highlighter]")
+{
+    // A performance guarantee, pinned by a test because the cost was invisible
+    // in the output and enormous in practice: this exact format froze the whole
+    // UI for ~5.8 SECONDS the first time it was applied in a session, which is
+    // what a user saw as "the first time you add a checkbox list or table, the
+    // notes ui is frozen" (a checkbox and a table's delimiter row are the first
+    // two things most notes collapse). A collapsed marker's point size rounds to
+    // a pixel size of zero, at which no font can produce a glyph — so Qt decided
+    // every character was missing and walked the entire fallback chain, loading
+    // every font family installed, before giving up. QFontCache then held the
+    // answer, which is why only the FIRST one in a session was slow and every
+    // one after it was instant.
+    //
+    // Nothing about the rendered result depends on this flag; the marker is
+    // transparent and zero-width either way. Delete it and the tests still all
+    // pass — they just take six seconds longer, and so does the app.
+    GIVEN("markers that get collapsed: a checkbox's syntax and a table's delimiter row")
+    {
+        QTextDocument doc;
+        doc.setPlainText("- [ ] todo\n\n| a | b |\n| --- | --- |\n| 1 | 2 |");
+
+        WHEN("a MarkdownHighlighter is attached")
+        {
+            MarkdownHighlighter highlighter(&doc);
+            highlightNow(highlighter);
+
+            THEN("the collapsed characters ask Qt not to look for a fallback font")
+            {
+                const QTextBlock checkbox = doc.findBlockByNumber(0);
+                REQUIRE(isCollapsedMarkerAt(checkbox, 0));
+                CHECK(hasFontFallbackDisabledAt(checkbox, 0));
+                CHECK(hasFontFallbackDisabledAt(checkbox, 3));
+
+                const QTextBlock delimiter = doc.findBlockByNumber(3);
+                REQUIRE(isCollapsedMarkerAt(delimiter, 0));
+                CHECK(hasFontFallbackDisabledAt(delimiter, 0));
+            }
+
+            THEN("the slot held open for a drawn control still keeps its real size")
+            {
+                // The opt-out belongs to collapsed text only. A reserved slot is
+                // invisible but full-width, so its character is still measured
+                // — and still resolves through the ordinary font path.
+                CHECK_FALSE(hasFontFallbackDisabledAt(doc.findBlockByNumber(0), 2));
             }
         }
     }
@@ -702,6 +813,301 @@ SCENARIO("Highlighting never writes a block format", "[markdown_highlighter]")
                     CHECK(format.leftMargin() == 0);
                     CHECK(format.textIndent() == 0);
                 }
+            }
+        }
+    }
+}
+
+// --- Find/replace match highlighting -------------------------------------
+// Why these live in the MARKDOWN highlighter's tests: two QSyntaxHighlighters
+// on one document erase each other's formats rather than composing, so the
+// find/replace panel's match highlighting has to be applied by the same class
+// that paints markdown, or one of the two would win and the other would vanish.
+// See MarkdownHighlighter's header.
+//
+// Note what none of these scenarios do: rehighlight() after setSearchMatches().
+// That is the point — setSearchMatches() repaints the affected lines itself, so
+// the highlight appears the moment the panel pushes it, with no edit and no
+// document-wide pass to trigger it.
+
+SCENARIO("Every occurrence of the search term is highlighted at once", "[markdown_highlighter]")
+{
+    GIVEN("a line containing the same word twice, already styled")
+    {
+        QTextDocument doc;
+        doc.setPlainText("find me and find me again");
+        MarkdownHighlighter highlighter(&doc);
+        highlightNow(highlighter);
+
+        WHEN("the find panel pushes both matches, with the second one current")
+        {
+            highlighter.setSearchMatches({{0, 4}, {12, 16}}, 1);
+            const QTextBlock block = doc.begin();
+
+            THEN("both occurrences are highlighted, not only the current one")
+            {
+                for (int i = 0; i < 4; ++i)
+                    CHECK(isSearchHighlightedAt(block, i));
+                for (int i = 12; i < 16; ++i)
+                    CHECK(isSearchHighlightedAt(block, i));
+            }
+
+            THEN("the current match is highlighted more strongly than the rest")
+            {
+                CHECK(searchHighlightAlphaAt(block, 12) > searchHighlightAlphaAt(block, 0));
+            }
+
+            THEN("the text between and around the matches is left alone")
+            {
+                CHECK_FALSE(isSearchHighlightedAt(block, 4));
+                CHECK_FALSE(isSearchHighlightedAt(block, 8));
+                CHECK_FALSE(isSearchHighlightedAt(block, 24));
+            }
+        }
+
+        WHEN("the user steps to the next match")
+        {
+            highlighter.setSearchMatches({{0, 4}, {12, 16}}, 1);
+            highlighter.setSearchMatches({{0, 4}, {12, 16}}, 0);
+            const QTextBlock block = doc.begin();
+
+            THEN("the strong highlight moves with it, and the one it left drops back")
+            {
+                CHECK(searchHighlightAlphaAt(block, 0) > searchHighlightAlphaAt(block, 12));
+            }
+        }
+
+        WHEN("no match is current (the term matches nothing the panel is pointing at)")
+        {
+            highlighter.setSearchMatches({{0, 4}, {12, 16}}, -1);
+            const QTextBlock block = doc.begin();
+
+            THEN("every match still gets the plain highlight")
+            {
+                CHECK(isSearchHighlightedAt(block, 0));
+                CHECK(isSearchHighlightedAt(block, 12));
+                CHECK(searchHighlightAlphaAt(block, 0) == searchHighlightAlphaAt(block, 12));
+            }
+        }
+    }
+}
+
+SCENARIO("Closing the find panel takes every match highlight back off", "[markdown_highlighter]")
+{
+    GIVEN("a document with matches currently highlighted")
+    {
+        QTextDocument doc;
+        doc.setPlainText("find me and find me again");
+        MarkdownHighlighter highlighter(&doc);
+        highlightNow(highlighter);
+        highlighter.setSearchMatches({{0, 4}, {12, 16}}, 0);
+        REQUIRE(isSearchHighlightedAt(doc.begin(), 0));
+
+        WHEN("the panel clears them")
+        {
+            highlighter.setSearchMatches({}, -1);
+            const QTextBlock block = doc.begin();
+
+            THEN("nothing is left highlighted")
+            {
+                CHECK_FALSE(isSearchHighlightedAt(block, 0));
+                CHECK_FALSE(isSearchHighlightedAt(block, 12));
+            }
+        }
+    }
+}
+
+SCENARIO("A highlighted match keeps the markdown styling underneath it", "[markdown_highlighter]")
+{
+    GIVEN("a bold word and a heading, both containing the search term")
+    {
+        QTextDocument doc;
+        doc.setPlainText("say **find** here\n# find this");
+        MarkdownHighlighter highlighter(&doc);
+        highlightNow(highlighter);
+
+        WHEN("the term is highlighted in both places")
+        {
+            // "find" inside the bold span, and "find" in the heading text.
+            highlighter.setSearchMatches({{6, 10}, {20, 24}}, 0);
+            const QTextBlock boldBlock = doc.begin();
+            const QTextBlock headingBlock = doc.findBlockByNumber(1);
+
+            THEN("the bold word is highlighted AND still bold")
+            {
+                CHECK(isSearchHighlightedAt(boldBlock, 6));
+                CHECK(isBoldAt(boldBlock, 6));
+            }
+
+            THEN("the heading is highlighted AND still sized as a heading")
+            {
+                CHECK(isSearchHighlightedAt(headingBlock, 2));
+                CHECK(formatAt(headingBlock, 2).intProperty(QTextFormat::FontSizeAdjustment) == 3);
+            }
+        }
+    }
+}
+
+SCENARIO("A match spanning more than one line is highlighted on each of them", "[markdown_highlighter]")
+{
+    GIVEN("a two-line document")
+    {
+        QTextDocument doc;
+        doc.setPlainText("alpha\nbeta");
+        MarkdownHighlighter highlighter(&doc);
+        highlightNow(highlighter);
+
+        WHEN("a match runs from inside the first line into the second (a regex can)")
+        {
+            // "ha\nbe" — starts mid-"alpha", ends mid-"beta".
+            highlighter.setSearchMatches({{3, 8}}, 0);
+            const QTextBlock first = doc.begin();
+            const QTextBlock second = doc.findBlockByNumber(1);
+
+            THEN("the part on the first line is highlighted")
+            {
+                CHECK_FALSE(isSearchHighlightedAt(first, 2));
+                CHECK(isSearchHighlightedAt(first, 3));
+                CHECK(isSearchHighlightedAt(first, 4));
+            }
+
+            THEN("so is the part on the second, and no further")
+            {
+                CHECK(isSearchHighlightedAt(second, 0));
+                CHECK(isSearchHighlightedAt(second, 1));
+                CHECK_FALSE(isSearchHighlightedAt(second, 2));
+            }
+        }
+    }
+}
+
+SCENARIO("A match inside a table cell is highlighted like any other", "[markdown_highlighter]")
+{
+    GIVEN("a pipe table — a line the markdown pass styles whole and returns early from")
+    {
+        QTextDocument doc;
+        doc.documentLayout();
+        doc.setPlainText("| a | find |\n|---|---|\n| b | c |");
+        MarkdownHighlighter highlighter(&doc);
+        highlightNow(highlighter);
+
+        WHEN("the find panel pushes a match sitting in one of its cells")
+        {
+            highlighter.setSearchMatches({{6, 10}}, 0);
+            const QTextBlock headerRow = doc.begin();
+
+            THEN("the cell's text is highlighted, table row or not")
+            {
+                for (int i = 6; i < 10; ++i)
+                    CHECK(isSearchHighlightedAt(headerRow, i));
+            }
+
+            THEN("the rest of the row is not")
+            {
+                CHECK_FALSE(isSearchHighlightedAt(headerRow, 2));
+            }
+        }
+    }
+}
+
+// Code mode (feature request): a code note renders its buffer literally — in
+// code, "**" is an operator and "#" starts a comment, so live-preview
+// collapsing them hides real syntax. These document the gate that turns the
+// markdown pass off, and — the part with the sharp edge — exactly what the
+// gate does NOT cover.
+SCENARIO("The markdown pass can be switched off, leaving the text rendered literally",
+         "[markdown_highlighter]")
+{
+    GIVEN("a document with bold text and a heading")
+    {
+        QTextDocument doc;
+        doc.setPlainText("say **bold** here\n# a heading");
+        MarkdownHighlighter highlighter(&doc);
+        highlightNow(highlighter);
+
+        THEN("markdown decoration is on by default — an ordinary note is a markdown note")
+        {
+            CHECK(highlighter.markdownDecorationEnabled());
+        }
+
+        THEN("the markers collapse and the word renders bold, as normal")
+        {
+            const QTextBlock block = doc.begin();
+            CHECK(isCollapsedMarkerAt(block, 4));
+            CHECK(isBoldAt(block, 6));
+        }
+
+        WHEN("markdown decoration is switched off")
+        {
+            highlighter.setMarkdownDecorationEnabled(false);
+
+            THEN("it reports itself as off")
+            {
+                CHECK_FALSE(highlighter.markdownDecorationEnabled());
+            }
+
+            THEN("the asterisks are no longer collapsed — every character is shown as typed")
+            {
+                const QTextBlock block = doc.begin();
+                CHECK_FALSE(isCollapsedMarkerAt(block, 4));
+                CHECK_FALSE(isCollapsedMarkerAt(block, 5));
+            }
+
+            THEN("the word between them is no longer styled bold")
+            {
+                CHECK_FALSE(isBoldAt(doc.begin(), 6));
+            }
+
+            THEN("the heading is no longer enlarged")
+            {
+                const QTextBlock headingBlock = doc.findBlockByNumber(1);
+                CHECK(formatAt(headingBlock, 2).intProperty(QTextFormat::FontSizeAdjustment) == 0);
+            }
+
+            THEN("the buffer text itself is untouched — this only ever changed styling")
+            {
+                CHECK(doc.toPlainText() == "say **bold** here\n# a heading");
+            }
+        }
+
+        WHEN("markdown decoration is switched off and then back on")
+        {
+            highlighter.setMarkdownDecorationEnabled(false);
+            highlighter.setMarkdownDecorationEnabled(true);
+
+            THEN("the formatting comes back without needing an edit to trigger it")
+            {
+                const QTextBlock block = doc.begin();
+                CHECK(isCollapsedMarkerAt(block, 4));
+                CHECK(isBoldAt(block, 6));
+            }
+        }
+    }
+}
+
+SCENARIO("Find/replace highlighting keeps working with the markdown pass off",
+         "[markdown_highlighter]")
+{
+    GIVEN("a code note — markdown decoration off — containing a search term twice")
+    {
+        QTextDocument doc;
+        doc.setPlainText("int find = 1;\n// find it");
+        MarkdownHighlighter highlighter(&doc);
+        highlighter.setMarkdownDecorationEnabled(false);
+        highlightNow(highlighter);
+
+        WHEN("both occurrences are highlighted")
+        {
+            highlighter.setSearchMatches({{4, 8}, {17, 21}}, 0);
+
+            THEN("both are still highlighted — searching a code note is exactly as useful")
+            {
+                // The gate covers the markdown pass alone. Skipping the whole
+                // of highlightBlock() instead would silently break find in
+                // every code note, which is why this is asserted separately
+                // from the markdown assertions above.
+                CHECK(isSearchHighlightedAt(doc.begin(), 4));
+                CHECK(isSearchHighlightedAt(doc.findBlockByNumber(1), 3));
             }
         }
     }
