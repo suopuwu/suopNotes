@@ -412,9 +412,6 @@ Window {
     readonly property alias italicButtonTip: italicButtonTip
     readonly property alias strikethroughButtonTip: strikethroughButtonTip
     readonly property alias insertTableButton: insertTableButton
-    readonly property alias cutButton: cutButton
-    readonly property alias copyButton: copyButton
-    readonly property alias pasteButton: pasteButton
     readonly property alias columnOptionsPopup: columnOptionsPopup
     readonly property alias spellingSuggestionsPopup: spellingSuggestionsPopup
     readonly property alias addToDictionaryButton: addToDictionaryButton
@@ -439,22 +436,21 @@ Window {
     // hover/press highlight clip against the window's edge.
     readonly property int barThickness: 36
     readonly property int buttonSize: 32
-    // gripHandle (9) + 2 dividers (1 each, one before the formatting/table
-    // buttons, one before cut/copy/paste) + 12 buttons * buttonSize (384)
-    // + 14 gaps * spacing (28), plus a little breathing room so nothing
-    // sits flush against background's rounded corners. Bugfix: previously
-    // computed with only ONE divider (466, before cut/copy/paste got
-    // their own divider — see nonButtonChildCount's own fix below) — a
-    // window a few px narrower than its actual content, silently clipping
-    // the rightmost buttons' hit-test region outside the real window
-    // surface (confirmed as the explanation for reported missing tooltips
-    // and unreliable clicks on the last button(s) in the row). Kept even
-    // (436, not the bare-minimum 435): reposition()'s own centering math
-    // divides this by 2, and window positioning rounds to whole pixels —
-    // an odd barLength surfaced a half-pixel mismatch against that
-    // rounding (confirmed empirically), which an even value sidesteps
-    // entirely rather than chasing down exactly where the rounding happens.
-    readonly property int barLength: 436
+    // gripHandle (9) + 1 divider (1, inside the drag-handle group before
+    // the formatting/table buttons) + 9 buttons * buttonSize (288) + 10
+    // gaps * spacing (20), plus a little breathing room so nothing sits
+    // flush against background's rounded corners. A window a few px
+    // narrower than its actual content silently clips the rightmost
+    // buttons' hit-test region outside the real window surface (confirmed
+    // historically as the explanation for reported missing tooltips and
+    // unreliable clicks on the last button(s) in the row), so this stays
+    // comfortably above content's ~330px implicit width. Kept even (340,
+    // not an odd value): reposition()'s own centering math divides this by
+    // 2, and window positioning rounds to whole pixels — an odd barLength
+    // surfaced a half-pixel mismatch against that rounding (confirmed
+    // empirically), which an even value sidesteps entirely rather than
+    // chasing down exactly where the rounding happens.
+    readonly property int barLength: 340
 
     // The grip + dividers always stay in the toolbar's first line/column
     // regardless of button count — only the buttons themselves wrap once
@@ -471,9 +467,13 @@ Window {
     // clipped. Grow barThickness/barLength to a real multi-line size
     // alongside this if button count ever needs to cross it for real.
     readonly property int maxButtonsBeforeWrap: 15
-    // gripHandle + the two dividers (bugfix: was 2, undercounting the
-    // second divider added alongside cut/copy/paste).
-    readonly property int nonButtonChildCount: 3
+    // gripHandle + its divider (both bundled into the one drag-handle-group
+    // child that leads the layout). Counted a touch generously — the actual
+    // non-button grid child count is just that single group — but an
+    // over-count only widens the pre-wrap allowance, which is harmless
+    // (wrapping has never been exercised; see maxButtonsBeforeWrap), whereas
+    // an under-count would wrap prematurely.
+    readonly property int nonButtonChildCount: 2
 
     // True once a note has been placed to its left or right (column
     // layout); false for above/below (row layout, the default) — set by
@@ -1152,10 +1152,10 @@ Window {
         anchors.centerIn: parent
         // flow/columns/rows (not a plain fixed `columns: children.length`):
         // wraps once there are more than maxButtonsBeforeWrap *buttons*
-        // (feature request), while the grip+divider — always the first two
-        // children — stay on the toolbar's first line/column regardless
-        // (see nonButtonChildCount's own comment). -1 tells GridLayout to
-        // compute that dimension automatically from the other one.
+        // (feature request), while the drag-handle group (grip + divider) —
+        // always the first child — stays on the toolbar's first line/column
+        // regardless (see nonButtonChildCount's own comment). -1 tells
+        // GridLayout to compute that dimension automatically from the other.
         flow: bar.isVertical ? GridLayout.TopToBottom : GridLayout.LeftToRight
         columns: bar.isVertical ? -1 : (bar.maxButtonsBeforeWrap + bar.nonButtonChildCount)
         rows: bar.isVertical ? (bar.maxButtonsBeforeWrap + bar.nonButtonChildCount) : -1
@@ -1322,63 +1322,6 @@ Window {
                 text: "Insert Table"
                 suppressed: bar.noteWindow ? bar.noteWindow.currentInTable : false
             }
-        }
-
-        // Cut/copy/paste (feature request): replace the removed right-click
-        // context menu (see NoteWindow.qml's mouseDragArea, which used to
-        // open one on a plain right-click) — that menu's MouseArea-vs-
-        // TextInput event arbitration kept proving unreliable live, so
-        // exposing the same three actions as ordinary toolbar buttons is
-        // simpler and just works like every other button here.
-        Rectangle {
-            implicitWidth: bar.isVertical ? 18 : 1
-            implicitHeight: bar.isVertical ? 1 : 18
-            color: Qt.rgba(1, 1, 1, 0.15)
-            Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
-            Layout.leftMargin: bar.isVertical ? 0 : 4
-            Layout.topMargin: bar.isVertical ? 4 : 0
-        }
-
-        ToolButton {
-            id: cutButton
-            implicitWidth: bar.buttonSize
-            implicitHeight: bar.buttonSize
-            Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
-            background: ToolbarButtonHighlight {}
-            hoverEnabled: true
-            contentItem: ToolbarSvgIcon {
-                path: "M9.64 7.64c.23-.5.36-1.05.36-1.64 0-2.21-1.79-4-4-4S2 3.79 2 6s1.79 4 4 4c.59 0 1.14-.13 1.64-.36L10 12l-2.36 2.36C7.14 14.13 6.59 14 6 14c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4c0-.59-.13-1.14-.36-1.64L12 14l7 7h3v-1L9.64 7.64zM6 8c-1.1 0-2-.89-2-2s.9-2 2-2 2 .89 2 2-.9 2-2 2zm0 12c-1.1 0-2-.89-2-2s.9-2 2-2 2 .89 2 2-.9 2-2 2zm6-7.5c-.28 0-.5-.22-.5-.5s.22-.5.5-.5.5.22.5.5-.22.5-.5.5z"
-            }
-            enabled: bar.noteWindow ? bar.noteWindow.editor.selectionStart !== bar.noteWindow.editor.selectionEnd : false
-            onClicked: bar.runAction(() => bar.noteWindow.editor.cut())
-            ToolbarButtonTip { text: "Cut" }
-        }
-        ToolButton {
-            id: copyButton
-            implicitWidth: bar.buttonSize
-            implicitHeight: bar.buttonSize
-            Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
-            background: ToolbarButtonHighlight {}
-            hoverEnabled: true
-            contentItem: ToolbarSvgIcon {
-                path: "M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"
-            }
-            onClicked: bar.runAction(() => bar.noteWindow.performCopy())
-            ToolbarButtonTip { text: "Copy" }
-        }
-        ToolButton {
-            id: pasteButton
-            implicitWidth: bar.buttonSize
-            implicitHeight: bar.buttonSize
-            Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
-            background: ToolbarButtonHighlight {}
-            hoverEnabled: true
-            contentItem: ToolbarSvgIcon {
-                path: "M19 2h-4.18C14.4.84 13.3 0 12 0c-1.3 0-2.4.84-2.82 2H5c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-7 0c.55 0 1 .45 1 1s-.45 1-1 1-1-.45-1-1 .45-1 1-1zm7 18H5V4h2v3h10V4h2v16z"
-            }
-            enabled: bar.noteWindow ? bar.noteWindow.editor.canPaste : false
-            onClicked: bar.runAction(() => bar.noteWindow.editor.paste())
-            ToolbarButtonTip { text: "Paste" }
         }
     }
 

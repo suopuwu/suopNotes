@@ -280,6 +280,38 @@ Item {
             verify(dialog.codeModeDisablesSpellcheckCheckBox.enabled)
         }
 
+        // "Launch on login" is backed by AutostartManager (the on-disk
+        // autostart .desktop file), exposed to QML as the `autostart` context
+        // property — NOT by settings.*, so the checkbox mirrors that object.
+        function test_launch_on_login_checkbox_mirrors_the_autostart_enabled_state() {
+            autostart.enabled = false
+            compare(dialog.launchOnLoginCheckBox.checked, false)
+
+            autostart.enabled = true
+            compare(dialog.launchOnLoginCheckBox.checked, true)
+
+            autostart.enabled = false
+        }
+
+        function test_launch_on_login_checkbox_is_shown_only_where_autostart_is_available() {
+            compare(dialog.launchOnLoginCheckBox.visible, autostart.available)
+        }
+
+        // Declared after the reflection test above on purpose: driving the
+        // checkbox imperatively breaks its `checked: autostart.enabled`
+        // binding for the shared dialog instance, so the mirror test must
+        // observe the intact binding first.
+        function test_toggling_launch_on_login_enables_autostart_through_the_manager() {
+            autostart.enabled = false
+
+            dialog.launchOnLoginCheckBox.checked = true
+            dialog.launchOnLoginCheckBox.toggled()
+
+            compare(autostart.enabled, true)
+
+            autostart.enabled = false
+        }
+
         function test_clicking_remove_on_a_words_row_removes_it_from_the_setting_and_shrinks_the_repeater() {
             settings.addUserDictionaryWord("zaphod")
             var countBefore = dialog.userDictionaryWordsRepeater.count

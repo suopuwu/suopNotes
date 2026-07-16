@@ -17,6 +17,7 @@ qt_add_executable(suopNotes_unit_tests
     test_markdown_list.cpp
     test_markdown_table.cpp
     test_kwin_rule_writer.cpp
+    test_autostart_manager.cpp
     test_position_event_service.cpp
     test_note_appearance.cpp
     test_single_instance_guard.cpp

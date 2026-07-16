@@ -4,6 +4,7 @@
 #include <QTemporaryDir>
 #include <QtQuickTest/quicktest.h>
 
+#include "core/AutostartManager.h"
 #include "core/BlurEffect.h"
 #include "core/DocumentHandler.h"
 #include "core/EditorDragFilter.h"
@@ -33,6 +34,11 @@ public:
     Setup()
         : m_settings(m_tempDir.path() + QStringLiteral("/settings.ini"))
         , m_openNotesModel(&m_settings)
+        // Point autostart at a temp dir with a dummy exec path so any QML test
+        // that toggles "Launch on login" writes there, never the tester's real
+        // ~/.config/autostart.
+        , m_autostartManager(m_tempDir.path() + QStringLiteral("/autostart"),
+                             m_tempDir.path() + QStringLiteral("/suopNotes"))
     {
         qmlRegisterType<DocumentHandler>("SuopNotesUi", 1, 0, "DocumentHandler");
         qmlRegisterType<NoteAppearance>("SuopNotesUi", 1, 0, "NoteAppearance");
@@ -49,6 +55,7 @@ public slots:
         engine->rootContext()->setContextProperty("noteStore", &m_noteStore);
         engine->rootContext()->setContextProperty("openNotesModel", &m_openNotesModel);
         engine->rootContext()->setContextProperty("positionManager", &m_positionManager);
+        engine->rootContext()->setContextProperty("autostart", &m_autostartManager);
     }
 
 private:
@@ -59,6 +66,7 @@ private:
     NoteStore m_noteStore;
     OpenNotesModel m_openNotesModel;
     PositionManager m_positionManager;
+    AutostartManager m_autostartManager;
 };
 
 QUICK_TEST_MAIN_WITH_SETUP(suopNotesQml, Setup)

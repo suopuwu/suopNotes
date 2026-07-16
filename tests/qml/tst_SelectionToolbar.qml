@@ -1135,69 +1135,6 @@ Item {
                     "strikethrough was never applied, so its button should not be checked")
         }
 
-        // Feature request: cut/copy/paste toolbar buttons replace the
-        // removed right-click context menu (see NoteWindow.qml's
-        // mouseDragArea, which used to open one on a plain right-click).
-        function test_cut_button_disabled_without_a_selection_enabled_with_one() {
-            noteA.docHandler.setMarkdown("hello world")
-            wait(50)
-            noteA.editor.cursorPosition = 0
-            noteA.editor.deselect()
-
-            bar.noteWindow = noteA
-            wait(80)
-
-            compare(bar.cutButton.enabled, false, "Cut should be disabled with no selection")
-
-            noteA.editor.select(0, 5)
-            wait(80)
-
-            compare(bar.cutButton.enabled, true, "Cut should be enabled once text is selected")
-        }
-
-        function test_clicking_cut_removes_the_selected_text_and_copies_it_to_the_clipboard() {
-            noteA.docHandler.setMarkdown("hello world")
-            wait(50)
-            noteA.editor.select(0, 5)
-
-            bar.noteWindow = noteA
-            wait(80)
-
-            mouseClick(bar.cutButton, bar.cutButton.width / 2, bar.cutButton.height / 2)
-
-            verify(noteA.editor.text.startsWith(" world"),
-                   "expected \"hello\" to be cut, leaving \" world\": " + noteA.editor.text)
-
-            noteA.editor.cursorPosition = noteA.editor.length
-            mouseClick(bar.pasteButton, bar.pasteButton.width / 2, bar.pasteButton.height / 2)
-
-            verify(noteA.editor.text.indexOf("hello") !== -1,
-                   "cut should have copied the removed text to the clipboard, pasteable afterward")
-        }
-
-        function test_clicking_copy_then_paste_round_trips_the_selection() {
-            noteA.docHandler.setMarkdown("copy me")
-            wait(50)
-            noteA.editor.select(0, "copy me".length)
-
-            bar.noteWindow = noteA
-            wait(80)
-
-            mouseClick(bar.copyButton, bar.copyButton.width / 2, bar.copyButton.height / 2)
-
-            noteA.editor.cursorPosition = noteA.editor.length
-            mouseClick(bar.pasteButton, bar.pasteButton.width / 2, bar.pasteButton.height / 2)
-
-            // Not asserting on exact surrounding text: this app's editor
-            // round-trips its content through markdown serialization (see
-            // MarkdownSerialization.cpp), which can normalize whitespace
-            // unrelated to copy/paste itself — counting occurrences of the
-            // copied text is what actually proves paste worked.
-            const occurrences = noteA.editor.text.split("copy me").length - 1
-            compare(occurrences, 2,
-                    "pasting after copy should reinsert the exact text that was selected, alongside the original")
-        }
-
         // Bug found live ("becomes visible before the position changes,
         // leading to bad UX"): the popup used to reveal its content the
         // INSTANT wantsVisible went true, before positionManager.

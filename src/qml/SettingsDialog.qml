@@ -22,6 +22,7 @@ ApplicationWindow {
     readonly property alias codeModeDisablesMarkdownCheckBox: codeModeDisablesMarkdownCheckBox
     readonly property alias codeModeDisablesAutoFormattingCheckBox: codeModeDisablesAutoFormattingCheckBox
     readonly property alias codeModeDisablesSpellcheckCheckBox: codeModeDisablesSpellcheckCheckBox
+    readonly property alias launchOnLoginCheckBox: launchOnLoginCheckBox
 
     title: "suopNotes Settings"
     width: 400
@@ -315,6 +316,22 @@ ApplicationWindow {
                 text: "Always show note controls (pin/settings/close)"
                 checked: settings.hudAlwaysExpanded
                 onToggled: settings.hudAlwaysExpanded = checked
+            }
+
+            CheckBox {
+                id: launchOnLoginCheckBox
+                text: "Launch on login"
+                // Hidden (not just disabled) off Linux, where there's no XDG
+                // autostart directory to write to — a dead control would only
+                // mislead. Its slot below also collapses the row when hidden
+                // so it leaves no gap in the layout.
+                visible: autostart.available
+                height: visible ? implicitHeight : 0
+                // Not bound to settings.* — this reflects the on-disk autostart
+                // .desktop file directly (see AutostartManager), which is also
+                // what KDE's own Autostart page toggles, so the two never drift.
+                checked: autostart.enabled
+                onToggled: autostart.enabled = checked
             }
 
             // Code mode (feature request). The first checkbox is the global

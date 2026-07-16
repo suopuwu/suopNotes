@@ -4,6 +4,7 @@
 #include <QQmlEngine>
 #include <QSurfaceFormat>
 
+#include "core/AutostartManager.h"
 #include "core/BlurEffect.h"
 #include "core/DocumentHandler.h"
 #include "core/EditorDragFilter.h"
@@ -90,6 +91,7 @@ int main(int argc, char *argv[])
     WindowInputMask windowInputMask;
     PositionManager positionManager;
     PositionEventService positionEventService(settings);
+    AutostartManager autostartManager;
 
     // A replace-quit isn't the user closing these notes (see
     // PositionManager::suppressCleanupOnQuit) — must be set before app.quit()
@@ -111,6 +113,7 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty("blurEffect", &blurEffect);
     engine.rootContext()->setContextProperty("windowInputMask", &windowInputMask);
     engine.rootContext()->setContextProperty("positionManager", &positionManager);
+    engine.rootContext()->setContextProperty("autostart", &autostartManager);
     engine.addImageProvider(QStringLiteral("notecount"), new TrayIconProvider);
 
     engine.loadFromModule("SuopNotesUi", "Main");
