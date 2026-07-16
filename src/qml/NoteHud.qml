@@ -399,8 +399,8 @@ Rectangle {
     // are the test surface; there can only be one of each). Centered in the
     // chip either way: in horizontal mode chip width is content + 12, so
     // centering leaves the same ~6px each side the old right-anchor+6 margin
-    // did; close still ends up last (rightmost / bottommost) since it's the
-    // final child.
+    // did. Glyph order is close, search, duplicate, gear, pin (reversed —
+    // see the first child's comment), so close leads rather than trails.
     GridLayout {
         id: hudRow
         visible: hud.expanded
@@ -428,122 +428,12 @@ Rectangle {
         // glyph's own tiny text bounds — is interactive; the Text
         // keeps its own id/objectName/color/opacity bindings unchanged, so
         // existing tests reading e.g. `pinGlyphItem.color` are unaffected.
-        Item {
-            implicitWidth: 22
-            implicitHeight: 22
-            Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
-
-            InteractableHighlight {
-                anchors.fill: parent
-                active: pinHov.hovered
-            }
-
-            // "⚲" not the pushpin emoji "📌" — the reference file
-            // (TileGridHud) notes the pushpin emoji renders in fixed color
-            // regardless of the font, ignoring any `color:` binding
-            // entirely and silently breaking an on/off color indicator.
-            // "⚲" is plain-presentation and actually responds to it.
-            Text {
-                id: pinGlyph
-                objectName: "pinGlyph"
-                text: "⚲"
-                font.pixelSize: 14
-                color: hud.pinned ? hud.accentColor : hud.iconColor
-                opacity: pinHov.hovered ? 1.0 : 0.7
-                anchors.centerIn: parent
-                Behavior on opacity { NumberAnimation { duration: 120 } }
-            }
-
-            HoverHandler { id: pinHov; cursorShape: Qt.PointingHandCursor }
-            TapHandler { onTapped: hud.pinToggleRequested() }
-        }
-
-        Item {
-            implicitWidth: 22
-            implicitHeight: 22
-            Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
-
-            InteractableHighlight {
-                anchors.fill: parent
-                active: gearHov.hovered
-            }
-
-            Text {
-                id: gearGlyph
-                objectName: "gearGlyph"
-                text: "⚙"
-                font.pixelSize: 16
-                color: hud.iconColor
-                opacity: gearHov.hovered ? 1.0 : 0.7
-                anchors.centerIn: parent
-                Behavior on opacity { NumberAnimation { duration: 120 } }
-            }
-
-            HoverHandler { id: gearHov; cursorShape: Qt.PointingHandCursor }
-            TapHandler { onTapped: hud.settingsRequested() }
-        }
-
-        Item {
-            implicitWidth: 22
-            implicitHeight: 22
-            Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
-
-            InteractableHighlight {
-                anchors.fill: parent
-                active: duplicateHov.hovered
-            }
-
-            // "⧉" for the same reason "⚲" is used for pin above rather than
-            // an emoji: it's plain-presentation, so it actually honors the
-            // `color` binding below instead of rendering in a fixed emoji
-            // color and ignoring it.
-            Text {
-                id: duplicateGlyph
-                objectName: "duplicateGlyph"
-                text: "⧉"
-                font.pixelSize: 16
-                color: hud.iconColor
-                opacity: duplicateHov.hovered ? 1.0 : 0.7
-                anchors.centerIn: parent
-                Behavior on opacity { NumberAnimation { duration: 120 } }
-            }
-
-            HoverHandler { id: duplicateHov; cursorShape: Qt.PointingHandCursor }
-            TapHandler { onTapped: hud.duplicateRequested() }
-        }
-
-        Item {
-            implicitWidth: 22
-            implicitHeight: 22
-            Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
-
-            InteractableHighlight {
-                anchors.fill: parent
-                active: searchHov.hovered
-            }
-
-            // "⌕" for the same reason "⚲"/"⧉" are used above rather than
-            // the 🔍 emoji: plain-presentation, so it honors the `color`
-            // binding instead of rendering in fixed emoji color.
-            Text {
-                id: searchGlyph
-                objectName: "searchGlyph"
-                text: "⌕"
-                font.pixelSize: 16
-                color: hud.iconColor
-                opacity: searchHov.hovered ? 1.0 : 0.7
-                anchors.centerIn: parent
-                Behavior on opacity { NumberAnimation { duration: 120 } }
-            }
-
-            HoverHandler { id: searchHov; cursorShape: Qt.PointingHandCursor }
-            TapHandler { onTapped: hud.searchRequested() }
-        }
-
-        // Rightmost, matching the reference ribbon's own convention of
-        // putting close last. Deleting a note's file can't be undone, so
-        // this requires two taps (arm, then confirm) rather than firing
-        // closeRequested() on the first — see closeArmTimeoutMs above.
+        // Glyph order was reversed (feature request): the sequence now runs
+        // close, search, duplicate, gear, pin — so close is FIRST (topmost in
+        // the vertical column / leftmost in the horizontal row). Close leading
+        // rather than trailing is safe: a stray click can't land past the start
+        // of the row any more than past its end, and deletion's real safeguard
+        // is the two-tap arm/confirm below regardless of where close sits.
         Item {
             implicitWidth: 22
             implicitHeight: 22
@@ -578,6 +468,118 @@ Rectangle {
                     }
                 }
             }
+        }
+
+        Item {
+            implicitWidth: 22
+            implicitHeight: 22
+            Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
+
+            InteractableHighlight {
+                anchors.fill: parent
+                active: searchHov.hovered
+            }
+
+            // "⌕" for the same reason "⚲"/"⧉" are used below rather than
+            // the 🔍 emoji: plain-presentation, so it honors the `color`
+            // binding instead of rendering in fixed emoji color.
+            Text {
+                id: searchGlyph
+                objectName: "searchGlyph"
+                text: "⌕"
+                font.pixelSize: 16
+                color: hud.iconColor
+                opacity: searchHov.hovered ? 1.0 : 0.7
+                anchors.centerIn: parent
+                Behavior on opacity { NumberAnimation { duration: 120 } }
+            }
+
+            HoverHandler { id: searchHov; cursorShape: Qt.PointingHandCursor }
+            TapHandler { onTapped: hud.searchRequested() }
+        }
+
+        Item {
+            implicitWidth: 22
+            implicitHeight: 22
+            Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
+
+            InteractableHighlight {
+                anchors.fill: parent
+                active: duplicateHov.hovered
+            }
+
+            // "⧉" for the same reason "⚲" is used for pin below rather than
+            // an emoji: it's plain-presentation, so it actually honors the
+            // `color` binding below instead of rendering in a fixed emoji
+            // color and ignoring it.
+            Text {
+                id: duplicateGlyph
+                objectName: "duplicateGlyph"
+                text: "⧉"
+                font.pixelSize: 16
+                color: hud.iconColor
+                opacity: duplicateHov.hovered ? 1.0 : 0.7
+                anchors.centerIn: parent
+                Behavior on opacity { NumberAnimation { duration: 120 } }
+            }
+
+            HoverHandler { id: duplicateHov; cursorShape: Qt.PointingHandCursor }
+            TapHandler { onTapped: hud.duplicateRequested() }
+        }
+
+        Item {
+            implicitWidth: 22
+            implicitHeight: 22
+            Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
+
+            InteractableHighlight {
+                anchors.fill: parent
+                active: gearHov.hovered
+            }
+
+            Text {
+                id: gearGlyph
+                objectName: "gearGlyph"
+                text: "⚙"
+                font.pixelSize: 16
+                color: hud.iconColor
+                opacity: gearHov.hovered ? 1.0 : 0.7
+                anchors.centerIn: parent
+                Behavior on opacity { NumberAnimation { duration: 120 } }
+            }
+
+            HoverHandler { id: gearHov; cursorShape: Qt.PointingHandCursor }
+            TapHandler { onTapped: hud.settingsRequested() }
+        }
+
+        Item {
+            implicitWidth: 22
+            implicitHeight: 22
+            Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
+
+            InteractableHighlight {
+                anchors.fill: parent
+                active: pinHov.hovered
+            }
+
+            // "⚲" not the pushpin emoji "📌" — the reference file
+            // (TileGridHud) notes the pushpin emoji renders in fixed color
+            // regardless of the font, ignoring any `color:` binding
+            // entirely and silently breaking an on/off color indicator.
+            // "⚲" is plain-presentation and actually responds to it.
+            Text {
+                id: pinGlyph
+                objectName: "pinGlyph"
+                text: "⚲"
+                font.pixelSize: 14
+                color: hud.pinned ? hud.accentColor : hud.iconColor
+                opacity: pinHov.hovered ? 1.0 : 0.7
+                anchors.centerIn: parent
+                Behavior on opacity { NumberAnimation { duration: 120 } }
+            }
+
+            HoverHandler { id: pinHov; cursorShape: Qt.PointingHandCursor }
+            TapHandler { onTapped: hud.pinToggleRequested() }
         }
     }
 

@@ -120,15 +120,24 @@ Window {
         positionManager.moveWindow(win.title, pt.x, pt.y)
     }
 
-    // Mirrors the hovered note's own compositor blur-behind, gated on actually
-    // showing content (wantsVisible) so a parked-but-still-mapped window isn't
-    // left blurred — same gate columnOptionsPopup's own updateBlur() uses. The
-    // blur region's corner radius follows the note's window radius, matching
-    // the ribbon chip's own cornerRadius below.
+    // Compositor blur-behind is ALWAYS on while the ribbon is showing (feature
+    // request: the ribbon should read as glass regardless of the hovered note's
+    // own blur toggle — unlike the toolbar, which mirrors the note). Gated on
+    // noteWindow !== null, computed fresh here rather than read off the
+    // `wantsVisible` property — bugfix: updateBlur() is called synchronously
+    // from onNoteWindowChanged below, which is the handler for the very
+    // property `wantsVisible` derives from, and QML does not guarantee that
+    // binding has already re-evaluated to its new value by the time a
+    // same-signal handler's body runs (this is the identical race
+    // onNoteWindowChanged's own `tracking` local already works around for
+    // ribbon.visible — see its comment). Reading the stale `wantsVisible`
+    // here left blur ON, with ribbon.visible already false and the park still
+    // in flight, for a real observed window: a blurred, icon-less ghost of
+    // the chip floating at the note's last hover spot instead of the ribbon
+    // being fully hidden. The blur region's corner radius follows the note's
+    // window radius, matching the ribbon chip's own cornerRadius below.
     function updateBlur() {
-        blurEffect.applyTo(hudWindow,
-            wantsVisible && hudWindow.noteWindow ? hudWindow.noteWindow.noteAppearance.blurEnabled : false,
-            ribbon.cornerRadius)
+        blurEffect.applyTo(hudWindow, hudWindow.noteWindow !== null, ribbon.cornerRadius)
     }
 
     // Re-derives the blur region and self-corrects a platform geometry clobber
@@ -154,15 +163,6 @@ Window {
         updateBlur()
         if (hudWindow.wantsVisible)
             repositionDebounce.restart()
-    }
-
-    // Re-applies blur if the hovered note's own blur toggle flips while still
-    // hovered (reachable via its per-note settings popup) — mirrors the
-    // toolbar's identical Connections block. A plain target binding re-targets
-    // itself as noteWindow changes, including to null (goes inert).
-    Connections {
-        target: hudWindow.noteWindow ? hudWindow.noteWindow.noteAppearance : null
-        function onBlurEnabledChanged() { hudWindow.updateBlur() }
     }
 
     // Re-anchors to the note whenever its geometry or screen changes — a

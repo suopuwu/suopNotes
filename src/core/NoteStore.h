@@ -55,6 +55,17 @@ public:
     Q_INVOKABLE void deleteNote(const QString &id);
     Q_INVOKABLE void saveNoteContent(const QString &id, const QString &markdownText);
 
+    // Copies an image (a local path or a file:// URL, e.g. from a drag-and-drop
+    // or a file dialog) into an "img/" subfolder of the notes folder and returns
+    // the note-relative path to reference it by ("img/<name>"), or an empty
+    // string on failure. The name is kept human-readable (the source's own
+    // basename), with a " (2)"/" (3)"-style suffix only on collision so two
+    // different images never clobber each other. img/ is a single folder shared
+    // by every note — there are no per-note folders here (notes are flat .md
+    // files) — which is why removal (see cleanupRemovedImages) has to check that
+    // no OTHER note still references an image before deleting it.
+    Q_INVOKABLE QString importImage(const QString &sourceUrl);
+
 signals:
     void notesFolderChanged();
     void noteIdsChanged();
@@ -73,6 +84,20 @@ private:
     void refreshNoteIds(bool emitIfChanged);
     void watchAllNoteFiles();
     void writeNoteToDisk(const QString &id, const QString &content);
+
+    // The set of note-relative image paths ("img/<name>") a note's markdown
+    // references — only images under our own img/ folder, never external URLs
+    // (which we don't manage and must never delete). Static: it's a pure
+    // function of the text.
+    static QSet<QString> imageReferencesIn(const QString &content);
+    // Whether ANY note currently on disk references `relativePath`. Used before
+    // deleting an image, because img/ is shared across all notes (see
+    // importImage): another note may still be using an image this one dropped.
+    bool isImageReferencedByAnyNote(const QString &relativePath) const;
+    // Deletes image files that `before` referenced but `after` no longer does,
+    // provided no other note references them either. Only ever touches files in
+    // our own img/ folder. Called from every write and from deleteNote.
+    void cleanupRemovedImages(const QString &before, const QString &after);
 
     // id<->filename index (see class comment above).
     QString indexFilePath() const;

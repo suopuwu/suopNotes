@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Dialogs
 import QtQuick.Templates
 import QtQuick.Window
 import Qt5Compat.GraphicalEffects
@@ -142,6 +143,31 @@ Window {
                     && yInEditor >= rect.y && yInEditor < rect.y + rect.height
         return inside ? rect : Qt.rect(0, 0, 0, 0)
     }
+
+    // The URL of the link the pointer is actually on top of, in editor
+    // coordinates — or "" for anywhere else. Drives both the hover tooltip and
+    // middle-click-to-open, so the two can't disagree about whether there's a
+    // link under the pointer. The vertical containment check guards against
+    // positionAt()'s clamping the same way checkboxRectUnderPointer above does:
+    // a middle-click in the blank space below the text would otherwise resolve
+    // to the last character's position and "open" a link on the final line the
+    // pointer is nowhere near.
+    function linkUrlUnderPointer(xInEditor, yInEditor) {
+        const position = editor.positionAt(xInEditor, yInEditor)
+        const url = docHandler.linkUrlAt(position)
+        if (url === "")
+            return ""
+        const r = editor.positionToRectangle(position)
+        if (yInEditor < r.y || yInEditor >= r.y + r.height)
+            return ""
+        return url
+    }
+
+    // The URL of the link currently under the pointer, or "" — drives the
+    // hover tooltip (see linkTooltip) that tells the user middle-click opens it.
+    // Set from mouseDragArea's onPositionChanged, the one handler that receives
+    // hover for the whole editor area (same as the checkbox highlight).
+    property string hoveredLinkUrl: ""
 
     function refreshFormatState() {
         const start = editor.selectionStart
@@ -458,6 +484,49 @@ Window {
     PerNoteSettingsPopup {
         id: perNoteSettingsPopup
         noteAppearance: noteWindow.noteAppearance
+    }
+
+    // Resolves a markdown image src to a URL the Image element can load: an
+    // external URL (http/file) is used as-is; a note-relative "img/<name>" is
+    // resolved against the notes folder. Spaces are the one character a source
+    // basename can carry that a bare file URL chokes on (importImage strips
+    // parens for us), so they're percent-encoded here.
+    function imageSourceUrl(src) {
+        if (src === "")
+            return ""
+        if (src.indexOf("://") !== -1)
+            return src
+        return "file://" + (settings.notesFolder + "/" + src).replace(/ /g, "%20")
+    }
+
+    // Whether a URL/path looks like an image we should accept on a drop — a
+    // plain extension check, so dropping a non-image file onto a note is
+    // ignored rather than copied into img/.
+    function isImageUrl(u) {
+        const lower = u.toLowerCase()
+        return lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".jpeg")
+            || lower.endsWith(".gif") || lower.endsWith(".webp") || lower.endsWith(".bmp")
+            || lower.endsWith(".svg")
+    }
+
+    // The document position of the empty-src image whose Browse button was
+    // pressed, remembered across the (modal) file dialog so onAccepted knows
+    // which image to fill in. -1 when no browse is in flight.
+    property int imageBrowseTarget: -1
+
+    FileDialog {
+        id: imageFileDialog
+        title: "Choose an image"
+        nameFilters: ["Images (*.png *.jpg *.jpeg *.gif *.webp *.bmp *.svg)", "All files (*)"]
+        onAccepted: {
+            if (noteWindow.imageBrowseTarget < 0)
+                return
+            const rel = noteStore.importImage(selectedFile.toString())
+            if (rel !== "")
+                docHandler.setImageSourceAt(noteWindow.imageBrowseTarget, rel)
+            noteWindow.imageBrowseTarget = -1
+        }
+        onRejected: noteWindow.imageBrowseTarget = -1
     }
 
     Rectangle {
@@ -1248,6 +1317,8 @@ Window {
                         onListMarkerRangesChanged: listMarkerOverlay.syncListMarkersModel()
                         // And for the table grid — see tableGridOverlay.
                         onTableRangesChanged: tableGridOverlay.syncTablesModel()
+                        // And for inline images — see imageOverlay.
+                        onImageRangesChanged: imageOverlay.syncImagesModel()
 
                         // Debounced + atomic on NoteStore's side (~300ms after
                         // the last keystroke) — instant-feeling without a
@@ -1283,6 +1354,14 @@ Window {
                             // the document, so it never re-fires
                             // contentEdited at all).
                             docHandler.tryAutoConvertListShorthand(editor.cursorPosition)
+                            // Auto-link (feature request): a bare URL followed
+                            // by a space is rewritten into [url](url) markdown
+                            // (adding https:// if the typed text had no scheme).
+                            // Also re-enters onContentEdited via its own edit —
+                            // self-terminating for the same reason the list
+                            // shorthand above is (its own guard blocks the
+                            // nested pass; see DocumentHandler.tryAutoLinkUrl).
+                            docHandler.tryAutoLinkUrl(editor.cursorPosition)
                             // Keeps a numbered list's items sequential after
                             // ordinary editing that doesn't go through
                             // tryContinueList/toggleNumberedList at all —
@@ -1773,6 +1852,151 @@ Window {
 
                                     Behavior on color {
                                         ColorAnimation { duration: 90 }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Draws each whole-line image over the tall transparent band
+                    // MarkdownHighlighter reserves for it (feature request:
+                    // dragged/inserted images render inline). Same overlay
+                    // constraints as its siblings: a child of `editor` for its
+                    // coordinate space, a ListModel synced by targeted updates,
+                    // and one debounced imperative recompute of each rect (the
+                    // reserved band's height is what positionToRectangle reports,
+                    // and that settles a frame after the edit — see
+                    // listMarkerOverlay for the full reasoning).
+                    //
+                    // The C++/QML split mirrors the others: DocumentHandler
+                    // reports where each image is and its src (imageRanges), the
+                    // highlighter holds the vertical space open, and this draws
+                    // the picture — or, for an empty src, a Browse placeholder
+                    // the user fills in. Nothing here touches the buffer.
+                    Item {
+                        id: imageOverlay
+                        anchors.fill: parent
+                        z: 1
+
+                        ListModel {
+                            id: imagesModel
+                        }
+
+                        // Targeted diff, same reasoning as syncListMarkersModel:
+                        // these are absolute document positions, so typing above
+                        // an image shifts it, and handing the raw list to the
+                        // Repeater would tear down and rebuild the (potentially
+                        // expensive) Image delegate on unrelated keystrokes.
+                        function syncImagesModel() {
+                            const ranges = docHandler.imageRanges
+                            const n = Math.min(imagesModel.count, ranges.length)
+                            for (let i = 0; i < n; i++) {
+                                const existing = imagesModel.get(i)
+                                const incoming = ranges[i]
+                                if (existing.start !== incoming.start || existing.end !== incoming.end
+                                        || existing.src !== incoming.src || existing.alt !== incoming.alt)
+                                    imagesModel.set(i, incoming)
+                            }
+                            while (imagesModel.count < ranges.length)
+                                imagesModel.append(ranges[imagesModel.count])
+                            while (imagesModel.count > ranges.length)
+                                imagesModel.remove(imagesModel.count - 1)
+                        }
+
+                        Component.onCompleted: syncImagesModel()
+
+                        Repeater {
+                            id: imageRepeater
+                            model: imagesModel
+
+                            delegate: Item {
+                                id: imageBox
+                                required property int start
+                                required property int end
+                                required property string src
+                                required property string alt
+
+                                // Being edited: the cursor is on the image's own
+                                // line, so the highlighter has revealed the raw
+                                // "![alt](src)" at normal height. Show the picture
+                                // only when it ISN'T — this is precise and reacts
+                                // to the caret moving without waiting on the
+                                // band's height to settle (the caret binding
+                                // updates the instant it moves).
+                                readonly property bool editing:
+                                    editor.cursorPosition >= start && editor.cursorPosition <= end
+
+                                // See listMarkerOverlay.recomputeGlyphRect: rect
+                                // is only ever ASSIGNED here, never bound, because
+                                // positionToRectangle reflects a layout that
+                                // settles a frame after start/end change. The band
+                                // spans the full editor width; its height is
+                                // whatever the reserved line measures.
+                                function recomputeRect() {
+                                    if (!editor.ready)
+                                        return
+                                    const r = editor.positionToRectangle(start)
+                                    imageBox.x = 0
+                                    imageBox.y = r.y
+                                    imageBox.width = editor.width
+                                    imageBox.height = r.height
+                                }
+
+                                Timer {
+                                    id: imageSettleDebounce
+                                    interval: 32
+                                    onTriggered: imageBox.recomputeRect()
+                                }
+                                onStartChanged: imageSettleDebounce.restart()
+                                onEndChanged: imageSettleDebounce.restart()
+                                Component.onCompleted: imageSettleDebounce.restart()
+
+                                Connections {
+                                    target: editor
+                                    function onWidthChanged() { imageSettleDebounce.restart() }
+                                    function onContentWidthChanged() { imageSettleDebounce.restart() }
+                                    function onContentHeightChanged() { imageSettleDebounce.restart() }
+                                }
+
+                                // Hidden while its line is being edited (raw src
+                                // shown instead) or before the band has any real
+                                // height yet.
+                                visible: !editing && height > 4
+
+                                // The actual picture, fit inside the band with a
+                                // little padding, aspect preserved. Left-clicking
+                                // it falls through to the editor (no MouseArea),
+                                // which places the caret on the line and so
+                                // reveals the raw src for editing — the natural
+                                // way to change or remove an image.
+                                Image {
+                                    anchors.fill: parent
+                                    anchors.margins: 4
+                                    visible: imageBox.src !== ""
+                                    source: imageBox.src !== "" ? noteWindow.imageSourceUrl(imageBox.src) : ""
+                                    fillMode: Image.PreserveAspectFit
+                                    horizontalAlignment: Image.AlignLeft
+                                    asynchronous: true
+                                    // A broken/missing file shows the placeholder
+                                    // frame below rather than an empty gap.
+                                    onStatusChanged: {}
+                                }
+
+                                // Empty-src placeholder (feature request: the
+                                // toolbar's insert-image button adds "![]()", and
+                                // an image with no src offers a button to pick a
+                                // file). Just a small left-aligned button — the
+                                // highlighter reserves only a short strip for an
+                                // empty src (not the tall picture band), so this
+                                // is a modest control, not a big blank square.
+                                Button {
+                                    anchors.left: parent.left
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    visible: imageBox.src === ""
+                                    text: "Select image…"
+                                    onClicked: {
+                                        noteWindow.imageBrowseTarget = imageBox.start
+                                        imageFileDialog.open()
                                     }
                                 }
                             }
@@ -2442,6 +2666,45 @@ Window {
             }
         }
 
+        // Image drag-and-drop (feature request): dropping image file(s) onto
+        // the note copies each into the notes folder's shared img/ subfolder
+        // (NoteStore.importImage) and inserts a "![](img/<name>)" reference at
+        // the drop point, isolated on its own line so it renders as a block
+        // image. Non-image files are ignored. Fills the same frame as
+        // mouseDragArea so a drop anywhere over the note is caught; z is
+        // irrelevant since a DropArea only ever handles drag events, never the
+        // mouse gestures mouseDragArea owns.
+        DropArea {
+            anchors.fill: parent
+            z: 0
+            onDropped: (drop) => {
+                if (!drop.hasUrls) {
+                    drop.accepted = false
+                    return
+                }
+                const p = mapToItem(editor, drop.x, drop.y)
+                const pos = editor.positionAt(p.x, p.y)
+                let refs = []
+                for (let i = 0; i < drop.urls.length; i++) {
+                    const u = drop.urls[i].toString()
+                    if (!noteWindow.isImageUrl(u))
+                        continue
+                    const rel = noteStore.importImage(u)
+                    if (rel !== "")
+                        refs.push("![](" + rel + ")")
+                }
+                if (refs.length === 0) {
+                    drop.accepted = false
+                    return
+                }
+                // Wrapped in newlines so each image lands alone on its line
+                // (block images only render when nothing else shares the line),
+                // regardless of where in a line the drop happened.
+                editor.insert(pos, "\n" + refs.join("\n") + "\n")
+                drop.accepted = true
+            }
+        }
+
         // Right-click-drag (mouse) and tap-drag (touch) move the window via
         // the compositor. This is the only mechanism that works on Wayland —
         // clients can't set their own position directly (see project notes).
@@ -2613,6 +2876,18 @@ Window {
                     return
                 }
                 if (mouse.button === Qt.MiddleButton) {
+                    // Middle-click OPENS a link when the pointer is on one
+                    // (feature request), taking priority over autoscroll — left
+                    // click is left free to place the cursor / reveal the raw
+                    // markdown instead. Only when not actually on a link does
+                    // middle-click fall through to arming Chrome-style scroll.
+                    const p = mapToItem(editor, mouse.x, mouse.y)
+                    const url = noteWindow.linkUrlUnderPointer(p.x, p.y)
+                    if (url !== "") {
+                        Qt.openUrlExternally(url)
+                        mouse.accepted = true
+                        return
+                    }
                     armMiddleScroll(mouse.x, mouse.y)
                     middleButtonHeld = true
                     mouse.accepted = true
@@ -2660,6 +2935,8 @@ Window {
                 const posInEditor = mapToItem(editor, mouse.x, mouse.y)
                 checkboxHighlight.glyphRect =
                     noteWindow.checkboxRectUnderPointer(posInEditor.x, posInEditor.y)
+                noteWindow.hoveredLinkUrl =
+                    noteWindow.linkUrlUnderPointer(posInEditor.x, posInEditor.y)
 
                 if (middleButtonHeld && !middleScrollDraggedWhileHeld
                         && Math.abs(middleScrollCurrentY - middleScrollOriginY) > dragThreshold) {
@@ -2677,7 +2954,10 @@ Window {
                     noteWindow.startSystemMove()
                 }
             }
-            onExited: checkboxHighlight.glyphRect = Qt.rect(0, 0, 0, 0)
+            onExited: {
+                checkboxHighlight.glyphRect = Qt.rect(0, 0, 0, 0)
+                noteWindow.hoveredLinkUrl = ""
+            }
             // ~60fps: smooth enough for a scroll animation, cheap enough to
             // not matter. Armed only between an explicit middle-click and
             // an explicit disarm (another click or Escape) — never runs
@@ -2866,6 +3146,39 @@ Window {
                 text: "Copied"
                 color: "#ffffff"
                 font.pixelSize: 12
+            }
+        }
+
+        // Link hover tooltip (feature request): a STATIC-position hint — pinned
+        // to the note's bottom-left, deliberately NOT following the cursor —
+        // that both surfaces the link's URL and tells the user how to open it
+        // (middle-click; left-click is reserved for placing the cursor / editing
+        // the raw markdown). Shown only while the pointer is actually on a link
+        // (see hoveredLinkUrl). z above noteHud so it's never occluded.
+        Rectangle {
+            id: linkTooltip
+            z: 4
+            visible: noteWindow.hoveredLinkUrl !== ""
+            anchors.left: parent.left
+            anchors.bottom: parent.bottom
+            anchors.margins: 8
+            width: Math.min(linkTooltipLabel.implicitWidth + 16, mainFrame.width - 16)
+            height: linkTooltipLabel.implicitHeight + 8
+            radius: 6
+            color: Qt.rgba(0, 0, 0, 0.78)
+            border.width: 1
+            border.color: Qt.rgba(1, 1, 1, 0.18)
+
+            Text {
+                id: linkTooltipLabel
+                anchors.fill: parent
+                anchors.leftMargin: 8
+                anchors.rightMargin: 8
+                verticalAlignment: Text.AlignVCenter
+                text: "Middle-click to open  ·  " + noteWindow.hoveredLinkUrl
+                color: "#ffffff"
+                font.pixelSize: 11
+                elide: Text.ElideMiddle
             }
         }
 

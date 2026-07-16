@@ -5,6 +5,7 @@
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QUrl>
 
 #include "core/NoteStore.h"
 
@@ -579,6 +580,167 @@ SCENARIO("The id<->filename index survives being deleted", "[note_store]")
                 const QStringList ids = store.noteIds();
                 REQUIRE(ids.size() == 1);
                 CHECK(store.loadNoteContent(ids.first()) == "Survives index loss");
+            }
+        }
+    }
+}
+
+// --- Image import & garbage collection ------------------------------------
+// Dragging/pasting an image into a note copies it into a single "img/" folder
+// shared by every note (there are no per-note folders; notes are flat .md
+// files), and removing an image from a note deletes the file — but only once no
+// OTHER note still references it, since the folder is shared.
+
+namespace
+{
+// Writes `bytes` to a throwaway image file inside `dir` and returns its path.
+QString makeSourceImage(const QTemporaryDir &dir, const QString &name, const QByteArray &bytes)
+{
+    const QString path = dir.filePath(name);
+    QFile f(path);
+    REQUIRE(f.open(QIODevice::WriteOnly));
+    f.write(bytes);
+    f.close();
+    return path;
+}
+}
+
+SCENARIO("Importing an image copies it into the notes folder's shared img/ subfolder", "[note_store]")
+{
+    GIVEN("a notes folder and a source image outside it")
+    {
+        QTemporaryDir notesDir;
+        REQUIRE(notesDir.isValid());
+        QTemporaryDir srcDir;
+        REQUIRE(srcDir.isValid());
+        NoteStore store;
+        store.setNotesFolder(notesDir.path());
+        const QString src = makeSourceImage(srcDir, "photo.png", "PNGDATA");
+
+        WHEN("importImage is called with a plain path")
+        {
+            const QString rel = store.importImage(src);
+
+            THEN("it returns the note-relative img/ path")
+            {
+                CHECK(rel == QStringLiteral("img/photo.png"));
+            }
+            THEN("the file now lives under the notes folder's img/ subfolder")
+            {
+                CHECK(QFile::exists(notesDir.filePath("img/photo.png")));
+            }
+        }
+
+        WHEN("importImage is called with a file:// URL instead of a path")
+        {
+            const QString rel = store.importImage(QUrl::fromLocalFile(src).toString());
+
+            THEN("it is handled identically")
+            {
+                CHECK(rel == QStringLiteral("img/photo.png"));
+                CHECK(QFile::exists(notesDir.filePath("img/photo.png")));
+            }
+        }
+
+        WHEN("a second, different image with the same basename is imported")
+        {
+            QTemporaryDir srcDir2;
+            REQUIRE(srcDir2.isValid());
+            const QString src2 = makeSourceImage(srcDir2, "photo.png", "OTHERDATA");
+
+            const QString first = store.importImage(src);
+            const QString second = store.importImage(src2);
+
+            THEN("the second gets a paren-free -N suffix so it can't clobber the first")
+            {
+                CHECK(first == QStringLiteral("img/photo.png"));
+                CHECK(second == QStringLiteral("img/photo-2.png"));
+                CHECK(QFile::exists(notesDir.filePath("img/photo.png")));
+                CHECK(QFile::exists(notesDir.filePath("img/photo-2.png")));
+            }
+        }
+    }
+}
+
+SCENARIO("Removing an image from a note's text deletes the unreferenced file", "[note_store]")
+{
+    GIVEN("a note that references an imported image")
+    {
+        QTemporaryDir notesDir;
+        REQUIRE(notesDir.isValid());
+        QTemporaryDir srcDir;
+        REQUIRE(srcDir.isValid());
+        NoteStore store;
+        store.setNotesFolder(notesDir.path());
+
+        const QString rel = store.importImage(makeSourceImage(srcDir, "cat.png", "CAT"));
+        const QString id = store.createNote(QStringLiteral("look ![](%1)").arg(rel));
+        REQUIRE(QFile::exists(notesDir.filePath(rel)));
+
+        WHEN("the image reference is edited out of the note and the save flushes")
+        {
+            store.saveNoteContent(id, QStringLiteral("look, no image"));
+            QTest::qWait(kPastDebounceMs);
+
+            THEN("the now-unreferenced image file is deleted from img/")
+            {
+                CHECK_FALSE(QFile::exists(notesDir.filePath(rel)));
+            }
+        }
+    }
+}
+
+SCENARIO("An image still used by another note is not deleted when one note drops it", "[note_store]")
+{
+    GIVEN("two notes referencing the same imported image")
+    {
+        QTemporaryDir notesDir;
+        REQUIRE(notesDir.isValid());
+        QTemporaryDir srcDir;
+        REQUIRE(srcDir.isValid());
+        NoteStore store;
+        store.setNotesFolder(notesDir.path());
+
+        const QString rel = store.importImage(makeSourceImage(srcDir, "shared.png", "SHARED"));
+        const QString idA = store.createNote(QStringLiteral("A ![](%1)").arg(rel));
+        store.createNote(QStringLiteral("B ![](%1)").arg(rel));
+        REQUIRE(QFile::exists(notesDir.filePath(rel)));
+
+        WHEN("the first note removes the image but the second still has it")
+        {
+            store.saveNoteContent(idA, QStringLiteral("A, no image"));
+            QTest::qWait(kPastDebounceMs);
+
+            THEN("the shared image survives, because another note still references it")
+            {
+                CHECK(QFile::exists(notesDir.filePath(rel)));
+            }
+        }
+    }
+}
+
+SCENARIO("Deleting a note removes the images only it referenced", "[note_store]")
+{
+    GIVEN("a note whose image no other note uses")
+    {
+        QTemporaryDir notesDir;
+        REQUIRE(notesDir.isValid());
+        QTemporaryDir srcDir;
+        REQUIRE(srcDir.isValid());
+        NoteStore store;
+        store.setNotesFolder(notesDir.path());
+
+        const QString rel = store.importImage(makeSourceImage(srcDir, "only.png", "ONLY"));
+        const QString id = store.createNote(QStringLiteral("solo ![](%1)").arg(rel));
+        REQUIRE(QFile::exists(notesDir.filePath(rel)));
+
+        WHEN("the note is deleted")
+        {
+            store.deleteNote(id);
+
+            THEN("its now-orphaned image is swept from img/")
+            {
+                CHECK_FALSE(QFile::exists(notesDir.filePath(rel)));
             }
         }
     }

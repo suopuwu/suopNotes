@@ -176,21 +176,26 @@ Item {
             compare(closeSpy.count, 0)
         }
 
-        // The close glyph deletes the note's file, so it must stay the
-        // rightmost (last-reached) icon in the row — a copy, settings or
-        // search tap must never sit past it where a stray click meant for
-        // close could land. Verified by comparing the glyphs' scene-mapped
-        // x positions.
-        function test_close_glyph_stays_rightmost_of_all_icons() {
+        // The glyph order was reversed (feature request): close now LEADS the
+        // row as the leftmost icon (pin trails as the rightmost). Close leading
+        // is safe — a stray click can't land before the row's start any more
+        // than past its end — and deletion's real safeguard is the two-tap
+        // arm/confirm, not close's position. Verified via the glyphs'
+        // scene-mapped x positions.
+        function test_close_glyph_leads_as_the_leftmost_icon() {
             const closePos = hud.closeGlyphItem.mapToItem(root, 0, 0)
             const pinPos = hud.pinGlyphItem.mapToItem(root, 0, 0)
             const gearPos = hud.gearGlyphItem.mapToItem(root, 0, 0)
             const duplicatePos = hud.duplicateGlyphItem.mapToItem(root, 0, 0)
             const searchPos = hud.searchGlyphItem.mapToItem(root, 0, 0)
-            verify(closePos.x > pinPos.x)
-            verify(closePos.x > gearPos.x)
-            verify(closePos.x > duplicatePos.x)
-            verify(closePos.x > searchPos.x)
+            verify(closePos.x < pinPos.x)
+            verify(closePos.x < gearPos.x)
+            verify(closePos.x < duplicatePos.x)
+            verify(closePos.x < searchPos.x)
+            // Pin trails as the rightmost, the mirror of close leading.
+            verify(pinPos.x > gearPos.x)
+            verify(pinPos.x > duplicatePos.x)
+            verify(pinPos.x > searchPos.x)
         }
 
         // Reads pinGlyph's color via the pinGlyphItem alias (a live item
@@ -265,22 +270,25 @@ Item {
         // ---- Vertical column layout (the windowed ribbon's orientation) ----
 
         // In vertical mode the glyphs stack top-to-bottom in a single column,
-        // and close stays LAST — the bottom-most, last-reached icon — for the
-        // same irreversible-delete reason it stays rightmost in the row: no
-        // other action may sit past it where a stray click meant for close
-        // could land.
-        function test_vertical_stacks_glyphs_in_a_column_with_close_last() {
+        // in the reversed order (feature request): close LEADS at the top
+        // (nearest the note's own top-right corner, the conventional close
+        // spot), pin trails at the bottom.
+        function test_vertical_stacks_glyphs_in_a_column_with_close_on_top() {
             const closePos = verticalHud.closeGlyphItem.mapToItem(root, 0, 0)
             const pinPos = verticalHud.pinGlyphItem.mapToItem(root, 0, 0)
             const gearPos = verticalHud.gearGlyphItem.mapToItem(root, 0, 0)
             const duplicatePos = verticalHud.duplicateGlyphItem.mapToItem(root, 0, 0)
             const searchPos = verticalHud.searchGlyphItem.mapToItem(root, 0, 0)
 
-            // Stacked downward: close sits below every other glyph.
-            verify(closePos.y > pinPos.y)
-            verify(closePos.y > gearPos.y)
-            verify(closePos.y > duplicatePos.y)
-            verify(closePos.y > searchPos.y)
+            // Stacked downward with close at the top: close sits above every
+            // other glyph, pin below every other.
+            verify(closePos.y < pinPos.y)
+            verify(closePos.y < gearPos.y)
+            verify(closePos.y < duplicatePos.y)
+            verify(closePos.y < searchPos.y)
+            verify(pinPos.y > gearPos.y)
+            verify(pinPos.y > duplicatePos.y)
+            verify(pinPos.y > searchPos.y)
 
             // A single column: every glyph sits at essentially the same x.
             // Compared with a tolerance rather than exactly equal because each

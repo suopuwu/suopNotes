@@ -153,6 +153,45 @@ QTextCharFormat inlineCodeFormat()
     return format;
 }
 
+// Reserves a transparent band for a whole-line image, so NoteWindow.qml can
+// draw into the vertical space the collapsed "![alt](src)" text leaves. A large
+// font point size is what actually reserves the room — a line's height is its
+// tallest glyph — while the transparent foreground keeps the literal characters
+// invisible. The same large point size also gives them a huge horizontal
+// advance, but the editor pins its contentWidth to the viewport (see
+// NoteWindow.qml's editorFlick), so that overflow is simply clipped and costs
+// no horizontal scroll. Unlike hiddenMarkerFormat this size is nowhere near 0,
+// so it triggers none of that format's font-fallback freeze — there is a real
+// glyph box at this size, just a transparent one.
+//
+// A real image reserves a TALL band to draw the picture into; an image whose
+// src is still empty ("![]()", e.g. straight from the toolbar's insert button)
+// reserves only a SHORT strip — just enough for its "Select image…" button, so
+// an unfilled placeholder isn't a big blank square (feature request/bugfix).
+constexpr qreal kImageBandPointSize = 150.0;
+constexpr qreal kImagePlaceholderPointSize = 30.0;
+QTextCharFormat imageBandFormat(qreal pointSize)
+{
+    QTextCharFormat format;
+    format.setForeground(QColor(0, 0, 0, 0));
+    format.setFontPointSize(pointSize);
+    return format;
+}
+
+// A line that is nothing but an image: "![alt](src)", optionally indented or
+// trailing-padded. Group 1 is the whole image span itself — from "!" to the
+// closing ")", EXCLUDING any surrounding whitespace — used for the touch test
+// below (bug found live: using the full line, whitespace included, meant a
+// trailing space after the image counted as "touching" it too). Group 2 is the
+// src (possibly empty), used to pick the band height above. Kept in sync with
+// DocumentHandler's own imageLinePattern.
+const QRegularExpression &imageLinePattern()
+{
+    static const QRegularExpression pattern(
+        QStringLiteral("^\\s*(!\\[[^\\]\\n]*\\]\\(([^)\\n]*)\\))\\s*$"));
+    return pattern;
+}
+
 // The find/replace panel's "here's everywhere else your term appears" wash, and
 // the stronger version marking the one match the panel's own "3 of 7" counter
 // is pointing at.
@@ -264,6 +303,29 @@ QTextCharFormat strikethroughFormat()
     return format;
 }
 
+// The visible text of a [text](url) link — a mid-blue underline, matching the
+// HUD/toolbar accent so links read as the app's one "interactive" color. Unlike
+// emphasis delimiters, this styling stays applied on the cursor's own line too:
+// the surrounding [ ]( url ) punctuation reveals/collapses with the cursor, but
+// the text itself is always shown as a link.
+QTextCharFormat linkTextFormat()
+{
+    QTextCharFormat format;
+    format.setForeground(QColor(0x4d, 0xa6, 0xff));
+    format.setFontUnderline(true);
+    return format;
+}
+
+// [text](url), but NOT ![alt](url) — the negative lookbehind on "!" is what
+// tells a link apart from an image (images are rendered as a block, see
+// DocumentHandler::computeImageRanges). The url is allowed to be empty so a
+// freshly-inserted "[]()" still parses as a link while it's being filled in.
+const QRegularExpression &linkPattern()
+{
+    static const QRegularExpression pattern(QStringLiteral("(?<!!)\\[([^\\]\\n]+)\\]\\(([^)\\n]*)\\)"));
+    return pattern;
+}
+
 // Precedence matters and is load-bearing:
 //  - code first, so its contents are masked from every emphasis rule;
 //  - bold before italic, since "**x**" would otherwise be read by the italic
@@ -322,6 +384,41 @@ void MarkdownHighlighter::setCursorBlockNumber(int blockNumber)
     }
 }
 
+void MarkdownHighlighter::setCursorPosition(int position)
+{
+    const int previousPosition = m_cursorPosition;
+    m_cursorPosition = position;
+
+    if (!document())
+        return;
+
+    const int blockNumber = position < 0
+        ? -1
+        : document()->findBlock(qBound(0, position, document()->characterCount() - 1)).blockNumber();
+
+    if (blockNumber != m_cursorBlockNumber) {
+        // The coarse case: setCursorBlockNumber's own two-block repaint below
+        // already covers whatever link/image touch state changed too — both
+        // the line being left and the line being entered get repainted
+        // regardless of why.
+        setCursorBlockNumber(blockNumber);
+        return;
+    }
+
+    // Same line as before, so the block-number guard above didn't fire — but a
+    // link's or image's specific touch boundary on THIS line can still have
+    // shifted (e.g. the cursor moved from touching a link to a few characters
+    // past it, still the same line). Skipped for a position that didn't
+    // actually move, and for any block that couldn't possibly contain a link
+    // or image, so ordinary prose pays nothing extra for routine cursor moves.
+    if (position == previousPosition || blockNumber < 0)
+        return;
+    const QTextBlock block = document()->findBlockByNumber(blockNumber);
+    if (block.isValid()
+        && (linkPattern().match(block.text()).hasMatch() || imageLinePattern().match(block.text()).hasMatch()))
+        rehighlightBlock(block);
+}
+
 const QList<TextSearch::Match> &MarkdownHighlighter::searchMatches() const
 {
     return m_searchMatches;
@@ -377,6 +474,33 @@ void MarkdownHighlighter::collectBlockNumbers(const QList<TextSearch::Match> &ma
             out.insert(block.blockNumber());
         }
     }
+}
+
+bool MarkdownHighlighter::highlightImageLine(const QString &text)
+{
+    const QRegularExpressionMatch match = imageLinePattern().match(text);
+    if (!match.hasMatch())
+        return false;
+
+    // Position-based touch test (NOT block-level revealMarkers — see
+    // m_cursorPosition's own doc comment): only while the cursor is actually
+    // within the image's own "![alt](src)" span does the raw markdown stay at
+    // normal size for editing. Any surrounding whitespace on the line (leading
+    // indentation, or trailing padding) does NOT count as touching, which is
+    // what group 1 (the outer capture, excluding that whitespace) buys here.
+    const int absoluteStart = currentBlock().position() + match.capturedStart(1);
+    const int absoluteEnd = currentBlock().position() + match.capturedEnd(1);
+    const bool touching = m_cursorPosition >= absoluteStart && m_cursorPosition <= absoluteEnd;
+
+    // Off the touched span, reserve a band: a tall one for a real image to draw
+    // into, or just a short strip for an empty src's "Select image…" button (so
+    // an unfilled placeholder isn't a big blank square).
+    if (!touching) {
+        const qreal pointSize =
+            match.captured(2).isEmpty() ? kImagePlaceholderPointSize : kImageBandPointSize;
+        setFormat(0, text.size(), imageBandFormat(pointSize));
+    }
+    return true;
 }
 
 bool MarkdownHighlighter::highlightTableRow(const QString &text)
@@ -546,6 +670,14 @@ void MarkdownHighlighter::highlightMarkdown(const QString &text)
     // punctuation shows. Read once per block rather than per marker.
     const bool revealMarkers = currentBlock().blockNumber() == m_cursorBlockNumber;
 
+    // A whole-line image collapses to a reserved band (while not touched) that
+    // QML draws the picture into, or stays raw editable text (while touched) —
+    // either way it's not a heading/list/emphasis context, so this returns
+    // early like the table row above. Position-based, not revealMarkers (see
+    // highlightImageLine's own comment).
+    if (highlightImageLine(text))
+        return;
+
     // QSyntaxHighlighter::setFormat() *replaces* the format over its range
     // rather than merging into it, so applying italic over an already-bold
     // span would silently drop the bold. Composing against format(i) — which
@@ -664,7 +796,10 @@ void MarkdownHighlighter::highlightMarkdown(const QString &text)
         mask(0, contentStart);
 
     // --- Inline spans ----------------------------------------------------
-    for (const InlineRule &rule : inlineRules()) {
+    // One rule's worth of scanning, factored out so links can be slotted into
+    // the middle of the precedence order below (after code, before emphasis)
+    // rather than tacked on at either end.
+    const auto applyRule = [&](const InlineRule &rule) {
         // Deliberately a manual scan rather than globalMatch(): when a match is
         // rejected for overlapping the mask, the search has to resume just
         // *inside* it, not past its end. globalMatch would skip the remainder
@@ -694,5 +829,61 @@ void MarkdownHighlighter::highlightMarkdown(const QString &text)
 
             searchFrom = match.capturedEnd();
         }
-    }
+    };
+
+    // [text](url): the visible text is styled as a link and stays styled
+    // everywhere; the surrounding "[" and "](url)" collapse EXCEPT while the
+    // cursor is actually touching this specific link, exactly like emphasis
+    // delimiters — except position-based, not block-level (bug found live:
+    // with block-level reveal, "[the site](url) and more prose" stayed fully
+    // expanded as long as the cursor was anywhere on that line — several words
+    // later, or on the trailing space auto-linking leaves behind — rather than
+    // only while the cursor was actually on the link). The whole span is masked
+    // so the emphasis rules below don't re-parse the link text or its url. url
+    // may be empty ("[]()" mid-edit) — still a valid, styled link.
+    const auto applyLinks = [&]() {
+        int searchFrom = contentStart;
+        while (searchFrom < text.size()) {
+            const QRegularExpressionMatch match = linkPattern().match(text, searchFrom);
+            if (!match.hasMatch())
+                break;
+            if (overlapsMask(match.capturedStart(), match.capturedLength())) {
+                searchFrom = match.capturedStart() + 1;
+                continue;
+            }
+
+            const int textStart = match.capturedStart(1);
+            const int textLen = match.capturedLength(1);
+            mergeFormat(textStart, textLen, linkTextFormat());
+
+            // Absolute document position, compared against THIS match's own
+            // span (not the whole line) — see the comment above.
+            const int absoluteMatchStart = currentBlock().position() + match.capturedStart();
+            const int absoluteMatchEnd = currentBlock().position() + match.capturedEnd();
+            const bool linkTouched =
+                m_cursorPosition >= absoluteMatchStart && m_cursorPosition <= absoluteMatchEnd;
+            const auto applyLinkMarkerFormat = [&](int start, int length) {
+                if (linkTouched)
+                    mergeFormat(start, length, revealedMarkerFormat());
+                else
+                    setFormat(start, length, hiddenMarkerFormat());
+            };
+            // Leading "[" ...
+            applyLinkMarkerFormat(match.capturedStart(), textStart - match.capturedStart());
+            // ... and trailing "](url)".
+            applyLinkMarkerFormat(textStart + textLen, match.capturedEnd() - (textStart + textLen));
+            mask(match.capturedStart(), match.capturedLength());
+            searchFrom = match.capturedEnd();
+        }
+    };
+
+    // Precedence: code first (so a link or emphasis inside `backticks` stays
+    // literal, because code masks its whole contents), then links (so their
+    // text isn't re-read as emphasis), then the emphasis rules.
+    const QList<InlineRule> &rules = inlineRules();
+    if (!rules.isEmpty())
+        applyRule(rules.first()); // the code-span rule
+    applyLinks();
+    for (int i = 1; i < rules.size(); ++i)
+        applyRule(rules.at(i));
 }

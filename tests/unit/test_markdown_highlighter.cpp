@@ -78,6 +78,37 @@ bool isRevealedMarkerAt(const QTextBlock &block, int position)
     return formatAt(block, position).foreground().color() == markerGray;
 }
 
+// A link's visible text: the app's accent blue, underlined. Read as an exact
+// colour here (unlike the search wash) because the link colour is a fixed,
+// deliberate choice, not a strength-of-highlight tweak.
+const QColor linkBlue(0x4d, 0xa6, 0xff);
+bool isLinkTextAt(const QTextBlock &block, int position)
+{
+    const QTextCharFormat format = formatAt(block, position);
+    return format.foreground().color() == linkBlue && format.fontUnderline();
+}
+
+// A whole-line image's reserved band: transparent, and blown up to a large
+// point size — that large size is what actually holds the vertical room open
+// for NoteWindow.qml to draw the picture into. The distinction from a collapsed
+// marker (also transparent, but shrunk to near-zero) is exactly that size.
+bool isImageBandAt(const QTextBlock &block, int position)
+{
+    const QTextCharFormat format = formatAt(block, position);
+    return format.foreground().color().alpha() == 0 && format.fontPointSize() > 50.0;
+}
+
+// The reserved (transparent) point size at a position, or 0 if it isn't a
+// reserved band — used to compare the tall picture band against the short
+// empty-src placeholder strip.
+qreal reservedPointSizeAt(const QTextBlock &block, int position)
+{
+    const QTextCharFormat format = formatAt(block, position);
+    if (format.foreground().color().alpha() != 0)
+        return 0.0;
+    return format.fontPointSize();
+}
+
 // Gone from the rendered line entirely: transparent AND shrunk to a hair-thin
 // font, which is what actually removes its horizontal advance (a transparent
 // colour alone would leave a hole in the text).
@@ -285,6 +316,252 @@ SCENARIO("Italic, strikethrough, and inline code each render from their literal 
             THEN("the text between backticks is monospaced")
             {
                 CHECK(formatAt(block, 13).fontFamilies().toStringList().contains(QStringLiteral("monospace")));
+            }
+        }
+    }
+}
+
+SCENARIO("A [text](url) link renders its text as a link while the brackets and url collapse", "[markdown_highlighter]")
+{
+    // Buffer:  s  e  e     [  t  h  e     s  i  t  e  ]  (  h  t ...
+    // Index:   0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 ...
+    // "the site" is the visible text (5..12), "[" at 4, "](url...)" from 13.
+    GIVEN("a document with a link embedded in a sentence")
+    {
+        QTextDocument doc;
+        doc.setPlainText("see [the site](https://example.com) now");
+
+        WHEN("a MarkdownHighlighter is attached with the cursor elsewhere")
+        {
+            MarkdownHighlighter highlighter(&doc);
+            highlighter.setCursorBlockNumber(-1);
+            highlightNow(highlighter);
+            const QTextBlock block = doc.begin();
+
+            THEN("the buffer still holds the literal markdown, brackets and all")
+            {
+                CHECK(doc.toPlainText() == QStringLiteral("see [the site](https://example.com) now"));
+            }
+
+            THEN("the visible link text is painted in the link colour and underlined")
+            {
+                CHECK(isLinkTextAt(block, 5));
+                CHECK(isLinkTextAt(block, 12));
+            }
+
+            THEN("the [ ]( url ) punctuation collapses out of the rendered line")
+            {
+                CHECK(isCollapsedMarkerAt(block, 4));  // "["
+                CHECK(isCollapsedMarkerAt(block, 13)); // "]"
+                CHECK(isCollapsedMarkerAt(block, 14)); // "("
+                CHECK(isCollapsedMarkerAt(block, 20)); // inside the url
+            }
+
+            THEN("plain text on either side of the link is left unstyled")
+            {
+                CHECK_FALSE(isLinkTextAt(block, 0));
+                CHECK_FALSE(isLinkTextAt(block, 37));
+            }
+        }
+
+        WHEN("the cursor is actually touching the link")
+        {
+            // setCursorPosition, NOT setCursorBlockNumber: links reveal based
+            // on the exact cursor position touching their own span, not merely
+            // being on the same block/line — see MarkdownHighlighter::
+            // setCursorPosition's own comment. Position 6 sits inside "the
+            // site", well within the link's [4..36) span.
+            MarkdownHighlighter highlighter(&doc);
+            highlighter.setCursorPosition(6);
+            highlightNow(highlighter);
+            const QTextBlock block = doc.begin();
+
+            THEN("the punctuation reveals, dimmed, so the url can be seen and edited")
+            {
+                CHECK(isRevealedMarkerAt(block, 4));  // "["
+                CHECK(isRevealedMarkerAt(block, 14)); // "("
+            }
+
+            THEN("the link text stays styled as a link even while its line is edited")
+            {
+                CHECK(isLinkTextAt(block, 5));
+            }
+        }
+
+        // Regression test (bug found live): a link used to stay expanded to
+        // its raw "[text](url)" as long as the cursor was ANYWHERE on the same
+        // line — several words past it, or on the trailing space auto-linking
+        // leaves behind after converting a typed URL — because reveal was
+        // block-level, not span-level. It must collapse the instant the cursor
+        // leaves the link's own span, even while still on the same line.
+        WHEN("the cursor is on the same line but has moved past the link — e.g. into the space after it")
+        {
+            MarkdownHighlighter highlighter(&doc);
+            // Position 37 is inside "now", well past the link's [4..36) span,
+            // on the same line/block.
+            highlighter.setCursorPosition(37);
+            highlightNow(highlighter);
+            const QTextBlock block = doc.begin();
+
+            THEN("the [ ]( url ) punctuation stays collapsed — being on the same line is not enough")
+            {
+                CHECK(isCollapsedMarkerAt(block, 4));  // "["
+                CHECK(isCollapsedMarkerAt(block, 14)); // "("
+            }
+
+            THEN("the link text is still rendered as a link")
+            {
+                CHECK(isLinkTextAt(block, 5));
+            }
+        }
+    }
+}
+
+SCENARIO("An image's ![alt](src) is not mistaken for a link", "[markdown_highlighter]")
+{
+    GIVEN("a document whose line is an image, not a link")
+    {
+        QTextDocument doc;
+        doc.setPlainText("![a picture](img/x.png)");
+
+        WHEN("a MarkdownHighlighter is attached")
+        {
+            MarkdownHighlighter highlighter(&doc);
+            highlighter.setCursorBlockNumber(-1);
+            highlightNow(highlighter);
+            const QTextBlock block = doc.begin();
+
+            THEN("the alt text is NOT styled as a link — the ! prefix marks it an image")
+            {
+                CHECK_FALSE(isLinkTextAt(block, 2)); // 'a' of "a picture"
+            }
+        }
+    }
+}
+
+SCENARIO("A whole-line image collapses to a tall reserved band off the cursor line", "[markdown_highlighter]")
+{
+    GIVEN("a line that is nothing but an image")
+    {
+        QTextDocument doc;
+        doc.setPlainText("![a cat](img/cat.png)");
+
+        WHEN("a MarkdownHighlighter is attached with the cursor elsewhere")
+        {
+            MarkdownHighlighter highlighter(&doc);
+            highlighter.setCursorBlockNumber(-1);
+            highlightNow(highlighter);
+            const QTextBlock block = doc.begin();
+
+            THEN("the buffer still holds the literal image markdown")
+            {
+                CHECK(doc.toPlainText() == QStringLiteral("![a cat](img/cat.png)"));
+            }
+
+            THEN("the line becomes a transparent, tall reserved band for the picture")
+            {
+                CHECK(isImageBandAt(block, 0));
+                CHECK(isImageBandAt(block, 10));
+            }
+        }
+
+        WHEN("the cursor is actually touching the image")
+        {
+            // setCursorPosition, NOT setCursorBlockNumber: like links, images
+            // reveal based on the exact cursor position touching their own
+            // span, not merely being on the same line — see
+            // MarkdownHighlighter::setCursorPosition's own comment. Position
+            // 10 sits inside "img/cat.png".
+            MarkdownHighlighter highlighter(&doc);
+            highlighter.setCursorPosition(10);
+            highlightNow(highlighter);
+            const QTextBlock block = doc.begin();
+
+            THEN("the raw markdown shows at normal size so the src can be edited")
+            {
+                CHECK_FALSE(isImageBandAt(block, 0));
+            }
+        }
+
+        // Regression test (bug found live): after inserting a fresh image
+        // placeholder, the cursor used to land exactly at the end of its own
+        // line — "touching" it by the old, block-level definition — which kept
+        // the raw "![]()" text showing instead of the picture/placeholder
+        // overlay ("the image placeholder is now invisible"). Being on the
+        // same line is not enough; only the image's own span counts.
+        WHEN("the cursor is on the image's line but past its own span — e.g. on a trailing blank")
+        {
+            QTextDocument trailing;
+            trailing.setPlainText(QStringLiteral("![a cat](img/cat.png) "));
+            MarkdownHighlighter highlighter(&trailing);
+            // The image's own span is [0..21) (position 21, right after ")",
+            // is its inclusive touching boundary); position 22 is past the
+            // trailing space that follows it — same line, not touching.
+            highlighter.setCursorPosition(22);
+            highlightNow(highlighter);
+            const QTextBlock block = trailing.begin();
+
+            THEN("the image still collapses to its reserved band")
+            {
+                CHECK(isImageBandAt(block, 0));
+            }
+        }
+    }
+}
+
+SCENARIO("An empty-src image reserves only a short strip, not the tall picture band", "[markdown_highlighter]")
+{
+    GIVEN("a filled image and an empty placeholder image")
+    {
+        QTextDocument filled;
+        filled.setPlainText("![c](img/c.png)");
+        QTextDocument empty;
+        empty.setPlainText("![]()");
+
+        WHEN("both are highlighted with the cursor elsewhere")
+        {
+            MarkdownHighlighter filledHl(&filled);
+            filledHl.setCursorBlockNumber(-1);
+            highlightNow(filledHl);
+            MarkdownHighlighter emptyHl(&empty);
+            emptyHl.setCursorBlockNumber(-1);
+            highlightNow(emptyHl);
+
+            const qreal filledBand = reservedPointSizeAt(filled.begin(), 0);
+            const qreal emptyBand = reservedPointSizeAt(empty.begin(), 0);
+
+            THEN("both reserve a transparent band, but the empty one is much shorter")
+            {
+                CHECK(filledBand > 0.0);
+                CHECK(emptyBand > 0.0);
+                CHECK(emptyBand < filledBand);
+                // The filled band is the tall picture band; the empty one is
+                // just a button-height strip.
+                CHECK(isImageBandAt(filled.begin(), 0));
+                CHECK_FALSE(isImageBandAt(empty.begin(), 0));
+            }
+        }
+    }
+}
+
+SCENARIO("An image sharing its line with other text is not turned into a band", "[markdown_highlighter]")
+{
+    GIVEN("an image embedded mid-sentence rather than alone on its line")
+    {
+        QTextDocument doc;
+        doc.setPlainText("see ![x](img/x.png) here");
+
+        WHEN("a MarkdownHighlighter is attached")
+        {
+            MarkdownHighlighter highlighter(&doc);
+            highlighter.setCursorBlockNumber(-1);
+            highlightNow(highlighter);
+            const QTextBlock block = doc.begin();
+
+            THEN("nothing on the line is reserved as an image band — only whole-line images render")
+            {
+                CHECK_FALSE(isImageBandAt(block, 0));
+                CHECK_FALSE(isImageBandAt(block, 6));
             }
         }
     }

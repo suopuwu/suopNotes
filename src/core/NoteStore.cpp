@@ -7,8 +7,10 @@
 #include <QIODevice>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QRegularExpression>
 #include <QSaveFile>
 #include <QSet>
+#include <QUrl>
 #include <QUuid>
 
 namespace
@@ -128,6 +130,10 @@ void NoteStore::deleteNote(const QString &id)
 {
     const QString path = filePathForId(id);
 
+    // Captured before the file is removed, so its images can be garbage-
+    // collected once the note is gone (any that no other note references).
+    const QString content = loadNoteContent(id);
+
     m_pendingContent.remove(id);
     if (QTimer *timer = m_pendingTimers.take(id)) {
         timer->stop();
@@ -139,6 +145,11 @@ void NoteStore::deleteNote(const QString &id)
 
     m_idToFileName.remove(id);
     saveIndex();
+
+    // The note's file is gone from disk and its id from the map, so the
+    // cross-note reference check below no longer sees this note — every image
+    // it uniquely held is now unreferenced and gets swept.
+    cleanupRemovedImages(content, QString());
 
     refreshNoteIds(true);
 }
@@ -359,6 +370,10 @@ void NoteStore::watchAllNoteFiles()
 
 void NoteStore::writeNoteToDisk(const QString &id, const QString &content)
 {
+    // What this note referenced before this write — diffed against `content`
+    // after the write to garbage-collect images the edit removed (see below).
+    const QString previousContent = m_lastWrittenContent.value(id);
+
     // Re-derive the on-disk filename from the content being saved, so the
     // file stays human-readable without the note's id (window title, KWin
     // rule, Settings keys) ever changing — see the class-level comment.
@@ -392,5 +407,93 @@ void NoteStore::writeNoteToDisk(const QString &id, const QString &content)
             m_watcher.removePath(previousPath);
             QFile::remove(previousPath);
         }
+
+        // Garbage-collect any image this edit removed. Runs AFTER the new
+        // content is on disk (so the cross-note reference check sees the edit),
+        // and only ever deletes files that no note references any longer.
+        cleanupRemovedImages(previousContent, content);
+    }
+}
+
+QString NoteStore::importImage(const QString &sourceUrl)
+{
+    // Accept either a file:// URL (what drag-and-drop and the file dialog hand
+    // over) or a plain local path.
+    QString sourcePath = sourceUrl;
+    if (const QUrl url(sourceUrl); url.isLocalFile())
+        sourcePath = url.toLocalFile();
+
+    const QFileInfo sourceInfo(sourcePath);
+    if (!sourceInfo.exists() || !sourceInfo.isFile())
+        return QString();
+
+    const QDir imgDir(QDir(m_notesFolder).filePath(QStringLiteral("img")));
+    if (!QDir().mkpath(imgDir.absolutePath()))
+        return QString();
+
+    // Keep the source's own basename, but strip "(" and ")" from it: the name
+    // ends up inside a markdown image src, "![](img/<name>)", where an unescaped
+    // ")" would terminate the src early. The collision suffix is "-2"/"-3"...
+    // (NOT " (2)" like note files use) for the same reason — note filenames are
+    // never embedded in markdown, image names always are.
+    QString base = sourceInfo.completeBaseName();
+    base.replace(QRegularExpression(QStringLiteral("[()]")), QStringLiteral("_"));
+    if (base.isEmpty())
+        base = QStringLiteral("image");
+    const QString suffix =
+        sourceInfo.suffix().isEmpty() ? QString() : (QStringLiteral(".") + sourceInfo.suffix());
+    QString fileName = base + suffix;
+    int counter = 2;
+    while (imgDir.exists(fileName))
+        fileName = QStringLiteral("%1-%2%3").arg(base).arg(counter++).arg(suffix);
+
+    if (!QFile::copy(sourcePath, imgDir.filePath(fileName)))
+        return QString();
+
+    return QStringLiteral("img/") + fileName;
+}
+
+QSet<QString> NoteStore::imageReferencesIn(const QString &content)
+{
+    // ![alt](img/<name>) — deliberately ONLY images under our own img/ folder.
+    // An external URL (http…, or an absolute path a user typed) is not ours to
+    // manage and must never be deleted, so it never matches here.
+    static const QRegularExpression pattern(QStringLiteral("!\\[[^\\]\\n]*\\]\\((img/[^)\\n]+)\\)"));
+    QSet<QString> refs;
+    QRegularExpressionMatchIterator it = pattern.globalMatch(content);
+    while (it.hasNext())
+        refs.insert(it.next().captured(1));
+    return refs;
+}
+
+bool NoteStore::isImageReferencedByAnyNote(const QString &relativePath) const
+{
+    const QDir dir(m_notesFolder);
+    const QFileInfoList entries = dir.entryInfoList(QStringList{QStringLiteral("*.md")}, QDir::Files);
+    for (const QFileInfo &entry : entries) {
+        QFile file(entry.absoluteFilePath());
+        if (!file.open(QIODevice::ReadOnly))
+            continue;
+        const QString content = QString::fromUtf8(file.readAll());
+        file.close();
+        if (imageReferencesIn(content).contains(relativePath))
+            return true;
+    }
+    return false;
+}
+
+void NoteStore::cleanupRemovedImages(const QString &before, const QString &after)
+{
+    const QSet<QString> beforeRefs = imageReferencesIn(before);
+    if (beforeRefs.isEmpty())
+        return; // the common case (no images) costs one regex and stops here
+
+    const QSet<QString> afterRefs = imageReferencesIn(after);
+    for (const QString &ref : beforeRefs) {
+        if (afterRefs.contains(ref))
+            continue; // this note still uses it
+        if (isImageReferencedByAnyNote(ref))
+            continue; // another note still uses it (img/ is shared)
+        QFile::remove(QDir(m_notesFolder).filePath(ref));
     }
 }

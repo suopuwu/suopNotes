@@ -74,6 +74,26 @@ public:
     void setCursorBlockNumber(int blockNumber);
     int cursorBlockNumber() const;
 
+    // The cursor's exact document position (-1 for "nowhere"), NOT just its
+    // block — links and images need finer granularity than "which line" (bug
+    // found live: with only block-level reveal, a link stayed expanded to its
+    // raw "[text](url)" as long as the cursor was ANYWHERE on that line — e.g.
+    // several words past it, or on the very trailing space auto-linking a typed
+    // URL leaves behind — instead of only while actually on the link itself).
+    // Headings/lists/emphasis still key off setCursorBlockNumber above
+    // unchanged; only applyLinks() and highlightImageLine() read this.
+    //
+    // Internally resolves the block number and forwards to
+    // setCursorBlockNumber() (so its own two-block repaint and no-op guard
+    // still apply for the coarse case), then ALSO repaints the current block
+    // when the position moved WITHIN it — needed because moving from touching
+    // a link to just past it doesn't change the block number at all, and
+    // without this the reveal would only update on the next line change. This
+    // extra repaint only happens for a block whose text can actually contain a
+    // link or image, so plain prose lines pay nothing extra for cursor moves
+    // within them.
+    void setCursorPosition(int position);
+
     // Whether the markdown decoration pass runs at all. True by default —
     // an ordinary note is a markdown note. Code mode turns this off (subject
     // to Settings::codeModeDisablesMarkdownHighlighting), leaving the buffer's
@@ -140,7 +160,21 @@ private:
     // top (see DocumentHandler::tableRanges).
     bool highlightTableRow(const QString &text);
 
+    // A line that is nothing but an image, "![alt](src)". While the cursor is
+    // NOT touching the image markdown itself (see m_cursorPosition — this is
+    // position-based, not block-level: being elsewhere on an otherwise-blank
+    // line doesn't count, though in practice an image is always alone on its
+    // line) it collapses to a transparent band that NoteWindow.qml draws the
+    // real picture (or a "Select image…" button, if empty) into — see
+    // DocumentHandler::imageRanges. While touched, it stays raw, editable text
+    // at normal size. Returns true if `text` was an image line (and so should
+    // skip the heading/list/emphasis passes), false otherwise.
+    bool highlightImageLine(const QString &text);
+
     int m_cursorBlockNumber = -1;
+    // See setCursorPosition's own doc comment for why this exists alongside
+    // m_cursorBlockNumber rather than being derivable from it.
+    int m_cursorPosition = -1;
     bool m_markdownDecorationEnabled = true;
     QList<TextSearch::Match> m_searchMatches;
     int m_currentSearchMatch = -1;

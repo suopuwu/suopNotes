@@ -93,6 +93,14 @@ class DocumentHandler : public QObject
     // for the whole table. The delimiter row is excluded from rowStarts: it is
     // collapsed to a sliver and is where the header rule gets drawn instead.
     Q_PROPERTY(QVariantList tableRanges READ tableRanges NOTIFY tableRangesChanged)
+
+    // Whole-line images (feature request): each entry is {start, end, src, alt}
+    // in document positions (start/end bracket the "![alt](src)" line's text),
+    // for NoteWindow.qml to draw the picture into the tall reserved band
+    // MarkdownHighlighter leaves for it — or, when src is empty, a "Browse…"
+    // placeholder. Same Repeater-driving, emit-only-on-real-change discipline as
+    // listMarkerRanges above (see emitImageRangesChangedIfNeeded).
+    Q_PROPERTY(QVariantList imageRanges READ imageRanges NOTIFY imageRangesChanged)
 public:
     explicit DocumentHandler(QObject *parent = nullptr);
     ~DocumentHandler();
@@ -120,6 +128,8 @@ public:
     QVariantList listMarkerRanges() const;
 
     QVariantList tableRanges() const;
+
+    QVariantList imageRanges() const;
 
     // Re-runs the markdown pass over the whole document. Needed because table
     // column alignment is computed from the document's font metrics (see
@@ -300,6 +310,25 @@ public:
     // past the glyph into its label text).
     Q_INVOKABLE QRectF checkboxRectAt(int position) const;
 
+    // The URL of the [text](url) link whose visible text contains `position`,
+    // or an empty string if `position` isn't on a link. Drives middle-click-to-
+    // open and the hover tooltip in NoteWindow.qml (feature request: clickable
+    // links). Scans only the block containing `position`, so it's cheap enough
+    // to call on every hover move. The clickable region is the visible text
+    // (what renders as the link), NOT the collapsed "](url)" punctuation.
+    Q_INVOKABLE QString linkUrlAt(int position) const;
+
+    // Inserts an empty image placeholder "![]()" on its own line at `position`
+    // (feature request: the toolbar's insert-image button) — it renders as a
+    // Browse placeholder the user then fills in. Adds surrounding newlines only
+    // as needed so the image always ends up alone on its line (block images
+    // only render when nothing else shares the line).
+    Q_INVOKABLE void insertImage(int position);
+    // Sets the src of the image on the line containing `position` to
+    // `relativePath` (feature request: after the Browse dialog picks a file).
+    // No-op if that line isn't an image. Done as one undoable edit.
+    Q_INVOKABLE void setImageSourceAt(int position, const QString &relativePath);
+
     // Enter/Return inside a list item (bullet or numbered): continues the
     // list with a new item, or — if the current item is empty — exits the
     // list back to a plain paragraph, mirroring standard word-processor
@@ -316,6 +345,16 @@ public:
     // is universal enough (Notion, Word, GitHub's own editor) that users
     // expect it to just work. Returns true if a conversion happened.
     Q_INVOKABLE bool tryAutoConvertListShorthand(int cursorPosition);
+
+    // Also called after every keystroke (feature request: "auto detect when a
+    // url ... is typed ... transform them into markdown syntax"). When a
+    // word-terminating space is typed right after a bare URL — a full one, a
+    // "www." one, or a scheme-less "example.com" — the URL is wrapped into
+    // "[url](url)" markdown, adding "https://" to the link target if the typed
+    // text lacked a scheme. From then on it renders and middle-click-opens like
+    // any other link. Returns true if a conversion happened. Gated on
+    // auto-formatting (off in code mode, same as the list shorthand above).
+    Q_INVOKABLE bool tryAutoLinkUrl(int cursorPosition);
 
     // Also called after every keystroke: re-derives the cursor's own
     // numbered-list run (sequential numbers + shared marker width) if it's
@@ -356,6 +395,7 @@ signals:
     // genuinely differs, so typing inside a list item's text doesn't rebuild
     // the glyph overlay's delegates on every keystroke.
     void listMarkerRangesChanged();
+    void imageRangesChanged();
     // Emitted when the set of tables, or their shape, may have changed — same
     // only-on-real-change discipline as the two above.
     void tableRangesChanged();
@@ -423,6 +463,8 @@ private:
     void emitListMarkerRangesChangedIfNeeded();
     QVariantList computeTableRanges() const;
     void emitTableRangesChangedIfNeeded();
+    QVariantList computeImageRanges() const;
+    void emitImageRangesChangedIfNeeded();
     // Recomputes misspelledWordRanges and only emits misspelledWordRangesChanged
     // if the result actually differs from the last-emitted value. Every
     // trigger that used to emit misspelledWordRangesChanged unconditionally
@@ -463,6 +505,7 @@ private:
     QVariantList m_lastMisspelledWordRanges;
     QVariantList m_lastListMarkerRanges;
     QVariantList m_lastTableRanges;
+    QVariantList m_lastImageRanges;
     int m_spellcheckDebounceMs = 500;
     // Bug found live ("the current word that has a popup currently loses
     // the underline when the popup is on" — the previous cursor/selection-
@@ -505,6 +548,10 @@ private:
     // it's still in progress is guaranteed redundant (the outer call will
     // finish leaving everything consistent) and just no-ops instead.
     bool m_handlingListMutation = false;
+    // Reentrancy guard for tryAutoLinkUrl: its own document edit re-enters
+    // onContentEdited synchronously (like the list shorthand), and without this
+    // the nested call could read a mid-edit cursor position and convert again.
+    bool m_handlingAutoLink = false;
 
     // The buffer's text as of the last maintainListNumbering() pass that did
     // any work — the gate that keeps that pass reacting to TEXT changes only.

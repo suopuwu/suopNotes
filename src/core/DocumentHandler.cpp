@@ -9,6 +9,7 @@
 
 #include <QAbstractTextDocumentLayout>
 #include <QRegularExpression>
+#include <QScopeGuard>
 #include <QTextBlock>
 #include <QTextDocument>
 
@@ -188,6 +189,8 @@ void DocumentHandler::setDocument(QQuickTextDocument *document)
     emit listMarkerRangesChanged();
     m_lastTableRanges = computeTableRanges();
     emit tableRangesChanged();
+    m_lastImageRanges = computeImageRanges();
+    emit imageRangesChanged();
 }
 
 bool DocumentHandler::spellcheckEnabled() const
@@ -336,6 +339,7 @@ void DocumentHandler::onContentsChange(int from, int charsRemoved, int charsAdde
     if (charsRemoved != 0 || charsAdded != 0) {
         emitListMarkerRangesChangedIfNeeded();
         emitTableRangesChangedIfNeeded();
+        emitImageRangesChangedIfNeeded();
     }
 }
 
@@ -464,6 +468,119 @@ void DocumentHandler::emitTableRangesChangedIfNeeded()
     emit tableRangesChanged();
 }
 
+namespace
+{
+// A line that is nothing but an image: "![alt](src)", optionally indented or
+// trailing-padded. Group 1 is the whole image span itself — from "!" to the
+// closing ")", EXCLUDING any surrounding whitespace. Group 2 is the alt text,
+// group 3 the src (either may be empty). Kept in sync with MarkdownHighlighter's
+// own image detection — the highlighter reserves the band, this reports where
+// to draw into it; a disagreement would draw an image with no reserved space or
+// vice versa.
+const QRegularExpression &imageLinePattern()
+{
+    static const QRegularExpression pattern(
+        QStringLiteral("^\\s*(!\\[([^\\]\\n]*)\\]\\(([^)\\n]*)\\))\\s*$"));
+    return pattern;
+}
+}
+
+QVariantList DocumentHandler::imageRanges() const
+{
+    return computeImageRanges();
+}
+
+QVariantList DocumentHandler::computeImageRanges() const
+{
+    QVariantList ranges;
+    if (!m_document || !m_document->textDocument())
+        return ranges;
+
+    const QTextDocument *document = m_document->textDocument();
+    for (QTextBlock block = document->begin(); block.isValid(); block = block.next()) {
+        const QString text = block.text();
+        const QRegularExpressionMatch match = imageLinePattern().match(text);
+        if (!match.hasMatch())
+            continue;
+
+        // The image markdown's OWN span (group 1) — excluding any surrounding
+        // line whitespace — not the whole line. This is what NoteWindow.qml's
+        // overlay compares the cursor against to decide whether it's "touching"
+        // the image (bug found live: using the full line let a trailing space
+        // after the image count as touching it too, same class of bug the
+        // highlighter's own touch test had — see its imageLinePattern comment).
+        QVariantMap range;
+        range.insert(QStringLiteral("start"), block.position() + match.capturedStart(1));
+        range.insert(QStringLiteral("end"), block.position() + match.capturedEnd(1));
+        range.insert(QStringLiteral("alt"), match.captured(2));
+        range.insert(QStringLiteral("src"), match.captured(3));
+        ranges.append(range);
+    }
+    return ranges;
+}
+
+void DocumentHandler::emitImageRangesChangedIfNeeded()
+{
+    const QVariantList current = computeImageRanges();
+    if (current == m_lastImageRanges)
+        return;
+    m_lastImageRanges = current;
+    emit imageRangesChanged();
+}
+
+void DocumentHandler::insertImage(int position)
+{
+    if (!m_document || !m_document->textDocument())
+        return;
+
+    QTextDocument *document = m_document->textDocument();
+    QTextCursor cursor(document);
+    cursor.setPosition(qBound(0, position, document->characterCount() - 1));
+
+    // A block image only renders when it's alone on its line, so wrap the
+    // placeholder in a leading newline unless the cursor already sits on an
+    // empty (or block-start) line. The trailing newline is UNCONDITIONAL —
+    // unlike the leading one — so the cursor always ends up on a fresh line
+    // just past the image, never touching it: this is what makes the
+    // "Select image…" placeholder show immediately after inserting (bug found
+    // live: with a conditional trailing newline, inserting on an empty line
+    // left the cursor sitting right after the closing ")", "touching" the
+    // image per DocumentHandler::computeImageRanges/MarkdownHighlighter's own
+    // touch test, so it rendered as raw "![]()" text instead of the button).
+    const QTextBlock block = cursor.block();
+    const bool lineEmpty = block.text().isEmpty();
+    const QString prefix = (lineEmpty || cursor.atBlockStart()) ? QString() : QStringLiteral("\n");
+
+    cursor.beginEditBlock();
+    cursor.insertText(prefix + QStringLiteral("![]()\n"));
+    cursor.endEditBlock();
+}
+
+void DocumentHandler::setImageSourceAt(int position, const QString &relativePath)
+{
+    if (!m_document || !m_document->textDocument())
+        return;
+
+    QTextDocument *document = m_document->textDocument();
+    const QTextBlock block = document->findBlock(qBound(0, position, document->characterCount() - 1));
+    if (!block.isValid())
+        return;
+
+    const QString text = block.text();
+    const QRegularExpressionMatch match = imageLinePattern().match(text);
+    if (!match.hasMatch())
+        return;
+
+    // Replace exactly the src (capture 3) — which may be empty ("![]()") — with
+    // the new path, as one undoable edit, leaving the alt text untouched.
+    QTextCursor cursor(document);
+    cursor.setPosition(block.position() + match.capturedStart(3));
+    cursor.setPosition(block.position() + match.capturedEnd(3), QTextCursor::KeepAnchor);
+    cursor.beginEditBlock();
+    cursor.insertText(relativePath);
+    cursor.endEditBlock();
+}
+
 void DocumentHandler::rehighlightMarkdown()
 {
     if (m_markdownHighlighter)
@@ -476,16 +593,19 @@ void DocumentHandler::setCursorPosition(int position)
         return;
 
     if (position < 0) {
-        m_markdownHighlighter->setCursorBlockNumber(-1);
+        m_markdownHighlighter->setCursorPosition(-1);
         return;
     }
 
     if (!m_document || !m_document->textDocument())
         return;
 
-    QTextCursor cursor(m_document->textDocument());
-    cursor.setPosition(qBound(0, position, m_document->textDocument()->characterCount() - 1));
-    m_markdownHighlighter->setCursorBlockNumber(cursor.blockNumber());
+    // Forwards the exact position (not just its block number) — see
+    // MarkdownHighlighter::setCursorPosition's own doc comment: links and
+    // images need to know exactly where the cursor is, not merely which line
+    // it's on, to tell "touching this link" apart from "elsewhere on its line".
+    m_markdownHighlighter->setCursorPosition(
+        qBound(0, position, m_document->textDocument()->characterCount() - 1));
 }
 
 QVariantList DocumentHandler::computeMisspelledWordRanges() const
@@ -1153,6 +1273,95 @@ bool DocumentHandler::tryAutoConvertListShorthand(int cursorPosition)
     return true;
 }
 
+namespace
+{
+// Whether a bare token (no surrounding whitespace) is a URL worth autolinking:
+// an explicit http/https URL, a "www." host, or a plain "host.tld[/path]" using
+// a common TLD. The TLD list is deliberately curated (and omits "md", which is
+// a real ccTLD but overwhelmingly a note filename here) so ordinary words with
+// dots — "e.g", "readme.md", "1.2" — aren't mistaken for links. Anchored, so it
+// matches the whole token or nothing.
+bool isAutolinkableUrl(const QString &token)
+{
+    static const QRegularExpression pattern(QStringLiteral(
+        "^(?:https?://[^\\s]+"
+        "|www\\.[^\\s]+"
+        "|[a-zA-Z0-9][a-zA-Z0-9-]*(?:\\.[a-zA-Z0-9-]+)*\\.(?:com|org|net|edu|gov|io|dev|app|co"
+        "|ai|xyz|info|biz|me|tv|us|uk|ca|de|fr|eu|jp|cn|in|au|nz|nl|se|no|es|it|ru|br|za|ch|be"
+        "|dk|fi|pl|cloud|online|site|tech|store|blog|news)(?:/[^\\s]*)?)$"));
+    return pattern.match(token).hasMatch();
+}
+
+// Adds an "https://" scheme to a scheme-less URL so it actually opens. "www.x"
+// and "x.com" both become "https://…"; an already-schemed URL is left alone.
+QString withScheme(const QString &url)
+{
+    if (url.contains(QStringLiteral("://")))
+        return url;
+    return QStringLiteral("https://") + url;
+}
+}
+
+bool DocumentHandler::tryAutoLinkUrl(int cursorPosition)
+{
+    // Off in code mode, same reasoning as the list shorthand: a URL-looking
+    // token in a code note ("import foo.bar.baz") must not be rewritten.
+    if (!m_autoFormattingEnabled)
+        return false;
+    if (m_handlingAutoLink)
+        return false; // see m_handlingAutoLink — our own edit re-enters here
+    if (!m_document || !m_document->textDocument())
+        return false;
+
+    QTextDocument *document = m_document->textDocument();
+    const QTextBlock block = document->findBlock(cursorPosition);
+    if (!block.isValid())
+        return false;
+
+    const QString text = block.text();
+    const int posInBlock = cursorPosition - block.position();
+    // Fire only right after a word-terminating space/tab (the char just typed),
+    // so conversion happens once the URL is finished, not mid-typing.
+    if (posInBlock <= 1 || posInBlock > text.size() || !text.at(posInBlock - 1).isSpace())
+        return false;
+
+    // The token that ends just before that boundary.
+    int end = posInBlock - 1;
+    int start = end;
+    while (start > 0 && !text.at(start - 1).isSpace())
+        --start;
+    if (start >= end)
+        return false;
+
+    const QString token = text.mid(start, end - start);
+
+    // Skip anything already inside link/image markdown (its own brackets/parens,
+    // or a leading "!"/"["/"(" just before it), and anything that isn't a URL.
+    if (token.contains('[') || token.contains(']') || token.contains('(') || token.contains(')'))
+        return false;
+    if (start > 0) {
+        const QChar before = text.at(start - 1);
+        if (before == '(' || before == '[' || before == '!')
+            return false;
+    }
+    if (!isAutolinkableUrl(token))
+        return false;
+
+    m_handlingAutoLink = true;
+    const auto reset = qScopeGuard([this]() { m_handlingAutoLink = false; });
+
+    // Replace the bare URL with "[url](url-with-scheme)" as one undoable edit.
+    // The visible text stays exactly what was typed; only the link target gains
+    // a scheme if it was missing.
+    QTextCursor cursor(document);
+    cursor.setPosition(block.position() + start);
+    cursor.setPosition(block.position() + end, QTextCursor::KeepAnchor);
+    cursor.beginEditBlock();
+    cursor.insertText(QStringLiteral("[%1](%2)").arg(token, withScheme(token)));
+    cursor.endEditBlock();
+    return true;
+}
+
 void DocumentHandler::maintainListNumbering(int cursorPosition)
 {
     // Nothing here writes anything if no numbered list exists, so this gate is
@@ -1333,4 +1542,32 @@ QRectF DocumentHandler::checkboxRectAt(int position) const
     QTextCursor cursor(m_document->textDocument());
     cursor.setPosition(position);
     return TextFormatting::checkboxMarkerRect(cursor);
+}
+
+QString DocumentHandler::linkUrlAt(int position) const
+{
+    if (!m_document || !m_document->textDocument())
+        return QString();
+
+    const QTextDocument *document = m_document->textDocument();
+    const QTextBlock block = document->findBlock(position);
+    if (!block.isValid())
+        return QString();
+
+    // Same pattern MarkdownHighlighter uses for links, kept in sync deliberately
+    // (a link the highlighter styled but this didn't recognize would render
+    // clickable-looking yet do nothing). Scans this block only — a link never
+    // spans lines — so it's cheap on every hover move.
+    static const QRegularExpression pattern(QStringLiteral("(?<!!)\\[([^\\]\\n]+)\\]\\(([^)\\n]*)\\)"));
+    const int posInBlock = position - block.position();
+    const QString text = block.text();
+    QRegularExpressionMatchIterator it = pattern.globalMatch(text);
+    while (it.hasNext()) {
+        const QRegularExpressionMatch match = it.next();
+        // The hit region is the visible text (capture 1) — what actually
+        // renders as the link — not the collapsed "](url)" punctuation.
+        if (posInBlock >= match.capturedStart(1) && posInBlock < match.capturedEnd(1))
+            return match.captured(2);
+    }
+    return QString();
 }

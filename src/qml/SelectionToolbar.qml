@@ -412,6 +412,7 @@ Window {
     readonly property alias italicButtonTip: italicButtonTip
     readonly property alias strikethroughButtonTip: strikethroughButtonTip
     readonly property alias insertTableButton: insertTableButton
+    readonly property alias insertImageButton: insertImageButton
     readonly property alias columnOptionsPopup: columnOptionsPopup
     readonly property alias spellingSuggestionsPopup: spellingSuggestionsPopup
     readonly property alias addToDictionaryButton: addToDictionaryButton
@@ -437,20 +438,21 @@ Window {
     readonly property int barThickness: 36
     readonly property int buttonSize: 32
     // gripHandle (9) + 1 divider (1, inside the drag-handle group before
-    // the formatting/table buttons) + 9 buttons * buttonSize (288) + 10
-    // gaps * spacing (20), plus a little breathing room so nothing sits
+    // the formatting/table buttons) + 10 buttons * buttonSize (320) + 11
+    // gaps * spacing (22), plus a little breathing room so nothing sits
     // flush against background's rounded corners. A window a few px
     // narrower than its actual content silently clips the rightmost
     // buttons' hit-test region outside the real window surface (confirmed
     // historically as the explanation for reported missing tooltips and
     // unreliable clicks on the last button(s) in the row), so this stays
-    // comfortably above content's ~330px implicit width. Kept even (340,
-    // not an odd value): reposition()'s own centering math divides this by
-    // 2, and window positioning rounds to whole pixels — an odd barLength
-    // surfaced a half-pixel mismatch against that rounding (confirmed
-    // empirically), which an even value sidesteps entirely rather than
-    // chasing down exactly where the rounding happens.
-    readonly property int barLength: 340
+    // comfortably above content's implicit width. Bumped from 340 to 374 when
+    // the Insert Image button (the 10th) was added — one more buttonSize + gap.
+    // Kept even (374, not an odd value): reposition()'s own centering math
+    // divides this by 2, and window positioning rounds to whole pixels — an odd
+    // barLength surfaced a half-pixel mismatch against that rounding (confirmed
+    // empirically), which an even value sidesteps entirely rather than chasing
+    // down exactly where the rounding happens.
+    readonly property int barLength: 374
 
     // The grip + dividers always stay in the toolbar's first line/column
     // regardless of button count — only the buttons themselves wrap once
@@ -1322,6 +1324,25 @@ Window {
                 text: "Insert Table"
                 suppressed: bar.noteWindow ? bar.noteWindow.currentInTable : false
             }
+        }
+
+        // Insert an empty image placeholder (feature request): drops "![]()" on
+        // its own line at the cursor, which renders as a Browse placeholder the
+        // user then fills in (or drag-and-drop an image file straight onto the
+        // note instead — see NoteWindow.qml's DropArea). Material "image" glyph.
+        ToolButton {
+            id: insertImageButton
+            implicitWidth: bar.buttonSize
+            implicitHeight: bar.buttonSize
+            Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
+            background: ToolbarButtonHighlight {}
+            hoverEnabled: true
+            contentItem: ToolbarSvgIcon {
+                path: "M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"
+            }
+            enabled: !bar.formattingSuppressed
+            onClicked: bar.runAction(() => bar.noteWindow.docHandler.insertImage(bar.noteWindow.editor.selectionEnd))
+            ToolbarButtonTip { text: "Insert Image" }
         }
     }
 

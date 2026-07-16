@@ -385,6 +385,121 @@ Item {
             noteStore.deleteNote(newId)
         }
 
+        // linkUrlAt is the hit-test behind middle-click-to-open and the hover
+        // tooltip (feature request: clickable links). It reports a url only for
+        // a position inside a link's VISIBLE text, and never for an image's
+        // ![alt](src) (the "!" marks it an image, rendered as a block instead).
+        function test_linkUrlAt_reports_the_url_only_inside_the_visible_link_text() {
+            const win = contextMenuTestWindow
+            win.docHandler.setMarkdown("see [the site](https://example.com) now")
+
+            compare(win.docHandler.linkUrlAt(6), "https://example.com",
+                    "a position inside the link text resolves to the link's url")
+            compare(win.docHandler.linkUrlAt(0), "",
+                    "a position in ordinary prose before the link resolves to no url")
+            compare(win.docHandler.linkUrlAt(37), "",
+                    "a position in ordinary prose after the link resolves to no url")
+
+            win.docHandler.setMarkdown("![alt](img/x.png)")
+            compare(win.docHandler.linkUrlAt(3), "",
+                    "an image's alt text is not a link, so it reports no url")
+
+            win.docHandler.setMarkdown("")
+        }
+
+        // Typing a bare URL then a space rewrites it into [url](url) markdown
+        // (feature request), adding https:// to the target when the typed text
+        // had no scheme — so a scheme-less "example.com" still becomes a working
+        // link. tryAutoLinkUrl keys off the just-typed trailing space.
+        function test_typing_a_url_then_space_converts_it_to_a_markdown_link() {
+            const win = contextMenuTestWindow
+
+            win.docHandler.setMarkdown("visit example.com ")
+            win.docHandler.tryAutoLinkUrl(win.editor.length)
+            compare(win.editor.text, "visit [example.com](https://example.com) ",
+                    "a scheme-less domain gains https:// in the link target, text unchanged")
+
+            win.docHandler.setMarkdown("see https://foo.io ")
+            win.docHandler.tryAutoLinkUrl(win.editor.length)
+            compare(win.editor.text, "see [https://foo.io](https://foo.io) ",
+                    "an already-schemed URL keeps its scheme")
+
+            win.docHandler.setMarkdown("at www.bar.com ")
+            win.docHandler.tryAutoLinkUrl(win.editor.length)
+            compare(win.editor.text, "at [www.bar.com](https://www.bar.com) ",
+                    "a www. host is linked with an added scheme")
+
+            win.docHandler.setMarkdown("")
+        }
+
+        // Auto-linking must not fire on things that merely contain a dot: an
+        // ordinary word, a note filename (.md), or an already-linked URL.
+        function test_auto_link_leaves_non_urls_and_existing_links_alone() {
+            const win = contextMenuTestWindow
+
+            win.docHandler.setMarkdown("edit readme.md ")
+            win.docHandler.tryAutoLinkUrl(win.editor.length)
+            compare(win.editor.text, "edit readme.md ", "a .md filename is not a link")
+
+            win.docHandler.setMarkdown("say hello ")
+            win.docHandler.tryAutoLinkUrl(win.editor.length)
+            compare(win.editor.text, "say hello ", "a plain word is not a link")
+
+            win.docHandler.setMarkdown("[example.com](https://example.com) ")
+            win.docHandler.tryAutoLinkUrl(win.editor.length)
+            compare(win.editor.text, "[example.com](https://example.com) ",
+                    "an already-markdown link is not converted again")
+
+            win.docHandler.setMarkdown("")
+        }
+
+        // The toolbar's Insert Image button drops an empty "![]()" on its own
+        // line, which imageRanges then reports so NoteWindow can draw a Browse
+        // placeholder for it.
+        function test_insertImage_adds_an_empty_image_that_imageRanges_reports() {
+            const win = contextMenuTestWindow
+            win.docHandler.setMarkdown("hello")
+
+            win.docHandler.insertImage(win.editor.length)
+
+            verify(win.editor.text.indexOf("![]()") !== -1,
+                   "an empty image placeholder is inserted into the buffer")
+            const ranges = win.docHandler.imageRanges
+            compare(ranges.length, 1, "the empty image is reported as one image range")
+            compare(ranges[0].src, "", "with an empty src, so QML draws a Browse placeholder")
+
+            win.docHandler.setMarkdown("")
+        }
+
+        // After the Browse dialog picks a file (copied in via importImage), the
+        // chosen path is written into the empty image's src, leaving the alt
+        // text alone.
+        function test_setImageSourceAt_fills_in_an_empty_images_src() {
+            const win = contextMenuTestWindow
+            win.docHandler.setMarkdown("![alt]()")
+
+            win.docHandler.setImageSourceAt(0, "img/cat.png")
+
+            compare(win.editor.text, "![alt](img/cat.png)",
+                    "the src is filled in and the alt text preserved")
+            const ranges = win.docHandler.imageRanges
+            compare(ranges.length, 1)
+            compare(ranges[0].src, "img/cat.png")
+            compare(ranges[0].alt, "alt")
+
+            win.docHandler.setMarkdown("")
+        }
+
+        // Only a whole-line image is reported (and so rendered) — an image
+        // sharing its line with other text is left as raw markdown.
+        function test_imageRanges_reports_only_whole_line_images() {
+            const win = contextMenuTestWindow
+            win.docHandler.setMarkdown("see ![x](img/x.png) inline")
+            compare(win.docHandler.imageRanges.length, 0,
+                    "an inline image mid-sentence is not reported as a block image")
+            win.docHandler.setMarkdown("")
+        }
+
         // noteOrigin() is what every screen-coordinate consumer in this file
         // goes through, so its fallback rule is worth stating outright: a note
         // that has never been positioned has no model-backed origin to read,
