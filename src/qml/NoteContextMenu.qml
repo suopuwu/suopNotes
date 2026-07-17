@@ -94,6 +94,7 @@ Window {
     readonly property alias copyItem: copyItem
     readonly property alias pasteItem: pasteItem
     readonly property alias duplicateItem: duplicateItem
+    readonly property alias revealItem: revealItem
     readonly property alias deleteItem: deleteItem
     readonly property alias background: background
     readonly property alias content: content
@@ -139,13 +140,17 @@ Window {
     //
     // Even numbers: reposition()'s math and the compositor both round to
     // whole pixels, and SelectionToolbar.qml records a half-pixel mismatch
-    // surfacing from an odd length. Height: 5 rows * 28 + one 10px separator
-    // + 5 gaps * 2 spacing + 2 * 4 margins = 168. Width is not derived from
-    // the longest label ("Duplicate Note") — a fixed 176 leaves it room at
-    // the default font with the padding below, and the labels elide rather
-    // than resize the window if a font ever outgrows it.
-    readonly property int wantedWidth: 176
-    readonly property int wantedHeight: 168
+    // surfacing from an odd length. Height: 6 rows * 28 + one 10px separator
+    // + 6 gaps * 2 spacing + 2 * 4 margins = 198. Width is not derived from
+    // the longest label ("Reveal in File Manager") — a fixed 200 leaves it
+    // room at the default font with the padding below, and the labels elide
+    // rather than resize the window if a font ever outgrows it.
+    //
+    // Both numbers are hand-maintained: nothing recomputes them when a row is
+    // added, and a mismatch clips a row silently rather than failing loudly —
+    // test_the_windows_fixed_size_still_fits_the_rows_it_has is what notices.
+    readonly property int wantedWidth: 200
+    readonly property int wantedHeight: 198
     readonly property int itemHeight: 28
     readonly property int separatorHeight: 10
 
@@ -694,6 +699,25 @@ Window {
                 const menuY = menu.y
                 menu.runAction(note => note.duplicateNoteAt(menuX, menuY))
             }
+        }
+        MenuAction {
+            id: revealItem
+            text: "Reveal in File Manager"
+            // Dimmed when the note has no file to show. Read once, when the
+            // menu binds to a note, and deliberately not reactive — the two
+            // ways this answer could go stale both resolve themselves before
+            // anyone could see it:
+            //   - the file is deleted externally: NoteStore's noteIdsChanged
+            //     has Main.qml's reconcileNotesWithDisk() close that note
+            //     outright, which unbinds this menu (onNoteWindowChanged);
+            //   - a debounced save renames the file: the PATH changes, its
+            //     existence doesn't, so this answer was never wrong — and
+            //     revealInFileManager() re-reads the path at click time rather
+            //     than trusting anything cached here.
+            // A live note is otherwise file-backed from birth: createNote()
+            // writes the file synchronously.
+            enabled: menu.noteWindow ? noteStore.noteFilePath(menu.noteWindow.noteId) !== "" : false
+            onClicked: menu.runAction(note => note.revealInFileManager())
         }
         MenuAction {
             id: deleteItem

@@ -8,6 +8,7 @@
 #include "core/BlurEffect.h"
 #include "core/DocumentHandler.h"
 #include "core/EditorDragFilter.h"
+#include "core/FileRevealer.h"
 #include "core/NoteAppearance.h"
 #include "core/NoteStore.h"
 #include "core/OpenNotesModel.h"
@@ -27,6 +28,15 @@
 // this offscreen test environment since it targets the test system's own,
 // if any). Also registers the DocumentHandler and EditorDragFilter QML
 // types NoteWindow.qml's editor instantiates/is wrapped in.
+//
+// The FileRevealer here is real, like the rest, but is present only so the
+// QML that binds to it resolves — no test calls reveal(), and none should:
+// unlike every other object above, its one method has an effect OUTSIDE this
+// process that the offscreen platform does nothing to contain (it would
+// launch the tester's actual file manager). Its dispatch logic is covered in
+// tests/unit/test_file_revealer.cpp instead, and what the menu does with it
+// is asserted through the row's enabled state — see
+// tst_NoteContextMenu.qml's reveal tests.
 class Setup : public QObject
 {
     Q_OBJECT
@@ -56,6 +66,7 @@ public slots:
         engine->rootContext()->setContextProperty("openNotesModel", &m_openNotesModel);
         engine->rootContext()->setContextProperty("positionManager", &m_positionManager);
         engine->rootContext()->setContextProperty("autostart", &m_autostartManager);
+        engine->rootContext()->setContextProperty("fileRevealer", &m_fileRevealer);
     }
 
 private:
@@ -67,6 +78,7 @@ private:
     OpenNotesModel m_openNotesModel;
     PositionManager m_positionManager;
     AutostartManager m_autostartManager;
+    FileRevealer m_fileRevealer;
 };
 
 QUICK_TEST_MAIN_WITH_SETUP(suopNotesQml, Setup)

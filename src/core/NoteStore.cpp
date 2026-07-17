@@ -92,6 +92,19 @@ QString NoteStore::loadNoteContent(const QString &id) const
     return QString::fromUtf8(file.readAll());
 }
 
+QString NoteStore::noteFilePath(const QString &id) const
+{
+    // The existence check is not belt-and-braces: filePathForId() answers from
+    // m_idToFileName alone, which is an in-memory map that can outlive the file
+    // it names (an external delete is only noticed when the watcher fires).
+    // Handing a caller a path to a file that isn't there would turn "reveal
+    // this note" into a file manager opening on nothing.
+    const QString path = filePathForId(id);
+    if (path.isEmpty() || !QFileInfo::exists(path))
+        return QString();
+    return QFileInfo(path).absoluteFilePath();
+}
+
 // The content write here is deliberately synchronous rather than a
 // saveNoteContent() call, which is what a "duplicate note" caller would
 // otherwise reach for. saveNoteContent() debounces ~kSaveDebounceMs before it

@@ -8,6 +8,7 @@
 #include "core/BlurEffect.h"
 #include "core/DocumentHandler.h"
 #include "core/EditorDragFilter.h"
+#include "core/FileRevealer.h"
 #include "core/KWinRuleWriter.h"
 #include "core/NoteAppearance.h"
 #include "core/NoteStore.h"
@@ -92,6 +93,7 @@ int main(int argc, char *argv[])
     PositionManager positionManager;
     PositionEventService positionEventService(settings);
     AutostartManager autostartManager;
+    FileRevealer fileRevealer;
 
     // A replace-quit isn't the user closing these notes (see
     // PositionManager::suppressCleanupOnQuit) — must be set before app.quit()
@@ -114,6 +116,7 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty("windowInputMask", &windowInputMask);
     engine.rootContext()->setContextProperty("positionManager", &positionManager);
     engine.rootContext()->setContextProperty("autostart", &autostartManager);
+    engine.rootContext()->setContextProperty("fileRevealer", &fileRevealer);
     engine.addImageProvider(QStringLiteral("notecount"), new TrayIconProvider);
 
     engine.loadFromModule("SuopNotesUi", "Main");

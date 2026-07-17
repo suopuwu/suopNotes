@@ -8,8 +8,24 @@ EditorDragFilter::EditorDragFilter(QQuickItem *parent)
     setFiltersChildMouseEvents(true);
 }
 
+void EditorDragFilter::setEditorItem(QQuickItem *item)
+{
+    if (m_editorItem == item)
+        return;
+    m_editorItem = item;
+    emit editorItemChanged();
+}
+
 bool EditorDragFilter::childMouseEventFilter(QQuickItem *item, QEvent *event)
 {
+    // Only the editor's own drag-selection is this filter's business — a release
+    // (or drag) headed to any other descendant (e.g. the "Select image…"
+    // placeholder button an overlay layers over the editor) must pass straight
+    // through, or that control's own click never completes. See editorItem's
+    // doc comment in the header for the bug this guards against.
+    if (item != m_editorItem)
+        return false;
+
     if (event->type() != QEvent::MouseMove && event->type() != QEvent::MouseButtonRelease)
         return false;
 

@@ -22,33 +22,17 @@ Item {
     // at the Instantiator/model level.
     property var activeNoteWindow: null
 
-    // The note the pointer is currently over, or null — the scope the windowed
-    // ribbon (NoteHudWindow below) binds to. Deliberately SEPARATE from
-    // activeNoteWindow: the ribbon is a hover affordance (it appears on the
-    // note you're pointing at, focused or not), matching the inline ribbon it
-    // replaces, whereas the toolbar/find/menu are focus-gated. Kept alive
-    // across the small gap between the note and the ribbon window (which sits
-    // just outside the note) by hoveredNoteClearDebounce below.
-    property var hoveredNoteWindow: null
-
-    // Debounces clearing hoveredNoteWindow, restarted whenever the tracked note
-    // OR the ribbon loses hover (a one-shot, event-driven timer — never a
-    // recurring poll, see CLAUDE.md). Re-checks at fire time rather than just
-    // delaying: moving the pointer from the note onto the ribbon un-hovers the
-    // note for an instant, and this is what stops the ribbon vanishing out from
-    // under the pointer mid-reach. 150ms is comfortably longer than that gap
-    // crossing while still feeling immediate on leave.
-    Timer {
-        id: hoveredNoteClearDebounce
-        interval: 150
-        repeat: false
-        onTriggered: {
-            if (root.hoveredNoteWindow
-                && (root.hoveredNoteWindow.hovered || noteHudWindow.hovered))
-                return
-            root.hoveredNoteWindow = null
-        }
-    }
+    // Which note the pointer is over is deliberately NOT tracked here, though
+    // it used to be. That tracking exists to scope the windowed ribbon
+    // (NoteHudWindow below) — a hover affordance, appearing on the note you're
+    // pointing at whether or not it's focused, unlike the focus-gated
+    // toolbar/find/menu tracked above — and the ribbon window is its only
+    // consumer. It now lives in NoteHudWindow itself, which both puts the
+    // policy next to the placement decisions that make it subtle (the ribbon
+    // sits outside the note, hence over its neighbour) and makes it testable:
+    // this file, a tray icon plus an Instantiator over the real note model,
+    // can't be instantiated in a test at all. Each delegate just forwards its
+    // raw hover events; see NoteHudWindow.noteHoverChanged().
 
     // Third design of this focus-tracking logic (see git history for the
     // two earlier attempts) — both of those tried to force OS focus back
@@ -166,19 +150,14 @@ Item {
                 }
             }
 
-            // Hover tracking for the windowed ribbon (see hoveredNoteWindow
-            // above) — independent of focus, so the ribbon appears on whichever
-            // note the pointer is over. Clearing is debounced so the pointer
-            // moving off the note toward the ribbon window (which sits just
-            // outside it) doesn't drop tracking mid-reach.
-            onHoveredChanged: {
-                if (hovered) {
-                    hoveredNoteClearDebounce.stop()
-                    root.hoveredNoteWindow = thisNoteWindow
-                } else if (root.hoveredNoteWindow === thisNoteWindow) {
-                    hoveredNoteClearDebounce.restart()
-                }
-            }
+            // Raw hover events for the windowed ribbon — independent of focus,
+            // so the ribbon appears on whichever note the pointer settles on.
+            // Deliberately forwarded rather than decided here: which note
+            // actually earns the ribbon is NoteHudWindow's call (a note merely
+            // passed over on the way to another note's ribbon must not take it),
+            // and that policy lives with the placement logic that makes it
+            // subtle. See NoteHudWindow.noteHoverChanged().
+            onHoveredChanged: noteHudWindow.noteHoverChanged(thisNoteWindow, hovered)
 
             // A note can't reach the app-wide find panel itself, so it asks
             // and this is where the ask is joined up (see NoteWindow's own
@@ -270,22 +249,12 @@ Item {
     }
 
     // App-wide windowed note ribbon (Settings.hudAsWindow) — the same
-    // singleton-owned-by-Main shape as the toolbar/find/menu above, but bound
-    // to the HOVERED note rather than the active one (see hoveredNoteWindow).
-    // When hudAsWindow is off it simply never gets a note (NoteWindow renders
-    // its own inline ribbon instead) and stays parked.
+    // singleton-owned-by-Main shape as the toolbar/find/menu above, but scoped
+    // to the HOVERED note rather than the active one, and scoping itself from
+    // the hover events each delegate above forwards in (see its
+    // noteHoverChanged()) rather than being handed a note by this file.
     NoteHudWindow {
         id: noteHudWindow
-        noteWindow: root.hoveredNoteWindow
-
-        // The ribbon itself just lost hover — re-check whether the note under
-        // it should still be tracked (the Timer only checks at fire time and
-        // never reschedules itself, same re-arm the chrome windows above do
-        // for the active-note debounce).
-        onHoveredChanged: {
-            if (!hovered && root.hoveredNoteWindow && !root.hoveredNoteWindow.hovered)
-                hoveredNoteClearDebounce.restart()
-        }
 
         // Search is the one ribbon action that can't act on the note directly:
         // the find panel is bound to the ACTIVE note, so make the hovered note

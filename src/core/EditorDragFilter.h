@@ -25,9 +25,29 @@
 class EditorDragFilter : public QQuickItem
 {
     Q_OBJECT
+    // The one child this filter is for — the editor TextArea. childMouseEventFilter
+    // fires for EVERY descendant's mouse events, not just the editor's: the overlays
+    // NoteWindow.qml layers over the editor (the "Select image…" placeholder button,
+    // in particular) are descendants too. Without knowing which item is the editor,
+    // this filter treated a release on that button as a below-content drag-release
+    // and consumed it (a Button has no contentHeight, so the "is this within real
+    // content?" guard read 0 and always failed) — so the button's own click never
+    // fired (bug found live: "clicking it does nothing"). Only events headed to
+    // exactly this item get the drag-selection reprojection; everything else passes
+    // straight through untouched.
+    Q_PROPERTY(QQuickItem *editorItem READ editorItem WRITE setEditorItem NOTIFY editorItemChanged)
 public:
     explicit EditorDragFilter(QQuickItem *parent = nullptr);
 
+    QQuickItem *editorItem() const { return m_editorItem; }
+    void setEditorItem(QQuickItem *item);
+
+signals:
+    void editorItemChanged();
+
 protected:
     bool childMouseEventFilter(QQuickItem *item, QEvent *event) override;
+
+private:
+    QQuickItem *m_editorItem = nullptr;
 };

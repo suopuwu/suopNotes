@@ -2,6 +2,7 @@
 
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
@@ -517,6 +518,76 @@ SCENARIO("A note's on-disk filename tracks its content", "[note_store]")
                 CHECK(QFile::exists(tempDir.filePath("Second title.md")));
                 CHECK_FALSE(QFile::exists(tempDir.filePath("First title.md")));
             }
+        }
+    }
+}
+
+SCENARIO("Locating the file a note is stored in", "[note_store]")
+{
+    GIVEN("a newly created note")
+    {
+        QTemporaryDir tempDir;
+        REQUIRE(tempDir.isValid());
+
+        NoteStore store;
+        store.setNotesFolder(tempDir.path());
+        const QString id = store.createNote();
+
+        THEN("its path points at the real .md file backing it")
+        {
+            const QString path = store.noteFilePath(id);
+            CHECK(path == QFileInfo(tempDir.filePath("Untitled.md")).absoluteFilePath());
+            CHECK(QFile::exists(path));
+        }
+
+        // The whole reason this is a call and not a value anyone may cache: a
+        // note's filename follows its first line, so the answer legitimately
+        // changes underneath a caller that held onto it.
+        WHEN("the note's first line changes and the rename lands")
+        {
+            store.saveNoteContent(id, "Grocery list");
+            QTest::qWait(kPastDebounceMs);
+
+            THEN("the path follows the file to its new name")
+            {
+                CHECK(store.noteFilePath(id) == QFileInfo(tempDir.filePath("Grocery list.md")).absoluteFilePath());
+            }
+        }
+
+        // "" is the one signal callers get that there is nothing to show the
+        // user, and the context menu dims its Reveal row on exactly this.
+        WHEN("the note is deleted")
+        {
+            store.deleteNote(id);
+
+            THEN("it no longer has a path")
+            {
+                CHECK(store.noteFilePath(id).isEmpty());
+            }
+        }
+
+        WHEN("the file is removed behind NoteStore's back, before its watcher notices")
+        {
+            REQUIRE(QFile::remove(tempDir.filePath("Untitled.md")));
+
+            THEN("no path is handed out for the file that isn't there anymore")
+            {
+                CHECK(store.noteFilePath(id).isEmpty());
+            }
+        }
+    }
+
+    GIVEN("a NoteStore that has never heard of an id")
+    {
+        QTemporaryDir tempDir;
+        REQUIRE(tempDir.isValid());
+
+        NoteStore store;
+        store.setNotesFolder(tempDir.path());
+
+        THEN("that id has no path")
+        {
+            CHECK(store.noteFilePath("not-a-real-id").isEmpty());
         }
     }
 }

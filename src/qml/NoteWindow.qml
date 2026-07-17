@@ -169,6 +169,39 @@ Window {
     // hover for the whole editor area (same as the checkbox highlight).
     property string hoveredLinkUrl: ""
 
+    // The empty-image "Select image…" placeholder button the pointer is on top
+    // of, identified by its image's start position — or -1 for anywhere else.
+    // Drives both the button's own hover styling AND the pointing-hand cursor,
+    // so the two can never disagree, exactly like checkboxRectUnderPointer/
+    // checkboxHighlight above. It has to work this way and not via the Button's
+    // own `hovered`: mouseDragArea sits on top of the editor (z: 1) and receives
+    // hover for the whole area, so a plain child Button below it never sees hover
+    // at all — the same reason the checkbox highlight is pointer-driven from here.
+    //
+    // editor has zero padding (asserted in tst_NoteWindow), so its item
+    // coordinates and the coordinates the image delegates are positioned in are
+    // the same space, and the pointer position mapped into `editor` compares
+    // directly against each delegate's own geometry.
+    property int hoveredImagePlaceholderStart: -1
+
+    function imagePlaceholderStartUnderPointer(xInEditor, yInEditor) {
+        for (let i = 0; i < imageRepeater.count; i++) {
+            const box = imageRepeater.itemAt(i)
+            if (!box || box.src !== "" || !box.placeholderButton.visible)
+                continue
+            const btn = box.placeholderButton
+            // The button is anchored to the delegate's left/vertical-centre, so
+            // its rect in editor coordinates is the delegate's own origin plus
+            // the button's offset within it.
+            const bx = box.x + btn.x
+            const by = box.y + btn.y
+            if (xInEditor >= bx && xInEditor < bx + btn.width
+                    && yInEditor >= by && yInEditor < by + btn.height)
+                return box.start
+        }
+        return -1
+    }
+
     function refreshFormatState() {
         const start = editor.selectionStart
         const end = editor.selectionEnd
@@ -194,6 +227,8 @@ Window {
     readonly property alias noteAppearance: noteAppearance
     readonly property alias docHandler: docHandler
     readonly property alias misspelledWordRepeater: misspelledWordRepeater
+    readonly property alias imageRepeater: imageRepeater
+    readonly property alias imageFileDialog: imageFileDialog
     readonly property alias scrollIndicator: scrollIndicator
     readonly property alias scrollHandle: scrollHandle
     readonly property alias mainFrame: mainFrame
@@ -410,6 +445,22 @@ Window {
     function duplicateNote() {
         const origin = noteOrigin()
         duplicateNoteAt(origin.x + duplicateOffset, origin.y + duplicateOffset)
+    }
+
+    // Shows this note's own .md file, selected, in the user's file manager
+    // (feature request). Distinct from the tray's "Open Notes Folder", which
+    // opens the folder and leaves the user to find one note among all of them.
+    //
+    // The path is re-read from NoteStore at CLICK time rather than held on this
+    // window, because a note's filename is not stable the way its id is: it is
+    // re-derived from the note's first line and the file renamed on every
+    // debounced save (see NoteStore's class comment), so anything cached here
+    // would go stale the moment the user edits their first line. An empty path
+    // means the note has no file on disk right now, which the context menu
+    // already dims its row for — reveal() itself declines it too rather than
+    // trusting the caller to have checked.
+    function revealInFileManager() {
+        fileRevealer.reveal(noteStore.noteFilePath(noteId))
     }
 
     // Opens this note's own per-note appearance override popup. The inline
@@ -1027,6 +1078,13 @@ Window {
             // of it).
             EditorDragFilter {
                 id: editorDragFilter
+                // The one descendant whose below-content drag-releases this
+                // filter should reproject. Every other descendant's mouse
+                // events (notably the "Select image…" placeholder button the
+                // image overlay layers over the editor) pass through untouched
+                // — see EditorDragFilter's own header comment for the click-
+                // eating bug this pins down.
+                editorItem: editor
                 // Shifted right to clear the gutter (0 when it is off, so
                 // this is a no-op for an ordinary note). x, never y: the
                 // editor-sits-at-content-(0,0) invariant ensureCursorVisible
@@ -1916,6 +1974,13 @@ Window {
                                 required property string src
                                 required property string alt
 
+                                // Exposed for tests only — same convention as the
+                                // repeater aliases up top. Lets a test assert the
+                                // empty-src placeholder is drawn with an explicit
+                                // Text contentItem rather than the Basic style's
+                                // default (blank-rendering) IconLabel.
+                                readonly property alias placeholderButton: selectImageButton
+
                                 // Being edited: the cursor is on the image's own
                                 // line, so the highlighter has revealed the raw
                                 // "![alt](src)" at normal height. Show the picture
@@ -1989,11 +2054,87 @@ Window {
                                 // highlighter reserves only a short strip for an
                                 // empty src (not the tall picture band), so this
                                 // is a modest control, not a big blank square.
+                                //
+                                // contentItem/background are BOTH spelled out
+                                // rather than left to the Basic style's defaults
+                                // (bug found live: this placeholder rendered
+                                // nothing at all). Basic's default Button
+                                // contentItem is an IconLabel, which silently
+                                // paints nothing on this compositor — the exact
+                                // failure SelectionToolbar.qml's ToolbarButtonLabel
+                                // and FindReplacePanel.qml's PanelButton already
+                                // work around the same way: swap in a plain Text
+                                // contentItem (colored from the note's own
+                                // fontColor for contrast) and a real drawn
+                                // background, keeping only Basic Button's behavior.
                                 Button {
+                                    id: selectImageButton
                                     anchors.left: parent.left
                                     anchors.verticalCenter: parent.verticalCenter
                                     visible: imageBox.src === ""
                                     text: "Select image…"
+                                    font.pixelSize: 12
+                                    leftPadding: 10
+                                    rightPadding: 10
+                                    topPadding: 5
+                                    bottomPadding: 5
+                                    // Sized explicitly from the content rather
+                                    // than left to the style's default implicit
+                                    // sizing (bug found live: with a custom
+                                    // contentItem AND background both overridden,
+                                    // this Button's implicitWidth resolved to 0
+                                    // here — confirmed by diagnostic:
+                                    // implicitContentWidth was a correct 81px but
+                                    // implicitWidth stayed 0). A zero-width button
+                                    // has no hit area (so it can't be clicked) and
+                                    // its centre-aligned label overflows its own
+                                    // left edge and clips ("Select image…" showed
+                                    // as "…t image…"). Deriving width/height from
+                                    // implicitContentWidth/Height — the values the
+                                    // style itself would have used — restores a
+                                    // real, content-sized, clickable button.
+                                    implicitWidth: implicitContentWidth + leftPadding + rightPadding
+                                    implicitHeight: implicitContentHeight + topPadding + bottomPadding
+
+                                    // Hover state comes from the note's shared,
+                                    // pointer-driven signal, NOT this Button's own
+                                    // `hovered`: mouseDragArea sits on top of the
+                                    // editor and swallows hover for the whole area,
+                                    // so a child Button below it never sees a hover
+                                    // event (the same reason the checkbox highlight
+                                    // and link tooltip are driven from there). Press
+                                    // (`down`) still works — left clicks do reach
+                                    // the button — so it stays the button's own.
+                                    readonly property bool placeholderHovered:
+                                        noteWindow.hoveredImagePlaceholderStart === imageBox.start
+                                    contentItem: Text {
+                                        text: selectImageButton.text
+                                        font: selectImageButton.font
+                                        color: noteAppearance.fontColor
+                                        horizontalAlignment: Text.AlignHCenter
+                                        verticalAlignment: Text.AlignVCenter
+                                    }
+                                    background: Rectangle {
+                                        radius: 4
+                                        color: selectImageButton.down
+                                            ? Qt.rgba(noteAppearance.fontColor.r, noteAppearance.fontColor.g,
+                                                      noteAppearance.fontColor.b, 0.22)
+                                            : selectImageButton.placeholderHovered
+                                                ? Qt.rgba(noteAppearance.fontColor.r, noteAppearance.fontColor.g,
+                                                          noteAppearance.fontColor.b, 0.16)
+                                                : Qt.rgba(noteAppearance.fontColor.r, noteAppearance.fontColor.g,
+                                                          noteAppearance.fontColor.b, 0.08)
+                                        border.width: 1
+                                        // Border firms up on hover/press so the
+                                        // control reads as interactive, matching the
+                                        // pointing-hand cursor the note shows over it.
+                                        border.color: Qt.rgba(noteAppearance.fontColor.r, noteAppearance.fontColor.g,
+                                                              noteAppearance.fontColor.b,
+                                                              selectImageButton.down ? 0.7
+                                                                  : selectImageButton.placeholderHovered ? 0.55 : 0.25)
+                                        Behavior on color { ColorAnimation { duration: 90 } }
+                                        Behavior on border.color { ColorAnimation { duration: 90 } }
+                                    }
                                     onClicked: {
                                         noteWindow.imageBrowseTarget = imageBox.start
                                         imageFileDialog.open()
@@ -2787,7 +2928,7 @@ Window {
             cursorShape: middleScrollArmed
                 ? (Math.abs(middleScrollCurrentY - middleScrollOriginY) > middleScrollDeadzone
                        ? Qt.SizeVerCursor : Qt.SizeAllCursor)
-                : (checkboxHighlight.active
+                : ((checkboxHighlight.active || noteWindow.hoveredImagePlaceholderStart >= 0)
                        ? Qt.PointingHandCursor
                        : (mouseY >= editorFlick.y
                           && mouseX >= editorFlick.x + lineNumberGutter.gutterWidth
@@ -2937,6 +3078,8 @@ Window {
                     noteWindow.checkboxRectUnderPointer(posInEditor.x, posInEditor.y)
                 noteWindow.hoveredLinkUrl =
                     noteWindow.linkUrlUnderPointer(posInEditor.x, posInEditor.y)
+                noteWindow.hoveredImagePlaceholderStart =
+                    noteWindow.imagePlaceholderStartUnderPointer(posInEditor.x, posInEditor.y)
 
                 if (middleButtonHeld && !middleScrollDraggedWhileHeld
                         && Math.abs(middleScrollCurrentY - middleScrollOriginY) > dragThreshold) {
@@ -2957,6 +3100,7 @@ Window {
             onExited: {
                 checkboxHighlight.glyphRect = Qt.rect(0, 0, 0, 0)
                 noteWindow.hoveredLinkUrl = ""
+                noteWindow.hoveredImagePlaceholderStart = -1
             }
             // ~60fps: smooth enough for a scroll animation, cheap enough to
             // not matter. Armed only between an explicit middle-click and

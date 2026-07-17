@@ -385,6 +385,59 @@ Item {
             noteStore.deleteNote(newId)
         }
 
+        // revealInFileManager() shows this note's own .md file, selected, in the
+        // user's file manager — what the context menu's Reveal row calls.
+        //
+        // A note with NO file behind it is the only input this can be called
+        // with here, and that is the point rather than a limitation: it is the
+        // one path that stops before the D-Bus call, so it exercises the whole
+        // QML->C++ seam (the function resolves, fileRevealer is reachable from
+        // QML, reveal() is invokable) while launching nothing. Every other input
+        // would open the tester's real file manager, which no offscreen platform
+        // contains — that half is verified in tests/unit/test_file_revealer.cpp
+        // and against a live session by hand.
+        //
+        // A note of its OWN, never typed into and never handed any markdown,
+        // rather than one of the shared windows above — and that is load-bearing
+        // rather than tidiness. Handing a note content emits contentEdited, which
+        // NoteWindow answers with a debounced saveNoteContent(), and NoteStore
+        // mints a filename for whatever id it is asked to save — so any shared
+        // note here has a real file behind it the moment some earlier test's
+        // debounce lands, and "has no file" would depend on test order and a
+        // 300ms race. An untouched note has no file, deterministically.
+        function test_revealing_a_note_with_no_file_behind_it_asks_for_nothing() {
+            const win = restoreOrderTestComponent.createObject(root, {
+                noteId: "reveal-seam-test",
+                index: 90,
+                noteX: 0,
+                noteY: 0,
+                noteWidth: 260,
+                noteHeight: 260,
+                screenName: "",
+                alwaysOnTop: false,
+            })
+            verify(win !== null)
+
+            // Past NoteStore's own 300ms save debounce: proves this note has no
+            // file because nothing ever wrote one, not because we asked too soon.
+            wait(500)
+            compare(noteStore.noteFilePath(win.noteId), "",
+                    "precondition: this note has no file on disk to show")
+
+            // Returns false rather than throwing: proof the call really reached
+            // FileRevealer and was declined there, not that it silently failed
+            // to resolve.
+            compare(fileRevealer.reveal(noteStore.noteFilePath(win.noteId)), false,
+                    "a note with no file reveals nothing, rather than opening the file manager on a missing path")
+
+            // The real call the menu row makes, end to end. Nothing is asserted
+            // afterward because there is nothing to assert: it must simply not
+            // throw, and must not launch anything.
+            win.revealInFileManager()
+
+            win.destroy()
+        }
+
         // linkUrlAt is the hit-test behind middle-click-to-open and the hover
         // tooltip (feature request: clickable links). It reports a url only for
         // a position inside a link's VISIBLE text, and never for an image's
@@ -497,6 +550,143 @@ Item {
             win.docHandler.setMarkdown("see ![x](img/x.png) inline")
             compare(win.docHandler.imageRanges.length, 0,
                     "an inline image mid-sentence is not reported as a block image")
+            win.docHandler.setMarkdown("")
+        }
+
+        // Regression: the empty-src placeholder ("Select image…") rendered
+        // NOTHING on the real compositor (bug found live) because a bare QQC2
+        // Basic Button uses an IconLabel contentItem, which silently paints
+        // no content in this app — the exact failure SelectionToolbar.qml's
+        // ToolbarButtonLabel and FindReplacePanel.qml's PanelButton already
+        // work around. The fix spells out an explicit Text contentItem. This
+        // guards against a regression back to the default IconLabel: the
+        // offscreen harness can't reproduce the blank painting itself (a bare
+        // Button still reports visible/enabled fine here), so the structural
+        // assertion — placeholder contentItem is a Text showing the button's
+        // label — is what keeps the fix from being silently undone.
+        function test_empty_image_placeholder_uses_a_visible_text_label() {
+            const win = contextMenuTestWindow
+            win.docHandler.setMarkdown("![]()")
+            // The overlay's ListModel is synced from imageRanges via a signal
+            // handler, and the Repeater builds its delegate a frame later.
+            // (No message arg — tryCompare's 4th positional is the timeout.)
+            tryCompare(win.imageRepeater, "count", 1)
+
+            const delegate = win.imageRepeater.itemAt(0)
+            verify(delegate, "the delegate exists")
+            compare(delegate.src, "",
+                    "precondition: this delegate is the empty-src placeholder")
+            const button = delegate.placeholderButton
+            verify(button, "the delegate exposes its placeholder button")
+            compare(button.text, "Select image…",
+                    "the placeholder carries the Browse prompt as its label")
+
+            // The load-bearing part of the fix: the contentItem is an explicit
+            // Text carrying the label, NOT Basic's default IconLabel (which
+            // rendered nothing on the real compositor). This is asserted
+            // structurally rather than by pixels because the offscreen harness
+            // can't reproduce the blank painting — but it IS what fails if
+            // someone reverts to a bare Button and lets the default IconLabel
+            // back in.
+            const content = button.contentItem
+            verify(content, "the button has an explicit contentItem")
+            verify(content instanceof Text,
+                   "which is a plain Text, not the Basic style's blank IconLabel")
+            compare(content.text, "Select image…",
+                    "and it actually carries the visible label")
+
+            // Second regression, same button (also found live): with a custom
+            // contentItem AND background both overridden, the Button's implicit
+            // sizing collapsed to width 0 — which both clipped the centre-aligned
+            // label off its own left edge ("Select image…" showed as "…t image…")
+            // and left no hit area to click. The fix sizes it explicitly from the
+            // content, so the button must be at least as wide as its label plus
+            // its own horizontal padding.
+            verify(button.width >= button.implicitContentWidth + button.leftPadding + button.rightPadding,
+                   "the placeholder is sized to fit its label, not collapsed to zero width")
+            verify(button.width > 0, "and so has a real, clickable hit area")
+
+            win.docHandler.setMarkdown("")
+        }
+
+        // The placeholder button lives inside the image overlay, which is a
+        // descendant of the editor's EditorDragFilter (an ancestor mouse-event
+        // filter for drag-selection). Found live ("clicking it does nothing"):
+        // that filter consumed the button's MouseButtonRelease — it fires for
+        // EVERY descendant, and a Button has no contentHeight, so its
+        // "is this a below-content drag?" guard read 0 and always matched — so
+        // the click never completed. The fix scopes the filter to the editor
+        // item alone. This drives a real click through the same event path and
+        // checks the button's onClicked handler actually ran (it records the
+        // target position into imageBrowseTarget before opening the file dialog).
+        function test_clicking_empty_image_placeholder_runs_its_action() {
+            const win = contextMenuTestWindow
+            // A second line so the cursor can rest OFF the image's own line —
+            // on the image line the raw "![]()" is revealed for editing and the
+            // placeholder is intentionally hidden.
+            win.docHandler.setMarkdown("![]()\n\nafter")
+            win.editor.cursorPosition = win.editor.length
+            tryCompare(win.imageRepeater, "count", 1)
+
+            const delegate = win.imageRepeater.itemAt(0)
+            verify(delegate, "the delegate exists")
+            const button = delegate.placeholderButton
+            // The delegate only reveals the button once its reserved band has a
+            // real height (a frame after the edit settles) — wait for that so
+            // the click lands on a visible, sized target.
+            tryVerify(() => button.visible && button.width > 0 && button.height > 0)
+
+            compare(win.imageBrowseTarget, -1,
+                    "precondition: nothing is being browsed for yet")
+            mouseClick(button)
+            // If the release still got eaten (or the button had no hit area),
+            // onClicked never runs and this stays -1. On success it holds the
+            // clicked image's start position, ready for the file dialog.
+            tryCompare(win, "imageBrowseTarget", delegate.start)
+
+            // Reset: dismiss the file dialog the click opened and clear state so
+            // the shared window is clean for the next test.
+            win.imageFileDialog.close()
+            win.imageBrowseTarget = -1
+            win.docHandler.setMarkdown("")
+        }
+
+        // The placeholder is a clickable control, so the pointer should say so
+        // (a pointing hand) and the button should visibly light up on hover —
+        // like every other clickable in the note. Because mouseDragArea sits on
+        // top of the editor and swallows hover, that state is pointer-driven
+        // from mouseDragArea (see hoveredImagePlaceholderStart), exactly as the
+        // checkbox highlight and link tooltip are. This checks that moving the
+        // pointer onto the button flags it (which is what turns on both the
+        // hover styling and the PointingHandCursor) and moving off clears it.
+        function test_hovering_empty_image_placeholder_flags_it_for_cursor_and_highlight() {
+            const win = contextMenuTestWindow
+            win.docHandler.setMarkdown("![]()\n\nafter")
+            win.editor.cursorPosition = win.editor.length
+            tryCompare(win.imageRepeater, "count", 1)
+
+            const delegate = win.imageRepeater.itemAt(0)
+            verify(delegate, "the delegate exists")
+            const button = delegate.placeholderButton
+            tryVerify(() => button.visible && button.width > 0 && button.height > 0)
+
+            compare(win.hoveredImagePlaceholderStart, -1,
+                    "precondition: nothing is hovered yet")
+            verify(!button.placeholderHovered)
+
+            // Onto the button: mouseDragArea's hover handler maps the pointer
+            // into editor space and recognises the placeholder under it.
+            mouseMove(button, button.width / 2, button.height / 2)
+            tryCompare(win, "hoveredImagePlaceholderStart", delegate.start)
+            verify(button.placeholderHovered,
+                   "the button reads itself as hovered, so its styling firms up")
+
+            // Off the button but still over the editor (the empty area well below
+            // the image): the flag clears, so the cursor drops back to the I-beam.
+            mouseMove(win.editor, button.width / 2, win.editor.height - 5)
+            tryCompare(win, "hoveredImagePlaceholderStart", -1)
+            verify(!button.placeholderHovered)
+
             win.docHandler.setMarkdown("")
         }
 

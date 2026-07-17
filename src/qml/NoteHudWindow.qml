@@ -2,13 +2,19 @@ import QtQuick
 import QtQuick.Window
 
 // Single, app-wide windowed version of the note ribbon (NoteHud), owned by
-// Main.qml and bound to whichever note the pointer is currently over
-// (root.hoveredNoteWindow). Shown on hover, exactly like the inline ribbon it
-// replaces — but as its own top-level window anchored just OUTSIDE the note's
-// top-right edge (a vertical column, so it never collides with the toolbar,
-// which sits above the note). Gated by Settings.hudAsWindow: when that is off,
-// NoteWindow renders the old inline horizontal ribbon over its own text
-// instead, and this window stays parked/empty.
+// Main.qml and shown for whichever note the pointer has settled on. Shown on
+// hover, exactly like the inline ribbon it replaces — but as its own top-level
+// window anchored just OUTSIDE the note's top-right edge (a vertical column, so
+// it never collides with the toolbar, which sits above the note). Gated by
+// Settings.hudAsWindow: when that is off, NoteWindow renders the old inline
+// horizontal ribbon over its own text instead, and this window stays
+// parked/empty.
+//
+// This window also owns the hover-TRACKING policy — which note gets the ribbon,
+// given raw per-note hover events from Main.qml's delegate. That decision is
+// not the trivial "whichever note was hovered last" it looks like, because the
+// ribbon sits outside the note and therefore over its neighbour; see
+// noteHoverChanged() for the whole story.
 //
 // A genuine top-level Window, not an Item in a note's tree, for the same
 // reasons SelectionToolbar/columnOptionsPopup are (see their headers): a note
@@ -28,21 +34,196 @@ import QtQuick.Window
 Window {
     id: hudWindow
 
-    // The note the pointer is over, or null. Sourced from Main.qml, which
-    // tracks hover across every NoteWindow plus this ribbon itself (so moving
-    // the pointer off the note and onto the ribbon doesn't clear it).
+    // The note the ribbon is currently showing for, or null. This is the
+    // OUTPUT of the hover-tracking policy below, not an input: Main.qml feeds
+    // raw per-note hover events in through noteHoverChanged(), and this window
+    // decides which of them actually earns the ribbon.
+    //
+    // The policy lives here rather than in Main.qml (where it started) because
+    // this window is its only consumer, and because Main.qml — a tray icon plus
+    // an Instantiator over the real note model — cannot be instantiated in a
+    // test, so the policy was untestable there. Assigning this property
+    // directly still works and is exactly what the placement tests below do:
+    // it forces a tracked note, bypassing the policy.
     property var noteWindow: null
 
     // Whether this permanently-mapped window should currently be showing
-    // anything — true exactly while a note is hovered. Same wantsVisible
+    // anything — true exactly while a note is tracked. Same wantsVisible
     // convention the toolbar's popups use.
     readonly property bool wantsVisible: noteWindow !== null
 
-    // Pointer-over-the-ribbon keep-alive signal for Main.qml (see NoteHud's
-    // own `hovered` alias): the ribbon sits just outside the note, so the
-    // pointer crossing from note to ribbon leaves the note un-hovered — Main
-    // uses this to hold hoveredNoteWindow across that gap.
+    // Pointer-over-the-ribbon keep-alive signal (see NoteHud's own `hovered`
+    // alias): the ribbon sits just outside the note, so the pointer crossing
+    // from note to ribbon leaves the note un-hovered — noteClearDebounce below
+    // reads this to hold the tracked note across that gap. Main.qml also reads
+    // it, as one of the "chrome is in use" terms in noteOrChromeHovered().
     readonly property alias hovered: ribbon.hovered
+
+    // How long a DIFFERENT note has to stay hovered before it takes the ribbon
+    // away from the note currently showing it. A property rather than a
+    // hardcoded interval so tests can drive the dwell explicitly instead of
+    // racing a real timer — same reasoning as NoteHud.closeArmTimeoutMs.
+    property int noteSwitchDwellMs: 150
+
+    // The note waiting out noteSwitchDebounce — a candidate for noteWindow that
+    // has not proven intent yet. Null whenever no switch is pending.
+    property var _pendingNote: null
+
+    // Raw per-note hover events, fed in by Main.qml's delegate. The whole input
+    // to the tracking policy.
+    //
+    // The bug this shape exists to fix (reported live: "with two notes next to
+    // each other, you cannot access the left note's top right ribbon due to the
+    // right note stealing focus"): reposition() below anchors the ribbon just
+    // OUTSIDE the note's right edge, so a note placed to the right of the
+    // tracked one sits under the ribbon, and reaching for that ribbon means
+    // dragging the pointer across a sliver of the neighbour on the way. This
+    // used to hand the ribbon to whichever note reported hover LAST,
+    // immediately and unconditionally — so that crossing re-anchored the ribbon
+    // to the neighbour, and the ribbon being reached for vanished out from
+    // under the pointer. With a note to its right, the left note's ribbon could
+    // not be clicked at all.
+    //
+    // The ASYMMETRY was the bug, not the tracking: clearing was already
+    // debounced (noteClearDebounce below) precisely so the note→ribbon gap
+    // wouldn't drop tracking — but stealing wasn't, and a steal calls .stop()
+    // on that debounce, so the grace period it was owed never even got to fire.
+    // Both directions now go through a one-shot timer that RE-CHECKS live hover
+    // state when it fires (event-driven, never a poll — see CLAUDE.md), so a
+    // note merely passed over keeps its hands off, while a note actually
+    // settled on wins the ribbon.
+    function noteHoverChanged(note, hovered) {
+        if (!hovered) {
+            // The pointer left a note that was still waiting out its dwell — it
+            // was only ever passing through, so it never earns the ribbon.
+            if (hudWindow._pendingNote === note) {
+                hudWindow._cancelPendingSwitch()
+                // Bug found live ("the ribbon stays forever" — brush a second
+                // note and leave it BEFORE the dwell hands it the ribbon):
+                // entering that candidate ran the unconditional
+                // noteClearDebounce.stop() below, which may have been the only
+                // thing scheduled to drop the ORIGINAL tracked note once the
+                // pointer left IT. Abandoning the candidate here has to restore
+                // that, exactly as noteSwitchDebounce's own abandon path does
+                // when the dwell fires — otherwise the ribbon stays stuck on the
+                // original note with nothing left to notice the pointer is gone.
+                hudWindow._rearmClearIfPointerGone()
+            }
+            if (hudWindow.noteWindow === note)
+                noteClearDebounce.restart()
+            return
+        }
+
+        noteClearDebounce.stop()
+
+        // Back on the note already being shown (e.g. the pointer returning from
+        // that note's own ribbon): nothing to switch to, and any pending steal
+        // is now moot.
+        if (hudWindow.noteWindow === note) {
+            hudWindow._cancelPendingSwitch()
+            return
+        }
+
+        // Nothing tracked at all — take it immediately, so a first hover still
+        // feels instant. This case can skip the dwell precisely because there is
+        // no ribbon on screen for it to steal from.
+        if (!hudWindow.noteWindow) {
+            hudWindow._cancelPendingSwitch()
+            hudWindow.noteWindow = note
+            return
+        }
+
+        // A different note while one is already showing: either a real switch or
+        // the pointer transiting on its way to the tracked note's ribbon. Make
+        // it prove intent by still being hovered when the timer fires.
+        hudWindow._pendingNote = note
+        noteSwitchDebounce.restart()
+    }
+
+    function _cancelPendingSwitch() {
+        hudWindow._pendingNote = null
+        noteSwitchDebounce.stop()
+    }
+
+    // Re-arm the clear debounce, but only if the pointer is off the tracked
+    // note AND off the ribbon — i.e. there is genuinely nothing keeping the
+    // ribbon alive. Safe to call speculatively: noteClearDebounce re-checks
+    // this same state at fire time, so a call made while the note (or ribbon)
+    // is still legitimately hovered simply no-ops when the timer fires. Shared
+    // by every "the tracked note may now have nothing scheduled to notice the
+    // pointer left it" path — an abandoned switch (both the early-exit and the
+    // dwell-fired variants) and the ribbon itself losing hover — so those three
+    // can't drift apart on what "the pointer is gone" means.
+    function _rearmClearIfPointerGone() {
+        if (hudWindow.noteWindow && !hudWindow.noteWindow.hovered && !ribbon.hovered)
+            noteClearDebounce.restart()
+    }
+
+    // One-shot, restarted only by a real "a different note is hovered" event
+    // (never a recurring poll — see CLAUDE.md). The re-check at fire time IS the
+    // fix: a pointer that was merely crossing this note on its way to the
+    // tracked note's ribbon has, by now, already moved on — so the candidate is
+    // no longer hovered and the steal is correctly abandoned.
+    Timer {
+        id: noteSwitchDebounce
+        interval: hudWindow.noteSwitchDwellMs
+        repeat: false
+        onTriggered: {
+            const candidate = hudWindow._pendingNote
+            hudWindow._pendingNote = null
+            // Deliberately re-reads the note's LIVE hovered property instead of
+            // trusting the event that scheduled this: the pointer has had
+            // noteSwitchDwellMs to move on, and whether it did is the entire
+            // question being asked here.
+            if (candidate && candidate.hovered) {
+                hudWindow.noteWindow = candidate
+                return
+            }
+            // The steal was abandoned. noteClearDebounce stood down for this
+            // pending switch (see its own comment), so the tracked note may have
+            // been left meanwhile with nothing left to notice — re-arm it, or
+            // the ribbon could stay stuck on a note the pointer is nowhere near.
+            hudWindow._rearmClearIfPointerGone()
+        }
+    }
+
+    // Debounces clearing the tracked note, restarted whenever that note OR the
+    // ribbon itself loses hover. Re-checks at fire time rather than just
+    // delaying: moving the pointer from the note onto the ribbon un-hovers the
+    // note for an instant, and this is what stops the ribbon vanishing out from
+    // under the pointer mid-reach.
+    Timer {
+        id: noteClearDebounce
+        interval: 150
+        repeat: false
+        onTriggered: {
+            if (hudWindow.noteWindow
+                && (hudWindow.noteWindow.hovered || ribbon.hovered))
+                return
+            // A switch is already in flight: it is strictly newer information
+            // than this timer has, so let it resolve rather than parking the
+            // ribbon for the few ms until it does (which reads as a flicker).
+            // Only reachable if the pointer's "left the old note" event arrives
+            // AFTER the "entered the new note" one — hovering a note stops this
+            // timer, so the usual leave-then-enter order never arms both. That
+            // ordering isn't ours to rely on, hence the guard; noteSwitchDebounce
+            // re-arms this timer if it ends up abandoning the switch.
+            if (hudWindow._pendingNote)
+                return
+            hudWindow.noteWindow = null
+        }
+    }
+
+    // The ribbon itself just lost hover — re-check whether the note under it
+    // should still be tracked. The Timer above only ever checks at the moment it
+    // fires and never reschedules itself, so this re-arm is what keeps a note
+    // from staying tracked forever after the pointer leaves via the ribbon (the
+    // same re-arm the toolbar/panel/menu each do for Main.qml's active-note
+    // debounce).
+    onHoveredChanged: {
+        if (!hudWindow.hovered)
+            hudWindow._rearmClearIfPointerGone()
+    }
 
     // Search can't be served from here — the find panel is an app-wide
     // singleton bound to the tracked (active) note, and this ribbon acts on a

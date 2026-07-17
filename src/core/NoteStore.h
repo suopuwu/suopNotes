@@ -48,6 +48,23 @@ public:
 
     Q_INVOKABLE QStringList noteIds() const;
     Q_INVOKABLE QString loadNoteContent(const QString &id) const;
+
+    // The path of the .md file currently backing `id`, or an empty string if
+    // there isn't one on disk right now — an unknown id, or an id whose file
+    // has been removed by something other than this app in the window before
+    // the watcher notices. Callers are expected to treat "" as "there is
+    // nothing to show the user," not as an error.
+    //
+    // Deliberately the only way out of this class for the id->filename
+    // mapping, which is otherwise private on purpose (see the class comment:
+    // the two are decoupled precisely so a note's id can stay stable while its
+    // filename tracks its first line). It exists for the one job that
+    // genuinely needs the real file rather than the id — showing the user
+    // where their note lives on disk (the context menu's "Reveal in File
+    // Manager") — and re-derives from m_idToFileName on every call rather than
+    // handing back something cacheable, because a rename lands on any
+    // debounced save.
+    Q_INVOKABLE QString noteFilePath(const QString &id) const;
     // `content` is written to the new note's file synchronously, unlike every
     // other write in this class — see the definition for why duplicating a
     // note can't go through the debounced saveNoteContent() path.

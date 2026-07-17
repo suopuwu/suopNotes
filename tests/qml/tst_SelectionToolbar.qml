@@ -1155,13 +1155,27 @@ Item {
             noteA.misspelledWordEnd = 5
 
             bar.noteWindow = noteA
-            wait(80)
 
+            // Asserted immediately, with NO wait() first — deliberately, and
+            // that is the whole point of this test. Assigning noteWindow flips
+            // wantsVisible true (a synchronous binding on currentMisspelledWord)
+            // and runs beginSpellingSuggestionsTransition() in the same
+            // synchronous handler chain, which forces the content hidden. That
+            // hidden state can only be undone LATER, by the asynchronous
+            // positionManager.windowMoved confirmation (see
+            // spellingSuggestionsRevealIfReady). A wait() here would race that
+            // confirmation — a real ~60-100ms KWin round-trip, or near-instant
+            // when KWin scripting is unavailable (e.g. an offscreen test run) —
+            // and flakily catch the popup already revealed, which is exactly the
+            // "reveals before the position is confirmed" bug this guards against.
             compare(bar.spellingSuggestionsPopup.wantsVisible, true,
                     "precondition: the popup should want to be visible")
             compare(bar.spellingSuggestionsPopup.background.visible, false,
                     "content must stay hidden immediately after wantsVisible goes true, before the move is confirmed")
 
+            // ...and only once the move is actually confirmed does it reveal.
+            // Polled (not a fixed wait), since the real completion time is
+            // genuinely variable — a live KWin round-trip.
             tryCompare(bar.spellingSuggestionsPopup.background, "visible", true, 2000)
 
             noteA.currentMisspelledWord = ""

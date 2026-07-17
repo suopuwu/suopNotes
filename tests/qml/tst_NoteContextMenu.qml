@@ -13,7 +13,8 @@ import SuopNotesUi
 //     and on losing focus to anything else — and only the first two hand focus
 //     back to the note;
 //   - Cut/Copy/Paste do the same thing the toolbar's buttons do; Duplicate
-//     lands the copy at the menu; Delete removes the note;
+//     lands the copy at the menu; Delete removes the note; Reveal offers the
+//     note's own file to the file manager, and only when there is one;
 //   - it never blocks clicks while it isn't showing.
 //
 // The menu is declared STATICALLY here and shared by every test, unlike the
@@ -468,6 +469,61 @@ Item {
             compare(menu.open, false)
         }
 
+        // Reveal shows the note's OWN .md file, selected, in the user's file
+        // manager — as opposed to the tray's "Open Notes Folder", which opens
+        // the folder and leaves them to find one note among all of them.
+        //
+        // The click itself is deliberately never performed in these tests, and
+        // that is a hard rule rather than an oversight: reveal() launches the
+        // tester's real file manager (or, failing that, opens their real notes
+        // folder), and neither effect happens inside this process, so the
+        // offscreen platform does nothing to contain it. What IS asserted here
+        // is the wiring the app can get wrong on its own — which note's file
+        // the row would offer up, and when the row is live at all. The dispatch
+        // itself is covered in tests/unit/test_file_revealer.cpp.
+        function test_reveal_offers_the_tracked_notes_own_file_to_the_file_manager() {
+            const id = noteStore.createNote("reveal me")
+            openNotesModel.openNote(id)
+            const w = makeWindow(id, 80, "reveal me")
+
+            menu.openAt(w.noteX + 40, w.noteY + 40)
+
+            compare(menu.revealItem.enabled, true, "a note with a file on disk can be revealed")
+
+            // Compared against noteStore's own folder rather than
+            // settings.notesFolder: those two are the same folder only because
+            // main.cpp points the store at the setting, which this harness
+            // deliberately doesn't do (it points the store at a temp dir), and
+            // the claim being made here is about the store's file either way.
+            const path = noteStore.noteFilePath(id)
+            verify(path.endsWith(".md"), "what the row would hand the file manager is the note's own .md file")
+            verify(path.indexOf(noteStore.notesFolder) === 0, "and it really lives in the notes folder")
+        }
+
+        // The state this row has to refuse: a window whose note has no file
+        // behind it. Every other test in this file builds exactly that (a
+        // NoteWindow carrying an id NoteStore has never heard of), which is why
+        // this one reads like the rest.
+        //
+        // The row's answer is fixed when the menu BINDS to the note, not when it
+        // opens — so the fileless state has to exist by makeWindow()'s own
+        // `menu.noteWindow = w`, and asserting it any later would be asserting
+        // something the row never re-reads. That also makes the save debounce a
+        // non-issue rather than a race: handing a note markdown does start a
+        // debounced save, and NoteStore does mint a file for whatever id it is
+        // asked to save ~300ms later — but the binding above has long since read
+        // its answer and will not look again while this note stays tracked.
+        function test_reveal_is_dimmed_for_a_note_with_no_file_behind_it() {
+            const w = makeWindow("ctx-reveal-fileless", 81, "not in the store")
+            compare(noteStore.noteFilePath(w.noteId), "",
+                    "precondition: this note has no file, which is what the row bound to")
+
+            menu.openAt(w.noteX + 40, w.noteY + 40)
+
+            compare(menu.revealItem.enabled, false,
+                    "there is no file to show, so the row says so rather than opening the file manager on nothing")
+        }
+
         // A REAL note in the store, not just a NoteWindow carrying an id like
         // every other test here: deleteNote() removes the .md file and the
         // model entry, so there has to be a file and an entry for it to remove
@@ -573,6 +629,16 @@ Item {
         // arithmetic in wantedHeight's comment is the only thing keeping the
         // surface and the content the same size, and a mismatch clips rows
         // silently. This is what notices.
+        //
+        // The width half is a floor, not a guarantee, and knowing which is which
+        // matters before trusting it: this harness measures in the offscreen
+        // platform's own default font, which is NARROWER than a real session's
+        // (measured on this desktop: Sans Serif 9 here vs. Noto Sans 10 live —
+        // 126.5px vs. 137px for the longest label, "Reveal in File Manager",
+        // against a 168px budget). So a row that only just fits here could still
+        // elide in front of a user with a larger UI font — which is the designed
+        // outcome (see the elide in MenuAction) rather than a clipped surface,
+        // but it does mean passing this is not the same as "it looks right."
         function test_the_windows_fixed_size_still_fits_the_rows_it_has() {
             const w = makeWindow("ctx-fits", 78, "alpha")
             menu.openAt(w.noteX + 40, w.noteY + 40)

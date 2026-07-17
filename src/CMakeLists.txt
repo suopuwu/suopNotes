@@ -33,6 +33,8 @@ qt_add_library(suopNotesCore STATIC
     core/EditorDragFilter.cpp
     core/KWinRuleWriter.h
     core/KWinRuleWriter.cpp
+    core/FileRevealer.h
+    core/FileRevealer.cpp
     core/AutostartManager.h
     core/AutostartManager.cpp
     core/PositionManager.h
