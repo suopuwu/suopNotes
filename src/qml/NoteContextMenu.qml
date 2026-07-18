@@ -47,8 +47,15 @@ import QtQuick.Window
 //     request), unlike the HUD's duplicate which uses a fixed diagonal offset.
 //   - Delete Note is immediate and permanent, matching the HUD's own close
 //     button (NoteWindow.deleteNote()) — no confirmation there, none here.
-Window {
+ChromeWindow {
     id: menu
+
+    // The frameless map-once/park ritual, the "keep above" rule seeding and the
+    // window flags all live in ChromeWindow now; this file keeps only what is
+    // its own — the rows, the placement, the blur, the open/close logic.
+    // ruleId is the KWin rule-group key (and MUST stay registered in
+    // PositionEventService::pseudoNoteIds — see the title comment below).
+    ruleId: "noteContextMenu"
 
     // Scope the menu acts on — the currently-focused NoteWindow, or null when
     // no note has focus. Sourced from Main.qml, the one place that observes
@@ -117,15 +124,14 @@ Window {
     // the exclusion is registered up front rather than after a fourth.
     title: "suopNotes-noteContextMenu"
 
-    // Qt.WindowDoesNotAcceptFocus is deliberately absent, and must stay
-    // absent — twice over. SelectionToolbar.qml records that on this
-    // compositor the flag silently swallowed the pointer click itself, not
-    // just keyboard focus, so every menu row would be dead. And this window
-    // needs real focus regardless: dismiss-on-click-elsewhere is implemented
-    // as "this window lost active" (see onActiveChanged), which a window that
-    // never becomes active can never report.
-    flags: Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint
-    color: "transparent"
+    // NOTE on focus: Qt.WindowDoesNotAcceptFocus is deliberately absent from
+    // ChromeWindow's flags, and must stay absent — twice over. SelectionToolbar
+    // .qml records that on this compositor the flag silently swallowed the
+    // pointer click itself, not just keyboard focus, so every menu row would be
+    // dead. And this window needs real focus regardless: dismiss-on-click-
+    // elsewhere is implemented as "this window lost active" (see
+    // onActiveChanged), which a window that never becomes active can never
+    // report.
 
     // FIXED, not derived from content's implicitWidth/implicitHeight. Two
     // reasons, both learned next door: a Window whose size binds to content
@@ -157,68 +163,19 @@ Window {
     width: wantedWidth
     height: wantedHeight
 
-    // Shown exactly ONCE, here, and never hidden/shown again. SelectionToolbar
-    // .qml records the reason at length: repeatedly mapping/unmapping a window
-    // while a note holds Wayland keyboard focus disrupts that note's own text
-    // input (cursor flicker, dropped keystrokes) every single time, regardless
-    // of flags — the disruption comes from mapping a surface at all. So this
-    // window maps at startup, before any note has been focused, and "hidden"
-    // for the rest of the session means invisible CONTENT plus an off-screen
-    // park (see _syncVisible), never show()/hide().
-    //
-    // That is also precisely why this menu is a singleton rather than one per
-    // note: N notes would mean N windows all mapped at startup, forever.
-    visible: false
-    Component.onCompleted: {
-        // Seeds the KWin rule (same mechanism NoteWindow's pin feature uses)
-        // Force-keeping this window above others. Seeded at offscreenPoint(),
-        // not an on-screen throwaway: this is an "Apply Initially" rule in
-        // effect from the very first show() below, and SelectionToolbar.qml
-        // records that an on-screen seed produced a real once-per-session
-        // flash at the wrong spot before the first reposition landed.
-        const seed = positionManager.offscreenPoint()
-        positionManager.applyPosition("noteContextMenu", menu.title, seed.x, seed.y, true)
+    // The map-once ritual (seed the off-screen "keep above" rule, show/hide/
+    // show so KWin re-evaluates it, block input) now lives in ChromeWindow —
+    // see there for the full reasoning (mapping a surface while a note holds
+    // Wayland focus disrupts its text input, so the window maps once at startup
+    // and "hides" by parking instead). All this file adds is applying blur once
+    // the surface exists, which ChromeWindow's mapped() fires at the right point
+    // in that ritual.
+    onMapped: menu.updateBlur()
 
-        // The hide()+show() is deliberate, not redundant: KWin does not
-        // retroactively apply a freshly-written above/Force rule to a window
-        // that already exists — only a re-created one re-evaluates it.
-        // NoteWindow.setPinned() documents the same requirement.
-        menu.show()
-        menu.hide()
-        menu.show()
-        menu.updateBlur()
-        // AFTER the show/hide/show, never before: hide() destroys the
-        // wl_surface and the next show() creates a fresh one, and an input
-        // region is per-surface state — a mask set before that cycle would be
-        // set on a surface that no longer exists. Nothing is tracked yet, so
-        // "blocks all input" is the correct starting state (background.visible
-        // starts false to match).
-        windowInputMask.setAcceptsInput(menu, false)
-
-        // Deliberately NOT parking here, unlike every real hide below:
-        // positionManager.moveWindow() spawns an untracked thread per call
-        // with no ordering guarantee between calls, so a park queued at
-        // startup can land AFTER the first real show and drag the just-shown
-        // menu back off-screen. The rule above already seeds it off-screen,
-        // so there is no on-screen resting spot left to correct.
-    }
-
-    // Parks this window where no monitor can show it. Load-bearing for
-    // VISIBILITY ONLY — never for input correctness: moveWindow() is async,
-    // spawns a fresh untracked thread per call, and its completions arrive in
-    // COMPLETION order rather than call order, so a park can land before the
-    // show it was meant to undo; it also no-ops entirely if KWin scripting is
-    // unreachable. Input correctness is windowInputMask's job instead (see
-    // background.onVisibleChanged), which is synchronous and client-side. The
-    // mask stops clicks, the park stops pixels. The offscreen point itself is
-    // PositionManager::offscreenPoint() — one shared definition, no longer a
-    // per-window hand-copy.
-    function parkOffscreen() {
-        const pt = positionManager.offscreenPoint()
-        menu.x = pt.x
-        menu.y = pt.y
-        positionManager.moveWindow(menu.title, pt.x, pt.y)
-    }
+    // Parking off-screen (this window's way of "hiding") is ChromeWindow's
+    // park() now — see there for why it's load-bearing for visibility only,
+    // never input correctness (that's windowInputMask's job, see
+    // background.onVisibleChanged below).
 
     // Mirrors the tracked note's real compositor blur-behind, exactly like the
     // toolbar and the find panel do. Gated on background.visible (the real "is
@@ -291,7 +248,7 @@ Window {
             // ~50ms of latency to not add to a menu that should feel instant.
             menu.reposition()
         } else {
-            menu.parkOffscreen()
+            menu.park()
         }
         menu.updateBlur()
     }
@@ -539,7 +496,7 @@ Window {
         visible: false
 
         // Keeps this window's input region in lockstep with whether it is
-        // actually showing anything — see parkOffscreen() for why the
+        // actually showing anything — see ChromeWindow.park() for why the
         // off-screen park cannot be trusted with this job, and
         // WindowInputMask.h for the Wayland mechanics. A transparent window
         // with invisible CONTENT still eats every click that lands on it.

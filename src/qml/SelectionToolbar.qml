@@ -25,8 +25,15 @@ import QtQuick.Window
 // being a genuine singleton (rather than one instance per open note) is
 // what makes "one toolbar that follows whichever note is focused" possible
 // in the first place.
-Window {
+ChromeWindow {
     id: bar
+
+    // The frameless map-once/park ritual, the "keep above" rule seeding and the
+    // window flags all live in ChromeWindow now; this file (and its three nested
+    // popups below) keep only what is their own — the buttons, placement, blur,
+    // and visibility. ruleId is each window's KWin rule-group key (and MUST stay
+    // registered in PositionEventService::pseudoNoteIds).
+    ruleId: "selectionToolbar"
 
     // Configurable hover/press highlight (feature request) for every
     // formatting button below — replaces each ToolButton's default style
@@ -507,9 +514,9 @@ Window {
     // as either the tracked note or this window itself is active; only
     // when focus moves to neither does Main.qml actually stop tracking.
     // A click anywhere in this window is then just a normal click in a
-    // normal window — nothing races, nothing gets swallowed.
-    flags: Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint
-    color: "transparent"
+    // normal window — nothing races, nothing gets swallowed. (Qt.Window
+    // DoesNotAcceptFocus is absent from ChromeWindow's flags for exactly this
+    // reason — it was found to swallow the pointer click itself here.)
 
     // wantsVisible-gated, not just isVertical directly: this window stays
     // permanently mapped with WindowStaysOnTopHint (see
@@ -528,7 +535,7 @@ Window {
     // — two such negotiations close together can race, with a stale
     // belated "you're 1x1 now" acknowledgment landing after a fresh
     // "you're your real size again" one and silently clobbering the
-    // window's actual on-screen geometry. parkOffscreen() below, called
+    // window's actual on-screen geometry. ChromeWindow.park() below, called
     // from onNoteWindowChanged, already fully solves the original
     // "blocks clicks after closing" problem on its own — a window sitting
     // off every connected screen can't overlap real content regardless of
@@ -546,132 +553,24 @@ Window {
     width: wantedWidth
     height: wantedHeight
 
-    // Shown exactly ONCE, here, and never hidden/shown again — confirmed
-    // live that repeatedly mapping/unmapping this window while a note
-    // holds Wayland keyboard focus disrupts that note's own text input
-    // (visible cursor flicker, dropped keystrokes) every single time,
-    // regardless of this window's flags (Tool/WindowDoesNotAcceptFocus/
-    // WindowStaysOnTopHint were each tried individually and in
-    // combination — none prevented it, because the disruption comes from
-    // mapping a new surface at all, not from anything focus-related).
-    // Showing it once at startup — before any note has ever been
-    // focused, so there's nothing to disrupt yet — keeps it permanently
-    // mapped; "hidden" the rest of the time is achieved by making its
-    // *contents* invisible (see background/content below), not by
-    // touching this window's own visible/show()/hide() ever again.
-    visible: false
-    Component.onCompleted: {
-        // Seeds a KWin rule (same mechanism NoteWindow's own pin feature
-        // uses) Force-keeping this window above others. "selectionToolbar"
-        // is a fixed id, not a real note id — applyPosition() only ever
-        // uses it as an opaque rule-group key, so this doesn't collide
-        // with or need cleanup alongside any actual note's rule.
-        //
-        // Seeded at offscreenPoint(), NOT a fixed on-screen throwaway like
-        // (100, 100) used to be (bug found live): this is an
-        // "Apply Initially" rule, applied synchronously here, in effect
-        // from this window's very first show() below — no separate
-        // moveWindow() thread involved, so seeding it off-screen doesn't
-        // reintroduce the startup race described further down. Without
-        // this, the window's FIRST-EVER real show (e.g. tapping a
-        // misspelled word soon after launch) started from an on-screen
-        // spot and stayed there, fully visible, until reposition()'s own
-        // async moveWindow() call landed moments later — a real, visible
-        // flash at the wrong location every single session, exactly once,
-        // that every later show avoided only because its OWN prior hide
-        // had already parked it off-screen first.
-        const seed = positionManager.offscreenPoint()
-        positionManager.applyPosition("selectionToolbar", bar.title, seed.x, seed.y, true)
+    // The map-once ritual (seed the off-screen "keep above" rule, show/hide/show
+    // so KWin re-evaluates it, block input) now lives in ChromeWindow — see
+    // there for the full trace-confirmed reasoning behind every step (mapping a
+    // surface while a note holds Wayland focus disrupts its text input, so this
+    // window maps once at startup and "hides" by parking its content off-screen).
+    // This file only adds applying blur once the surface exists, which
+    // ChromeWindow's mapped() fires at the right point in that ritual.
+    onMapped: bar.updateBlur()
 
-        // The extra hide()+show() right after is deliberate, not
-        // redundant: confirmed live that writing an "above"/Force rule
-        // and calling reconfigure() (inside applyPosition() above) does
-        // NOT retroactively apply it to a window that already exists —
-        // NoteWindow.qml's own setPinned() already documents this exact
-        // requirement for its pin feature, forcing a hide/flags/show
-        // cycle specifically so KWin re-evaluates the rule against a
-        // freshly (re)created window. A single show() is safe to repeat
-        // here, still at pure startup with no note focused yet, so it
-        // can't retrigger the focus-disruption bug described above.
-        bar.show()
-        bar.hide()
-        bar.show()
-        updateBlur()
-        // Applied AFTER the show/hide/show above, not before: a hide()
-        // destroys this window's wl_surface and the next show() creates a
-        // fresh one, and an input region is per-surface state — a mask set
-        // before that cycle would be set on a surface that no longer
-        // exists. Nothing has been tracked yet at this point, so "blocks
-        // all input" is the correct starting state (background.visible
-        // starts false too); backgroundInputMask below takes over from the
-        // first real transition onward.
-        windowInputMask.setAcceptsInput(bar, false)
-
-        // Deliberately NOT calling parkOffscreen() here too, unlike every
-        // real hide transition below — bug found live: positionManager.
-        // moveWindow() spawns its own untracked, unsynchronized background
-        // thread per call (see PositionManager::moveWindow), and
-        // KWinRuleApplier::moveWindow does three sequential qdbus6
-        // round-trips plus a hardcoded 50ms sleep, so it's genuinely slow
-        // and two concurrent calls for the same window have no ordering
-        // guarantee — whichever finishes LAST wins, not whichever was
-        // issued last. Calling it here queued a park-off-screen move at
-        // the exact moment the app starts, right when a user could
-        // plausibly trigger this window's very first real show (e.g.
-        // tapping a misspelled word seconds after launch) — if that early
-        // startup move was still in flight when the real show's own
-        // moveWindow call landed first, the stale startup move finished
-        // moments later and silently dragged the freshly-shown popup back
-        // off-screen: exactly the "flashes and immediately disappears"
-        // bug. width/height above are already 1x1 from this window's very
-        // first frame regardless (wantsVisible starts false), and the seed
-        // above is already off-screen too now, so skipping this call
-        // entirely costs nothing — there's no on-screen resting spot left
-        // to correct.
-    }
-
-    // Parks any of this file's permanently-mapped windows (this bar
-    // itself, columnOptionsPopup, spellingSuggestionsPopup, tooltipWindow)
-    // at offscreenPoint(), so an unwanted-but-still-mapped window can't be
-    // seen on any monitor.
-    //
-    // Correction: this used to claim it was "paired everywhere with
-    // shrinking that same window's width/height to 1x1." That shrinking is
-    // GONE (see bar's own width/height comment above, and
-    // spellingSuggestionsPopup's trace-confirmed one below, for the resize
-    // race that removing it fixed) — width/height now stay at their real
-    // size unconditionally, and only position changes on hide.
-    //
-    // Load-bearing for VISIBILITY only, NOT for input correctness — do not
-    // rely on it for the latter. It is a best-effort, genuinely racy
-    // mechanism: positionManager.moveWindow() is asynchronous and spawns a
-    // fresh, untracked thread per call, and its completions are explicitly
-    // documented (see PositionManager's windowMoved signal) to arrive in
-    // COMPLETION order, which need not match call order. So for any
-    // show->hide pair issued close together, the park's move can land
-    // BEFORE the show's, leaving the show's geometry applied last — an
-    // unwanted, fully-sized, always-on-top window sitting back on screen
-    // with nothing ever re-parking it. It also silently no-ops outright if
-    // KWin scripting isn't reachable, or if the caption doesn't match (see
-    // KWinRuleApplier::moveWindow). A transparent window with invisible
-    // CONTENT still eats every click landing on it, so none of that may be
-    // allowed to decide whether input passes through.
-    //
-    // That is why each of these four windows ALSO carries a
-    // windowInputMask.setAcceptsInput() hook tied to its own
-    // content-visibility flag (see backgroundInputMask below and its
-    // equivalents on each popup). An input region is synchronous and
-    // client-side — no compositor round-trip, no ordering hazard, no
-    // mapping/unmapping churn (which this file must avoid at all costs; see
-    // Component.onCompleted above) — so input correctness holds even when
-    // this park loses its race or no-ops entirely. The two are
-    // complementary: the mask stops clicks, the park stops pixels.
-    function parkOffscreen(win) {
-        const pt = positionManager.offscreenPoint()
-        win.x = pt.x
-        win.y = pt.y
-        positionManager.moveWindow(win.title, pt.x, pt.y)
-    }
+    // Parking a window off-screen (how each of these four permanently-mapped
+    // windows "hides") is ChromeWindow.park() now — each window parks itself via
+    // its own park(), instead of the one shared bar.parkOffscreen(win) this used
+    // to be. See ChromeWindow for why it is load-bearing for VISIBILITY only,
+    // never input correctness: it is racy (moveWindow is async, completions
+    // arrive out of order, and it no-ops if KWin scripting is unreachable), so
+    // each window ALSO carries a windowInputMask.setAcceptsInput() hook tied to
+    // its own content-visibility flag. The mask stops clicks, the park stops
+    // pixels.
 
     // Mirrors the tracked note's real compositor blur-behind (feature
     // request — the toolbar never had it before, unlike the glass sheen
@@ -892,7 +791,7 @@ Window {
             // braces rather than the only thing standing between a park and
             // an unwanted move.
             repositionDebounce.stop()
-            parkOffscreen(bar)
+            bar.park()
         }
         updateBlur()
         columnOptionsPopup.updateBlur()
@@ -1064,7 +963,7 @@ Window {
         visible: false
 
         // Keeps this window's input region in lockstep with whether it's
-        // actually showing anything — see parkOffscreen()'s own comment for
+        // actually showing anything — see ChromeWindow.park()'s own comment for
         // why the offscreen park can't be trusted to do this job, and
         // WindowInputMask's for the Wayland mechanics.
         //
@@ -1338,11 +1237,10 @@ Window {
     // icon, extending past this toolbar's own small fixed surface, and —
     // per the feature request — is explicitly allowed to overlap the note,
     // unlike the main bar which always keeps clear of it.
-    Window {
+    ChromeWindow {
         id: columnOptionsPopup
         title: "suopNotes-columnOptionsPopup"
-        flags: Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint
-        color: "transparent"
+        ruleId: "columnOptionsPopup"
 
         // wantsVisible-gated, not just columnOptionsBackground's own
         // width/height directly: this window stays permanently mapped with
@@ -1366,7 +1264,7 @@ Window {
         // time, and two such negotiations close together can race, with a
         // stale belated "you're 1x1 now" acknowledgment silently
         // clobbering a fresher "you're real size again" one.
-        // onWantsVisibleChanged below already calls bar.parkOffscreen(),
+        // onWantsVisibleChanged below already calls ChromeWindow.park(),
         // which alone fully solves the original "blocks clicks after
         // closing" problem — a window sitting off every connected screen
         // can't overlap real content regardless of its size. Width/height
@@ -1396,36 +1294,12 @@ Window {
         readonly property alias gripHandle: columnOptionsDragHandleGroup.gripHandle
         readonly property alias gripDotsGrid: columnOptionsDragHandleGroup.gripDotsGrid
 
-        // Same "shown once at startup, content-visibility toggled from then
-        // on" discipline as `bar` itself — see its own Component.onCompleted
-        // comment for why repeatedly mapping/unmapping a window while a
-        // note holds Wayland keyboard focus disrupts that note's own text
-        // input. The seeded position is offscreenPoint(), not an on-screen
-        // throwaway — same reasoning as bar's own seed (see its comment
-        // for the "first-ever show flashes at the wrong spot" bug this
-        // avoids): repositionColumnOptionsPopup() below takes over for
-        // every real placement, the instant it first becomes relevant.
-        visible: false
-        Component.onCompleted: {
-            const seed = positionManager.offscreenPoint()
-            positionManager.applyPosition("columnOptionsPopup", columnOptionsPopup.title, seed.x, seed.y, true)
-            show()
-            hide()
-            show()
-            updateBlur()
-            // Nothing is shown yet, and the surface only exists as of the
-            // show() above — see bar's own Component.onCompleted for why the
-            // mask has to be applied here rather than before that cycle.
-            windowInputMask.setAcceptsInput(columnOptionsPopup, false)
-
-            // Deliberately NOT calling bar.parkOffscreen() here too — see
-            // bar's own Component.onCompleted comment for why: it races
-            // moveWindow's slow, unsynchronized background thread against
-            // this window's very first real show, and losing that race is
-            // exactly what caused the popup to flash into view then get
-            // silently dragged back off-screen moments later (bug found
-            // live).
-        }
+        // Same "shown once at startup, content-visibility toggled from then on"
+        // discipline as `bar` itself, now provided by ChromeWindow's map-once
+        // ritual (see there). This popup only adds applying blur once the surface
+        // exists — repositionColumnOptionsPopup() below takes over real placement
+        // the instant it first becomes relevant.
+        onMapped: columnOptionsPopup.updateBlur()
 
         // Same real compositor blur-behind as the main bar (feature
         // request: this popup should match its styling) — see bar's own
@@ -1455,7 +1329,7 @@ Window {
             if (wantsVisible)
                 repositionColumnOptionsPopup()
             else
-                bar.parkOffscreen(columnOptionsPopup)
+                columnOptionsPopup.park()
             updateBlur()
         }
 
@@ -1534,7 +1408,7 @@ Window {
             id: columnOptionsBackground
             visible: false
             // Same input-region hook, same reasoning, as bar's own
-            // background above — see it and parkOffscreen() for why this
+            // background above — see it and ChromeWindow.park() for why this
             // window can't rely on being parked off-screen to stop eating
             // clicks while it isn't wanted.
             onVisibleChanged: windowInputMask.setAcceptsInput(columnOptionsPopup, columnOptionsBackground.visible)
@@ -1702,11 +1576,10 @@ Window {
     // styling), wired up the same wantsVisible-gated way columnOptionsPopup's
     // own updateBlur() already is (see its comment for the bug that gating
     // avoids: a still-mapped, blurred window sitting around after "closing").
-    Window {
+    ChromeWindow {
         id: spellingSuggestionsPopup
         title: "suopNotes-spellingSuggestionsPopup"
-        flags: Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint
-        color: "transparent"
+        ruleId: "spellingSuggestionsPopup"
 
         // wantsVisible-gated, not just spellingSuggestionsBackground's own
         // width/height directly: this window stays permanently mapped with
@@ -1738,7 +1611,7 @@ Window {
         // (confirmed live via trace logging: width dropped to 1 while
         // wantsVisible stayed true and background.width never changed),
         // meaning this was a real platform-level race, not a QML binding
-        // bug. bar.parkOffscreen() below already fully solves the
+        // bug. ChromeWindow.park() below already fully solves the
         // original "blocks clicks after closing" problem on its own — a
         // window sitting off every connected screen can't overlap real
         // content regardless of its size — so shrinking was never load-
@@ -1761,38 +1634,12 @@ Window {
         readonly property alias content: spellingSuggestionsContent
         readonly property alias repeater: suggestionsRepeater
 
-        // Same "shown once at startup, content-visibility toggled from then
-        // on" discipline as `bar`/columnOptionsPopup — see bar's own
-        // Component.onCompleted comment for why repeatedly mapping/
-        // unmapping a window while a note holds Wayland keyboard focus
-        // disrupts that note's own text input. The seeded position is
-        // offscreenPoint(), not an on-screen throwaway — same reasoning as
-        // the other two popups (see bar's own comment for the "first-ever
-        // show flashes at the wrong spot" bug this avoids):
-        // repositionSpellingSuggestionsPopup() below takes over for every
-        // real placement, the instant it first becomes relevant.
-        visible: false
-        Component.onCompleted: {
-            const seed = positionManager.offscreenPoint()
-            positionManager.applyPosition("spellingSuggestionsPopup", spellingSuggestionsPopup.title, seed.x, seed.y, true)
-            show()
-            hide()
-            show()
-            updateBlur()
-            // Nothing is shown yet, and the surface only exists as of the
-            // show() above — see bar's own Component.onCompleted for why the
-            // mask has to be applied here rather than before that cycle.
-            windowInputMask.setAcceptsInput(spellingSuggestionsPopup, false)
-
-            // Deliberately NOT calling bar.parkOffscreen() here too — bug
-            // found live: it raced moveWindow's slow, unsynchronized
-            // background thread (see PositionManager::moveWindow) against
-            // this popup's very first real show — tapping a misspelled
-            // word shortly after launch — and losing that race is exactly
-            // what made the popup flash into view then get silently
-            // dragged back off-screen moments later. See bar's own
-            // Component.onCompleted comment for the full story.
-        }
+        // Same "shown once at startup, content-visibility toggled from then on"
+        // discipline as `bar`/columnOptionsPopup, now provided by ChromeWindow's
+        // map-once ritual (see there). This popup only adds applying blur once
+        // the surface exists — repositionSpellingSuggestionsPopup() below takes
+        // over real placement the instant it first becomes relevant.
+        onMapped: spellingSuggestionsPopup.updateBlur()
 
         // Same real compositor blur-behind as columnOptionsPopup's own
         // (feature request) — see its updateBlur() for the reasoning
@@ -2204,8 +2051,8 @@ Window {
                 spellingSuggestionsContent.visible = false
                 spellingSuggestionsContent.enabled = false
                 // Counted the same as repositionSpellingSuggestionsPopup()'s
-                // own move, not a bare bar.parkOffscreen() call (bug found
-                // live): parkOffscreen() also calls positionManager.
+                // own move, not a bare ChromeWindow.park() call (bug found
+                // live): ChromeWindow.park() also calls positionManager.
                 // moveWindow(), and that move's eventual completion ALSO
                 // fires windowMoved for this window's title — the
                 // Connections handler below matches purely by title, with
@@ -2223,7 +2070,7 @@ Window {
                 // long enough for any in-flight move to have already
                 // settled, which is why that path alone seemed to "fix" it).
                 spellingSuggestionsMovesIssued++
-                bar.parkOffscreen(spellingSuggestionsPopup)
+                spellingSuggestionsPopup.park()
             }
             updateBlur()
         }
@@ -2402,7 +2249,7 @@ Window {
             id: spellingSuggestionsBackground
             visible: false
             // Same input-region hook, same reasoning, as bar's own
-            // background above (see parkOffscreen()). This window's reveal
+            // background above (see ChromeWindow.park()). This window's reveal
             // is deliberately deferred until its position/size are confirmed
             // (see spellingSuggestionsRevealIfReady), so hooking `visible`
             // rather than wantsVisible also means it only starts accepting
@@ -2566,11 +2413,10 @@ Window {
     // touching this window's own visible/show()/hide() ever again.
     // Sized to just its own text (background's own implicit size), so it
     // never reserves space it isn't currently using.
-    Window {
+    ChromeWindow {
         id: tooltipWindow
         title: "suopNotes-toolbarTooltip"
-        flags: Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint
-        color: "transparent"
+        ruleId: "toolbarTooltip"
 
         // NOT gated on contentVisible anymore (bug found live: a 1px popup
         // elsewhere in this file that persisted no matter what — see
@@ -2583,7 +2429,7 @@ Window {
         // often — forces a genuine client<->compositor Wayland resize
         // negotiation each time, with two close together able to race and
         // leave the window stuck at a stale size. hideTip() below already
-        // calls bar.parkOffscreen(), which alone fully solves the original
+        // calls ChromeWindow.park(), which alone fully solves the original
         // "blocks clicks after hiding" problem — a window sitting off
         // every connected screen can't overlap real content regardless of
         // its size. Width/height now stay at their real text size
@@ -2607,33 +2453,10 @@ Window {
 
         readonly property alias background: tooltipBackground
 
-        visible: false
-        Component.onCompleted: {
-            // Seeded at offscreenPoint(), not an on-screen throwaway — same
-            // reasoning as bar's/columnOptionsPopup's own
-            // Component.onCompleted (see bar's own comment for the
-            // "first-ever show flashes at the wrong spot" bug this
-            // avoids). showTip() below takes over real positioning the
-            // instant any tooltip is first shown.
-            const seed = positionManager.offscreenPoint()
-            positionManager.applyPosition("toolbarTooltip", tooltipWindow.title, seed.x, seed.y, true)
-            show()
-            hide()
-            show()
-            // Nothing is shown yet, and the surface only exists as of the
-            // show() above — see bar's own Component.onCompleted for why the
-            // mask has to be applied here rather than before that cycle.
-            windowInputMask.setAcceptsInput(tooltipWindow, false)
-            updateBlur()
-
-            // Deliberately NOT calling bar.parkOffscreen() here too — bug
-            // found live: it raced moveWindow's slow, unsynchronized
-            // background thread (see PositionManager::moveWindow) against
-            // this tooltip's very first real show, and losing that race is
-            // exactly what made a tooltip flash into view then get
-            // silently dragged back off-screen moments later. See bar's
-            // own Component.onCompleted comment for the full story.
-        }
+        // The map-once ritual now lives in ChromeWindow (see there). showTip()
+        // below takes over real positioning the instant any tooltip is first
+        // shown; this only adds applying blur once the surface exists.
+        onMapped: tooltipWindow.updateBlur()
 
         // Blur-behind, matching the rest of the toolbar chrome (feature
         // request: the tooltip should read as glass too, not just carry the
@@ -2667,7 +2490,7 @@ Window {
         function hideTip() {
             tooltipWindow.contentVisible = false
             tooltipWindow.activeButton = null
-            bar.parkOffscreen(tooltipWindow)
+            tooltipWindow.park()
             updateBlur()
         }
 
@@ -2680,7 +2503,7 @@ Window {
             id: tooltipBackground
             visible: tooltipWindow.contentVisible
             // Same input-region hook, same reasoning, as bar's own
-            // background above (see parkOffscreen()) — doubly worth having
+            // background above (see ChromeWindow.park()) — doubly worth having
             // here, since a tooltip window toggles on every single hover
             // in/out, giving the racy park by far the most chances to lose.
             onVisibleChanged: windowInputMask.setAcceptsInput(tooltipWindow, tooltipBackground.visible)

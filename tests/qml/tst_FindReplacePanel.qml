@@ -361,6 +361,46 @@ Item {
                     "the count label reads as a human position, 1-based")
         }
 
+        function test_editing_the_note_researches_without_yanking_the_selection_onto_a_match() {
+            // Regression: a note edit used to re-select the current match in the
+            // editor, so the just-typed text sat selected under the cursor — the
+            // next keystroke overwrote it, then the search re-selected the
+            // following match and that was overwritten too, destroying matches one
+            // per keystroke. Editing the note must refresh the match count but
+            // leave the editor's own cursor/selection where the user is typing.
+            const win = makeWindow("frp-note-edit", 94, "alpha beta alpha\n\ngamma alpha")
+            const editor = win.editor
+
+            editor.cursorPosition = 0
+            activateWindow(win)
+            panel.openFind()
+            tryCompare(panel.findField, "activeFocus", true)
+            typeText("alpha")
+            tryCompare(panel, "matchCount", 3, 1000)
+            compare(editor.selectedText, "alpha",
+                    "precondition: the current match is selected in the editor")
+
+            // The user moves into the note and types a plain character where there
+            // is no match (mid-'beta'); positioning the cursor collapses the find
+            // selection first, and the keystroke is a genuine note edit.
+            activateWindow(win)
+            editor.forceActiveFocus()
+            tryCompare(editor, "activeFocus", true)
+            const betaMid = editor.text.indexOf("beta") + 2
+            editor.cursorPosition = betaMid
+            keyClick("x")
+
+            // The re-search runs — still three 'alpha' matches — but the editor's
+            // selection is NOT pulled back onto a match: the cursor stays right
+            // after the 'x' the user just typed, with nothing selected.
+            wait(300) // past the 150ms search debounce
+            tryCompare(panel, "matchCount", 3)
+            compare(editor.selectedText, "",
+                    "a note edit must not re-select a match under the user's cursor")
+            compare(editor.cursorPosition, betaMid + 1,
+                    "the cursor stays where the user typed, not yanked to a match")
+        }
+
         function test_next_match_cycles_forward_and_wraps_from_the_last_match_back_to_the_first() {
             const win = makeWindow("frp-next", 84, "alpha beta alpha\n\ngamma alpha")
             const editor = win.editor

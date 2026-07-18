@@ -27,12 +27,19 @@ import QtQuick.Window
 // the toolbar documents at length: shown once at startup and never
 // hidden/shown again (re-mapping a surface while a note holds keyboard focus
 // disrupts its text input); "hidden" thereafter is content-invisible +
-// parked off-screen + input-region-rejected, never an actual hide(). Read
-// SelectionToolbar.qml's own Component.onCompleted / parkOffscreen /
-// wantsVisible comments for the full trace-confirmed reasoning behind every
-// step below — it is not re-transcribed here.
-Window {
+// parked off-screen + input-region-rejected, never an actual hide(). The
+// map-once ritual and off-screen park themselves live in ChromeWindow now;
+// read its comments (and SelectionToolbar.qml's own wantsVisible comment) for
+// the full trace-confirmed reasoning behind every step.
+ChromeWindow {
     id: hudWindow
+
+    // The frameless map-once/park ritual, the "keep above" rule seeding and the
+    // window flags live in ChromeWindow now; this file keeps only the ribbon,
+    // its hover-driven placement and its always-on blur. ruleId is the KWin
+    // rule-group key (and MUST stay registered in
+    // PositionEventService::pseudoNoteIds — see the title comment below).
+    ruleId: "noteHud"
 
     // The note the ribbon is currently showing for, or null. This is the
     // OUTPUT of the hover-tracking policy below, not an input: Main.qml feeds
@@ -240,13 +247,12 @@ Window {
     // mergeLivePosition as a phantom note id.
     title: "suopNotes-noteHud"
 
-    // Same flags and no-fight-for-focus stance as the toolbar (see its own
-    // flags comment): Qt.WindowDoesNotAcceptFocus was found to swallow the
-    // pointer click itself on this compositor, so this accepts focus like any
-    // normal window and Main.qml just counts it as "in use" while active or
-    // hovered rather than trying to hand focus back.
-    flags: Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint
-    color: "transparent"
+    // NOTE on focus: same no-fight-for-focus stance as the toolbar (see its own
+    // flags comment). Qt.WindowDoesNotAcceptFocus is absent from ChromeWindow's
+    // flags — it was found to swallow the pointer click itself on this
+    // compositor — so this accepts focus like any normal window and Main.qml
+    // just counts it as "in use" while active or hovered rather than trying to
+    // hand focus back.
 
     // The single source of truth for how big this window must be right now —
     // the ribbon's own intrinsic size (vertical + alwaysExpanded, so it is a
@@ -260,34 +266,12 @@ Window {
     width: wantedWidth
     height: wantedHeight
 
-    // Shown exactly once, here, and never hidden/shown again — see the
-    // toolbar's Component.onCompleted for the full reasoning (re-mapping a
-    // surface while a note holds keyboard focus disrupts its text input; the
-    // seed is off-screen so the first real show never flashes at the wrong
-    // spot; the show/hide/show cycle forces KWin to re-evaluate the freshly
-    // written Force-above rule; the input mask is applied AFTER that cycle
-    // because it is per-surface state).
-    visible: false
-    Component.onCompleted: {
-        const seed = positionManager.offscreenPoint()
-        positionManager.applyPosition("noteHud", hudWindow.title, seed.x, seed.y, true)
-        hudWindow.show()
-        hudWindow.hide()
-        hudWindow.show()
-        updateBlur()
-        windowInputMask.setAcceptsInput(hudWindow, false)
-    }
-
-    // The offscreen point is now PositionManager::offscreenPoint() — one shared
-    // definition instead of the hand-copy this used to carry. parkOffscreen
-    // stays local (it references this window's own x/y/title), but the point
-    // math it parks against no longer drifts per window.
-    function parkOffscreen(win) {
-        const pt = positionManager.offscreenPoint()
-        win.x = pt.x
-        win.y = pt.y
-        positionManager.moveWindow(win.title, pt.x, pt.y)
-    }
+    // The map-once ritual and the off-screen park now live in ChromeWindow (see
+    // there for the full reasoning: re-mapping a surface while a note holds
+    // keyboard focus disrupts its text input, so the window maps once at startup
+    // and hides by parking). This file only adds applying blur once the surface
+    // exists, which ChromeWindow's mapped() fires at the right point.
+    onMapped: hudWindow.updateBlur()
 
     // Compositor blur-behind is ALWAYS on while the ribbon is showing (feature
     // request: the ribbon should read as glass regardless of the hovered note's
@@ -369,7 +353,7 @@ Window {
             repositionDebounce.restart()
         } else {
             repositionDebounce.stop()
-            parkOffscreen(hudWindow)
+            park()
         }
         updateBlur()
     }
@@ -441,7 +425,7 @@ Window {
         // region is hooked straight to it (same one-hook-can't-drift reasoning
         // as the toolbar's background.onVisibleChanged), so a parked window
         // still rejects the clicks the off-screen park alone can't be trusted
-        // to stop (see parkOffscreen()).
+        // to stop (see ChromeWindow.park()).
         visible: false
         onVisibleChanged: windowInputMask.setAcceptsInput(hudWindow, ribbon.visible)
 

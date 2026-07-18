@@ -55,8 +55,15 @@ import QtQuick.Window
 //     because the editor sets persistentSelection (NoteWindow.qml) — that is
 //     what makes "the current match stays highlighted while you type in the
 //     find field" work at all.
-Window {
+ChromeWindow {
     id: panel
+
+    // The frameless map-once/park ritual, the "keep above" rule seeding and the
+    // window flags live in ChromeWindow now; this file keeps only what is its
+    // own — the find/replace UI, its placement, blur, and keyboard handling.
+    // ruleId is the KWin rule-group key (and MUST stay registered in
+    // PositionEventService::pseudoNoteIds — see the title comment below).
+    ruleId: "findReplacePanel"
 
     // Scope the panel acts on — the currently-focused NoteWindow, or null when
     // no note has focus. Sourced from Main.qml, the one place that observes
@@ -110,6 +117,19 @@ Window {
     // instead of snapping back to the top.
     property int _anchor: 0
 
+    // Whether the next debounced re-search should also SELECT its current match
+    // in the editor (moving the editor's own selection over it), or only refresh
+    // the highlight/count without touching the selection. True for searches the
+    // user drives from the panel (opening it, editing the find term, toggling
+    // regex, following focus to another note) — there they want to be taken to
+    // the match. False when the re-search was triggered by the user editing the
+    // NOTE itself: re-selecting there would drop the just-searched text under the
+    // cursor selected, so the next keystroke overwrites it and the search then
+    // re-selects the following match — matches destroyed one per keystroke as
+    // the user types (reported bug). Reset to true after every debounce fire so
+    // the panel-driven default holds unless a note edit explicitly clears it.
+    property bool _selectOnNextSearch: true
+
     // Whether this window should currently be showing anything at all: the
     // user has it open AND there is a note to search. Losing the tracked note
     // (focus moved to another app entirely) hides the card without discarding
@@ -159,13 +179,12 @@ Window {
     // than after it happens a third time.
     title: "suopNotes-findReplacePanel"
 
-    // Qt.WindowDoesNotAcceptFocus is deliberately absent, and must stay absent:
-    // SelectionToolbar.qml records (its own flags comment) that on this
-    // compositor the flag silently swallowed the pointer click itself, not just
-    // keyboard focus. This window needs real keyboard focus anyway — it is the
-    // only one in the app with text fields the user types into.
-    flags: Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint
-    color: "transparent"
+    // NOTE on focus: Qt.WindowDoesNotAcceptFocus is deliberately absent from
+    // ChromeWindow's flags, and must stay absent: SelectionToolbar.qml records
+    // (its own flags comment) that on this compositor the flag silently
+    // swallowed the pointer click itself, not just keyboard focus. This window
+    // needs real keyboard focus anyway — it is the only one in the app with text
+    // fields the user types into.
 
     // FIXED, not derived from content's implicitWidth/implicitHeight. Two
     // reasons, both learned next door in SelectionToolbar.qml: a Window whose
@@ -187,68 +206,16 @@ Window {
     width: wantedWidth
     height: wantedHeight
 
-    // Shown exactly ONCE, here, and never hidden/shown again. SelectionToolbar
-    // .qml records the reason at length: repeatedly mapping/unmapping a window
-    // while a note holds Wayland keyboard focus disrupts that note's own text
-    // input (cursor flicker, dropped keystrokes) every single time, regardless
-    // of flags — the disruption comes from mapping a surface at all. So this
-    // window maps at startup, before any note has been focused, and "hidden"
-    // for the rest of the session means invisible CONTENT plus an off-screen
-    // park (see _syncVisible), never show()/hide().
-    //
-    // That is also precisely why this panel is a singleton rather than one per
-    // note: N notes would mean N windows all mapped at startup, forever.
-    visible: false
-    Component.onCompleted: {
-        // Seeds the KWin rule (same mechanism NoteWindow's pin feature uses)
-        // Force-keeping this window above others. Seeded at offscreenPoint(),
-        // not an on-screen throwaway: this is an "Apply Initially" rule in
-        // effect from the very first show() below, and SelectionToolbar.qml
-        // records that an on-screen seed produced a real once-per-session flash
-        // at the wrong spot before the first reposition landed.
-        const seed = positionManager.offscreenPoint()
-        positionManager.applyPosition("findReplacePanel", panel.title, seed.x, seed.y, true)
+    // The map-once ritual (seed the off-screen "keep above" rule, show/hide/show
+    // so KWin re-evaluates it, block input) and the off-screen park now live in
+    // ChromeWindow — see there for the full reasoning. This file only adds
+    // applying blur once the surface exists, which ChromeWindow's mapped() fires
+    // at the right point in that ritual.
+    onMapped: panel.updateBlur()
 
-        // The hide()+show() is deliberate, not redundant: KWin does not
-        // retroactively apply a freshly-written above/Force rule to a window
-        // that already exists — only a re-created one re-evaluates it.
-        // NoteWindow.setPinned() documents the same requirement.
-        panel.show()
-        panel.hide()
-        panel.show()
-        panel.updateBlur()
-        // AFTER the show/hide/show, never before: hide() destroys the
-        // wl_surface and the next show() creates a fresh one, and an input
-        // region is per-surface state — a mask set before that cycle would be
-        // set on a surface that no longer exists. Nothing is tracked yet, so
-        // "blocks all input" is the correct starting state (background.visible
-        // starts false to match).
-        windowInputMask.setAcceptsInput(panel, false)
-
-        // Deliberately NOT parking here, unlike every real hide below:
-        // positionManager.moveWindow() spawns an untracked thread per call with
-        // no ordering guarantee between calls, so a park queued at startup can
-        // land AFTER the first real show and drag the just-shown panel back
-        // off-screen. The rule above already seeds it off-screen, so there is
-        // no on-screen resting spot left to correct.
-    }
-
-    // Returns a point guaranteed to fall outside the combined virtual desktop
-    // of every connected screen, regardless of monitor arrangement (including
-    // Parks this window where no monitor can show it. Load-bearing for
-    // VISIBILITY ONLY — never for input correctness: moveWindow() is async,
-    // spawns a fresh untracked thread per call, and its completions arrive in
-    // COMPLETION order rather than call order, so a park can land before the
-    // show it was meant to undo; it also no-ops entirely if KWin scripting is
-    // unreachable. Input correctness is windowInputMask's job instead (see
-    // background.onVisibleChanged), which is synchronous and client-side. The
-    // mask stops clicks, the park stops pixels.
-    function parkOffscreen() {
-        const pt = positionManager.offscreenPoint()
-        panel.x = pt.x
-        panel.y = pt.y
-        positionManager.moveWindow(panel.title, pt.x, pt.y)
-    }
+    // Parking off-screen (this window's way of "hiding") is ChromeWindow's
+    // park() now — load-bearing for visibility only, never input correctness
+    // (that's windowInputMask's job, see background.onVisibleChanged below).
 
     // Mirrors the tracked note's real compositor blur-behind, exactly like the
     // toolbar does. Gated on background.visible (the real "is anything showing"
@@ -319,7 +286,7 @@ Window {
             // would drag the panel back on-screen for a note that is no longer
             // tracked.
             repositionDebounce.stop()
-            panel.parkOffscreen()
+            panel.park()
             // The one place match highlighting comes off, hooked here for the
             // same reason background.onVisibleChanged owns the input mask:
             // every path that stops showing this card — close(), losing the
@@ -359,6 +326,10 @@ Window {
         // into the note we just left.
         if (tracking && panel.open) {
             panel._anchor = panel.noteWindow.editor.selectionStart
+            // Follow-focus IS a panel-driven search: take the user to the match
+            // in the note they're now looking at (default, but re-asserted in
+            // case a note edit cleared it just before this).
+            panel._selectOnNextSearch = true
             searchDebounce.restart()
         }
     }
@@ -544,8 +515,13 @@ Window {
     // Re-runs the search and picks the current match: the first one whose start
     // is at/after anchorPos, wrapping to the first match overall if the anchor
     // is past every match. Called directly (open, replace, next/prev never need
-    // it) or via searchDebounce below.
-    function recompute(anchorPos) {
+    // it) or via searchDebounce below. selectMatch (default true) is whether to
+    // also move the editor's selection onto that match — suppressed when the
+    // re-search was triggered by the user editing the note (see
+    // _selectOnNextSearch's own comment).
+    function recompute(anchorPos, selectMatch) {
+        if (selectMatch === undefined)
+            selectMatch = true
         searchDebounce.stop()
         if (!panel.open || !panel.noteWindow)
             return
@@ -575,7 +551,11 @@ Window {
         // Before _selectCurrent(), so the highlight is already on the document
         // when the editor's own selection lands over the current match.
         panel._pushHighlight()
-        panel._selectCurrent()
+        // Skipped for a note-edit-triggered re-search: the highlight/count above
+        // still update, but the editor's selection is left where the user is
+        // typing rather than yanked onto a match (see _selectOnNextSearch).
+        if (selectMatch)
+            panel._selectCurrent()
     }
 
     // Repaints every match in the tracked note — all of them washed, the
@@ -664,17 +644,31 @@ Window {
     Timer {
         id: searchDebounce
         interval: 150
-        onTriggered: panel.recompute(panel._anchor)
+        onTriggered: {
+            const selectMatch = panel._selectOnNextSearch
+            // Back to the panel-driven default; a note edit that must suppress
+            // selection clears it again right before restarting this timer.
+            panel._selectOnNextSearch = true
+            panel.recompute(panel._anchor, selectMatch)
+        }
     }
 
     // Document edits (typing, undo, our own replaces) invalidate the match list
-    // — re-search so the count/current selection never go stale. Only wired
-    // while the panel is actually open and a note is tracked; the ternary is
-    // what lets the target follow noteWindow (including to null).
+    // — re-search so the count stays live. Only wired while the panel is
+    // actually open and a note is tracked; the ternary is what lets the target
+    // follow noteWindow (including to null).
     Connections {
         target: panel.noteWindow ? panel.noteWindow.docHandler : null
         enabled: panel.open
-        function onContentEdited() { searchDebounce.restart() }
+        // The user is editing the NOTE, so the re-search must NOT re-select a
+        // match in the editor — doing so would leave the search term selected
+        // under the cursor and the next keystroke would overwrite it, then the
+        // following match, and so on (see _selectOnNextSearch). The highlight and
+        // count still refresh; only the editor's own selection is left alone.
+        function onContentEdited() {
+            panel._selectOnNextSearch = false
+            searchDebounce.restart()
+        }
     }
 
     // NO window-level Shortcut items here, deliberately — not for Escape, and
@@ -797,11 +791,11 @@ Window {
         }
     }
 
-    // The card itself. Styled after copyToast's dark translucent chip
-    // (NoteWindow.qml) rather than the note's own colors, since it floats over
-    // a note whose background color/opacity the user can set to anything —
-    // unlike the toolbar, whose buttons are bare glyphs that need to mimic the
-    // note to stay legible.
+    // The card itself. Mirrors the tracked note's own background color/opacity
+    // and border, exactly like the other chrome windows (the toolbar, its
+    // popups, the context menu), so the find bar reads as part of the same
+    // chrome rather than a differently-shaded floating chip; falls back to the
+    // same dark grey they use when no note is tracked.
     //
     // Starts visible:false and is only ever set imperatively from
     // _syncVisible() — a declarative binding here would race the on-handlers
@@ -811,9 +805,14 @@ Window {
         visible: false
         anchors.fill: parent
         radius: 8
-        color: Qt.rgba(0, 0, 0, 0.6)
+        color: panel.noteWindow
+            ? Qt.rgba(panel.noteWindow.noteAppearance.backgroundColor.r,
+                      panel.noteWindow.noteAppearance.backgroundColor.g,
+                      panel.noteWindow.noteAppearance.backgroundColor.b,
+                      panel.noteWindow.noteAppearance.backgroundColor.a * panel.noteWindow.noteAppearance.windowOpacity)
+            : Qt.rgba(0.15, 0.15, 0.15, 0.96)
         border.width: 1
-        border.color: Qt.rgba(1, 1, 1, 0.18)
+        border.color: panel.noteWindow ? panel.noteWindow.noteAppearance.borderColor : Qt.rgba(1, 1, 1, 0.18)
 
         // Keeps this window's input region in lockstep with whether it is
         // actually showing anything. Hooked to `visible` here rather than
@@ -823,13 +822,28 @@ Window {
         // sync with a flip site someone forgets to update later.
         //
         // This is what actually stops a parked-but-mapped transparent window
-        // from eating clicks meant for whatever is underneath — parkOffscreen()
-        // is racy and cannot be relied on for input correctness. See its
+        // from eating clicks meant for whatever is underneath — ChromeWindow's
+        // park() is racy and cannot be relied on for input correctness. See its
         // comment.
         onVisibleChanged: {
             windowInputMask.setAcceptsInput(panel, background.visible)
             panel.updateBlur()
         }
+    }
+
+    // Same glass treatment as every other chrome window's background, honoring
+    // the same chromeGlassFollowsNote setting the toolbar's popups and the
+    // context menu do.
+    GlassOverlay {
+        anchors.fill: background
+        cornerRadius: background.radius
+        visible: background.visible && (settings.chromeGlassFollowsNote
+            ? (panel.noteWindow ? panel.noteWindow.noteAppearance.glassEnabled : false)
+            : settings.chromeGlassEnabled)
+        tintColor: panel.noteWindow ? panel.noteWindow.noteAppearance.glassTintColor : "#ffffff"
+        sheenOpacity: panel.noteWindow ? panel.noteWindow.noteAppearance.glassSheenOpacity : 0.12
+        ringCount: panel.noteWindow ? panel.noteWindow.noteAppearance.glassSheenStrength : 10
+        sheenSize: panel.noteWindow ? panel.noteWindow.noteAppearance.glassSheenSize : 0.18
     }
 
     Item {
@@ -851,7 +865,12 @@ Window {
                     id: findField
                     width: 130
                     placeholderText: "Find"
-                    onTextChanged: if (panel.open) searchDebounce.restart()
+                    // Editing the find term is a panel-driven search — select the
+                    // resulting match (re-asserted vs. a preceding note edit).
+                    onTextChanged: if (panel.open) {
+                        panel._selectOnNextSearch = true
+                        searchDebounce.restart()
+                    }
                     Keys.onReturnPressed: (event) => {
                         if (event.modifiers & Qt.ShiftModifier)
                             panel.prevMatch()
@@ -909,8 +928,12 @@ Window {
                     width: 64
                     text: "Regex"
                     // Toggling changes what the pattern means — same debounced
-                    // re-search as editing the pattern itself.
-                    onCheckedChanged: if (panel.open) searchDebounce.restart()
+                    // re-search as editing the pattern itself, and just as
+                    // panel-driven, so it selects the resulting match.
+                    onCheckedChanged: if (panel.open) {
+                        panel._selectOnNextSearch = true
+                        searchDebounce.restart()
+                    }
                 }
 
                 PanelButton {

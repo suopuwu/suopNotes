@@ -93,6 +93,7 @@ qt_add_qml_module(suopNotes
     URI SuopNotesUi
     VERSION 1.0
     QML_FILES
+        qml/ChromeWindow.qml
         qml/Main.qml
         qml/NoteWindow.qml
         qml/SettingsDialog.qml
