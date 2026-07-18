@@ -31,6 +31,20 @@ const QRegularExpression &numberedPattern()
 namespace MarkdownList
 {
 
+qreal slotPercentForKind(Kind kind)
+{
+    switch (kind) {
+    case Kind::Checkbox:
+        return kCheckboxSlotPercent;
+    case Kind::Bullet:
+        return kBulletSlotPercent;
+    case Kind::Numbered:
+    case Kind::None:
+        break;
+    }
+    return 0.0;
+}
+
 Marker parse(const QString &line)
 {
     Marker marker;

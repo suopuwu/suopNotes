@@ -850,6 +850,14 @@ QList<Settings::NoteSessionState> Settings::openNotes() const
 
 void Settings::writeOpenNotes(const QList<NoteSessionState> &notes)
 {
+    // Clear the whole array group first. beginWriteArray() rewrites indices
+    // 0..size-1 and updates the stored size, but it does NOT delete indices left
+    // over from a previously-longer list — so closing notes would leave orphaned
+    // OpenNotes/<n>/* keys behind, accumulating cruft in the INI over a session
+    // (harmless on read, since reads honor the stored size, but it never got
+    // cleaned up). remove() drops the size key too, which beginWriteArray then
+    // rewrites.
+    m_settings->remove(kArrayOpenNotes);
     m_settings->beginWriteArray(kArrayOpenNotes);
     for (int i = 0; i < notes.size(); ++i) {
         m_settings->setArrayIndex(i);

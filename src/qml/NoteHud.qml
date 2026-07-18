@@ -15,10 +15,10 @@
 //   iconColor      — glyph color when not toggled "on" (default white)
 //   accentColor     — glyph color when toggled "on" (default light blue)
 //   pinned          — when true, the pin glyph renders in accentColor
-//   alwaysExpanded  — keep the full icon row showing even without hover
-//                     (kept for parity with the reference; not currently
-//                     used by the host, defaults false so hover-only is
-//                     the default behavior)
+//   alwaysExpanded  — keep the full icon row showing even without hover;
+//                     defaults false so hover-only is the norm. Hosts bind it:
+//                     NoteWindow to settings.hudAlwaysExpanded, NoteHudWindow
+//                     forces it true.
 //
 // Signals (host wires these to its own actions):
 //   pinToggleRequested() — pin glyph tapped

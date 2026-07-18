@@ -102,7 +102,6 @@ public:
 
 private:
     static QString groupNameFor(const QString &noteId);
-    static QString kwinRulesFilePath();
     static void updateGeneralRulesList(const QString &groupName, bool add);
     static void reconfigure();
 };

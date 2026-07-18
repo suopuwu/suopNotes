@@ -139,12 +139,6 @@ QString KWinRuleApplier::groupNameFor(const QString &noteId)
     return QStringLiteral("suopNotes-%1").arg(noteId);
 }
 
-QString KWinRuleApplier::kwinRulesFilePath()
-{
-    return QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation)
-        + QStringLiteral("/kwinrulesrc");
-}
-
 void KWinRuleApplier::applyRule(const QString &noteId, const KWinRuleSpec &spec)
 {
     if (!isAvailable())

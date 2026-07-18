@@ -66,6 +66,27 @@ struct Marker
     bool isValid() const { return kind != Kind::None; }
 };
 
+// The letter-spacing percentage a marker's reserved glyph slot is rendered at
+// (QFont::PercentageSpacing: 200 means the reserved character takes twice its
+// natural advance). A checkbox is DRAWN wider than a bullet (feature request:
+// "the display for checkboxes should be a little bigger" — see NoteWindow.qml's
+// checkboxScale), so its slot is wider.
+//
+// These live here, shared, because THREE places must reserve the SAME width to
+// the pixel or a checkbox misaligns: MarkdownHighlighter applies this as the
+// reserved character's on-screen advance, NoteWindow.qml draws the control to
+// fill exactly that advance, and TextFormatting sizes a wrapped list item's
+// hanging indent from it. When only two of the three agreed (the indent used a
+// flat 200 while the box drew at 320) every wrapped checkbox continuation line
+// sat too far left, under the box instead of under the item's text.
+constexpr qreal kBulletSlotPercent = 200.0;
+constexpr qreal kCheckboxSlotPercent = 320.0;
+
+// The reserved-slot percent for a parsed marker's kind: the checkbox slot for a
+// Checkbox, the bullet slot for a Bullet. Numbered/None reserve no drawn slot
+// (their marker stays ordinary text) and return 0.
+qreal slotPercentForKind(Kind kind);
+
 // Parses `line`'s leading marker, if any. Checkbox is tested before bullet:
 // "- [ ] x" starts with "- " too, and reporting it as a plain bullet would let
 // the toolbar toggle the wrong thing.

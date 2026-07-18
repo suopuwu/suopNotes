@@ -1,11 +1,32 @@
 #include "PositionManager.h"
 #include "KWinRuleWriter.h"
 
+#include <QGuiApplication>
+#include <QRect>
+#include <QScreen>
 #include <QThread>
 
 PositionManager::PositionManager(QObject *parent)
     : QObject(parent)
 {
+}
+
+QPointF PositionManager::offscreenPoint() const
+{
+    // Faithful to the per-window QML this centralizes: the maximum over every
+    // screen of its right/bottom virtual-desktop edge (floored at 0, so a
+    // desktop entirely at negative coordinates still yields a positive point),
+    // pushed 1000px further out so the result clears the whole desktop whatever
+    // the monitor arrangement. Screen::virtualX/width in QML are the screen's
+    // geometry x()/width() here.
+    qreal maxX = 0;
+    qreal maxY = 0;
+    for (const QScreen *screen : QGuiApplication::screens()) {
+        const QRect geometry = screen->geometry();
+        maxX = qMax(maxX, static_cast<qreal>(geometry.x() + geometry.width()));
+        maxY = qMax(maxY, static_cast<qreal>(geometry.y() + geometry.height()));
+    }
+    return QPointF(maxX + 1000, maxY + 1000);
 }
 
 void PositionManager::applyPosition(const QString &noteId, const QString &windowTitle, int x, int y,

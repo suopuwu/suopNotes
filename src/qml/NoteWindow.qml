@@ -277,6 +277,21 @@ Window {
     // so applyPosition() must run (synchronously) before visible flips on.
     visible: false
 
+    // An external edit to this note's file — from a sync tool or another editor,
+    // never our own debounced save (NoteStore filters those out) — is reloaded
+    // into the open note so what's on screen keeps matching what's on disk. The
+    // reload is skipped while we have unsaved local edits of our own in flight,
+    // so it can never overwrite what the user is in the middle of typing: that
+    // pending save is the one that should win.
+    Connections {
+        target: noteStore
+        function onNoteContentChangedExternally(changedId) {
+            if (editor.ready && changedId === noteWindow.noteId
+                    && !noteStore.hasUnsavedChanges(changedId))
+                editor.loadFromDisk(false)
+        }
+    }
+
     Component.onCompleted: {
         const hasSavedPosition = (noteX !== 0 || noteY !== 0)
         // Deterministic cascade for a never-before-positioned note, so
@@ -435,7 +450,10 @@ Window {
     // must already be in Settings by then.
     function duplicateNoteAt(screenX, screenY) {
         const newId = noteStore.createNote(docHandler.toMarkdown())
-        openNotesModel.openNoteAt(newId, screenX, screenY)
+        // Empty id means the duplicate's file could not be written (unwritable
+        // folder / disk full); skip opening a window with no note behind it.
+        if (newId)
+            openNotesModel.openNoteAt(newId, screenX, screenY)
     }
 
     // Duplicate at the conventional diagonal offset from this note — what the
@@ -2336,7 +2354,12 @@ Window {
                         }
                     }
 
-                    Component.onCompleted: {
+                    // Loads (or reloads) this note's content from its file on
+                    // disk. Used both at open and when the file is changed
+                    // externally (a sync tool, another editor — see the
+                    // Connections on noteStore below).
+                    function loadFromDisk(resetCursorToTop) {
+                        const previousPosition = cursorPosition
                         docHandler.setMarkdown(noteStore.loadNoteContent(noteWindow.noteId))
                         // setMarkdown() rebuilds the whole document through a
                         // cursor that starts at position 0; since Qt cursors
@@ -2344,13 +2367,19 @@ Window {
                         // position by default, this editor's own cursor rides
                         // along to the very end of the newly-inserted text.
                         // That drags the view down with it via
-                        // onCursorRectangleChanged below — so every note would
-                        // open scrolled to the bottom instead of the top.
-                        // Snapping back to 0 here (before the view has had a
-                        // chance to react) is what makes notes open at the top.
-                        cursorPosition = 0
-                        ready = true
+                        // onCursorRectangleChanged below — so a note would open
+                        // (or, on reload, jump) to the bottom instead of staying
+                        // put. Snapping the cursor back here (before the view has
+                        // had a chance to react) is what prevents that: to the
+                        // top on first open, or to roughly where the user was on
+                        // an external reload.
+                        cursorPosition = resetCursorToTop ? 0 : Math.min(previousPosition, length)
                         noteWindow.refreshFormatState()
+                    }
+
+                    Component.onCompleted: {
+                        loadFromDisk(true)
+                        ready = true
                     }
 
                     // Covers the other half: the cursor/selection itself

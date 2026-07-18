@@ -206,7 +206,7 @@ Window {
         // effect from the very first show() below, and SelectionToolbar.qml
         // records that an on-screen seed produced a real once-per-session flash
         // at the wrong spot before the first reposition landed.
-        const seed = panel.offscreenPoint()
+        const seed = positionManager.offscreenPoint()
         positionManager.applyPosition("findReplacePanel", panel.title, seed.x, seed.y, true)
 
         // The hide()+show() is deliberate, not redundant: KWin does not
@@ -235,25 +235,6 @@ Window {
 
     // Returns a point guaranteed to fall outside the combined virtual desktop
     // of every connected screen, regardless of monitor arrangement (including
-    // layouts with negative-coordinate monitors above/left of the primary,
-    // where a fixed -10000,-10000 could still land ON a real monitor).
-    //
-    // Duplicated from SelectionToolbar.qml rather than shared: its copy is a
-    // function on that file's own root Window, unreachable from here. Same for
-    // parkOffscreen() below. (If a third file ever needs these, they want to be
-    // a real shared component — see SelectionToolbar.qml's own note about its
-    // two hand-copied drag handles drifting out of sync.)
-    function offscreenPoint() {
-        let maxX = 0
-        let maxY = 0
-        const screens = Qt.application.screens
-        for (let i = 0; i < screens.length; i++) {
-            maxX = Math.max(maxX, screens[i].virtualX + screens[i].width)
-            maxY = Math.max(maxY, screens[i].virtualY + screens[i].height)
-        }
-        return Qt.point(maxX + 1000, maxY + 1000)
-    }
-
     // Parks this window where no monitor can show it. Load-bearing for
     // VISIBILITY ONLY — never for input correctness: moveWindow() is async,
     // spawns a fresh untracked thread per call, and its completions arrive in
@@ -263,7 +244,7 @@ Window {
     // background.onVisibleChanged), which is synchronous and client-side. The
     // mask stops clicks, the park stops pixels.
     function parkOffscreen() {
-        const pt = panel.offscreenPoint()
+        const pt = positionManager.offscreenPoint()
         panel.x = pt.x
         panel.y = pt.y
         positionManager.moveWindow(panel.title, pt.x, pt.y)

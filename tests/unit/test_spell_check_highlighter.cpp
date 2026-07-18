@@ -300,3 +300,50 @@ SCENARIO("A checkbox-list marker is not tokenized or flagged as a word", "[spell
         }
     }
 }
+
+SCENARIO("A run of bare apostrophes is not a word and is never flagged as a misspelling",
+         "[spell_check_highlighter]")
+{
+    // The word pattern is letters-and-apostrophes, so "don't"/"it's" stay whole
+    // — but that also matches a run of nothing but apostrophes ("'''", a stray
+    // "'"). Those are not words: they must never be tokenized, so they can never
+    // be handed to the dictionary and underlined. (This filter also stands in for
+    // the empty/all-digits guards the pattern itself makes unreachable.)
+    GIVEN("a block containing a bare apostrophe run and a normal contraction")
+    {
+        QTextDocument doc;
+        doc.setPlainText(QStringLiteral("''' don't"));
+
+        THEN("only the contraction is tokenized as a word")
+        {
+            const auto ranges = SpellCheckHighlighter::wordRangesInBlock(doc.begin());
+            REQUIRE(ranges.size() == 1);
+            CHECK(doc.begin().text().mid(ranges.first().first, ranges.first().second)
+                  == QStringLiteral("don't"));
+        }
+    }
+
+    GIVEN("a block that is only apostrophes, which a permissive backend would call misspelled")
+    {
+        QTextDocument doc;
+        doc.setPlainText(QStringLiteral("'''"));
+
+        // A backend that would flag the apostrophe run if it were ever asked:
+        // proves the run is filtered BEFORE any dictionary lookup, not merely
+        // absent from some particular dictionary.
+        FakeSpellCheckerBackend backend(true, {QStringLiteral("'''")});
+
+        WHEN("a SpellCheckHighlighter is attached")
+        {
+            SpellCheckHighlighter highlighter(&doc, &backend);
+            highlighter.rehighlight();
+
+            THEN("none of its characters carry a misspelling underline")
+            {
+                const QTextBlock block = doc.begin();
+                for (int i = 0; i < block.text().length(); ++i)
+                    CHECK_FALSE(isFlaggedMisspelled(block, i));
+            }
+        }
+    }
+}

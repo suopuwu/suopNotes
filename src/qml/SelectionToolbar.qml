@@ -457,11 +457,10 @@ Window {
     // The grip + dividers always stay in the toolbar's first line/column
     // regardless of button count — only the buttons themselves wrap once
     // there are more than maxButtonsBeforeWrap (feature request: "wrap
-    // past N icons"). Kept a little above the current 14-button count —
-    // same one-spare-slot margin the original 9-button/10-threshold
-    // pairing had — rather than exactly matching it, so the next button
-    // added doesn't immediately need this revisited. Deliberately not much
-    // higher than that, though: the wrap path reflows overflow buttons
+    // past N icons"). Kept comfortably above the current 10-button count so
+    // the next button or two added doesn't immediately need this revisited.
+    // Deliberately not much higher than that, though: the wrap path reflows
+    // overflow buttons
     // into a second row/column, but barThickness/barLength below are
     // still single-line constants that don't grow to fit a second line —
     // wrapping has never actually been exercised (button count has always
@@ -581,7 +580,7 @@ Window {
         // flash at the wrong location every single session, exactly once,
         // that every later show avoided only because its OWN prior hide
         // had already parked it off-screen first.
-        const seed = offscreenPoint()
+        const seed = positionManager.offscreenPoint()
         positionManager.applyPosition("selectionToolbar", bar.title, seed.x, seed.y, true)
 
         // The extra hide()+show() right after is deliberate, not
@@ -631,27 +630,6 @@ Window {
         // to correct.
     }
 
-    // Returns a point guaranteed to fall outside the combined virtual
-    // desktop of every connected screen, regardless of how the monitors
-    // are arranged (including layouts with negative-coordinate monitors
-    // above/left of the primary, where a fixed negative offset like
-    // (-10000, -10000) could still land ON a real monitor instead of past
-    // all of them). Exceeding just the combined right edge is
-    // mathematically enough on its own — a point to the right of every
-    // screen's right edge can't sit inside any of their rects, whatever
-    // its y is — but both axes are pushed out here for clarity/defense in
-    // depth.
-    function offscreenPoint() {
-        let maxX = 0
-        let maxY = 0
-        const screens = Qt.application.screens
-        for (let i = 0; i < screens.length; i++) {
-            maxX = Math.max(maxX, screens[i].virtualX + screens[i].width)
-            maxY = Math.max(maxY, screens[i].virtualY + screens[i].height)
-        }
-        return Qt.point(maxX + 1000, maxY + 1000)
-    }
-
     // Parks any of this file's permanently-mapped windows (this bar
     // itself, columnOptionsPopup, spellingSuggestionsPopup, tooltipWindow)
     // at offscreenPoint(), so an unwanted-but-still-mapped window can't be
@@ -689,7 +667,7 @@ Window {
     // this park loses its race or no-ops entirely. The two are
     // complementary: the mask stops clicks, the park stops pixels.
     function parkOffscreen(win) {
-        const pt = offscreenPoint()
+        const pt = positionManager.offscreenPoint()
         win.x = pt.x
         win.y = pt.y
         positionManager.moveWindow(win.title, pt.x, pt.y)
@@ -1429,7 +1407,7 @@ Window {
         // every real placement, the instant it first becomes relevant.
         visible: false
         Component.onCompleted: {
-            const seed = bar.offscreenPoint()
+            const seed = positionManager.offscreenPoint()
             positionManager.applyPosition("columnOptionsPopup", columnOptionsPopup.title, seed.x, seed.y, true)
             show()
             hide()
@@ -1795,7 +1773,7 @@ Window {
         // real placement, the instant it first becomes relevant.
         visible: false
         Component.onCompleted: {
-            const seed = bar.offscreenPoint()
+            const seed = positionManager.offscreenPoint()
             positionManager.applyPosition("spellingSuggestionsPopup", spellingSuggestionsPopup.title, seed.x, seed.y, true)
             show()
             hide()
@@ -2613,6 +2591,12 @@ Window {
         width: isFinite(tooltipBackground.width) ? tooltipBackground.width : 40
         height: isFinite(tooltipBackground.height) ? tooltipBackground.height : 20
 
+        // Re-apply the blur-behind whenever the window resizes: the tooltip's
+        // size changes with its text (a different button's tip is a different
+        // width), and blur is applied to the window's current geometry.
+        onWidthChanged: updateBlur()
+        onHeightChanged: updateBlur()
+
         property string text: ""
         property bool contentVisible: false
         // Which button's tooltip is currently showing, if any — lets a
@@ -2631,7 +2615,7 @@ Window {
             // "first-ever show flashes at the wrong spot" bug this
             // avoids). showTip() below takes over real positioning the
             // instant any tooltip is first shown.
-            const seed = bar.offscreenPoint()
+            const seed = positionManager.offscreenPoint()
             positionManager.applyPosition("toolbarTooltip", tooltipWindow.title, seed.x, seed.y, true)
             show()
             hide()
@@ -2640,6 +2624,7 @@ Window {
             // show() above — see bar's own Component.onCompleted for why the
             // mask has to be applied here rather than before that cycle.
             windowInputMask.setAcceptsInput(tooltipWindow, false)
+            updateBlur()
 
             // Deliberately NOT calling bar.parkOffscreen() here too — bug
             // found live: it raced moveWindow's slow, unsynchronized
@@ -2650,6 +2635,24 @@ Window {
             // own Component.onCompleted comment for the full story.
         }
 
+        // Blur-behind, matching the rest of the toolbar chrome (feature
+        // request: the tooltip should read as glass too, not just carry the
+        // fake sheen the GlassOverlay below paints). Gated on contentVisible —
+        // the tooltip's real "is anything showing" flag, which tooltipBackground
+        // binds its own visibility to — rather than applied unconditionally, so
+        // the blur is present exactly while the tip is, and follows the tracked
+        // note's own blur setting just as bar/columnOptionsPopup/
+        // spellingSuggestionsPopup do (no tracked note ⇒ no blur, same as them).
+        // Re-applied per show/hide below rather than bound, so it always uses
+        // the tip's freshly-set position and the note's current setting.
+        function updateBlur() {
+            blurEffect.applyTo(tooltipWindow,
+                tooltipWindow.contentVisible && bar.noteWindow
+                    ? bar.noteWindow.noteAppearance.blurEnabled
+                    : false,
+                tooltipBackground.radius)
+        }
+
         function showTip(button, tipText) {
             tooltipWindow.activeButton = button
             tooltipWindow.text = tipText
@@ -2658,12 +2661,14 @@ Window {
             tooltipWindow.x = pos.x
             tooltipWindow.y = pos.y
             positionManager.moveWindow(tooltipWindow.title, pos.x, pos.y)
+            updateBlur()
         }
 
         function hideTip() {
             tooltipWindow.contentVisible = false
             tooltipWindow.activeButton = null
             bar.parkOffscreen(tooltipWindow)
+            updateBlur()
         }
 
         // color/border mirror the main bar's own background exactly (same

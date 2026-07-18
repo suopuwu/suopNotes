@@ -20,15 +20,19 @@ const QRegularExpression &wordPattern()
     return pattern;
 }
 
-bool isPurelyNumeric(const QString &token)
+// A captured token is a real word only if it contains at least one letter. The
+// word pattern is letters-and-apostrophes, so it also matches runs of bare
+// apostrophes ("'''", a stray "'") — which are not words and must never be
+// offered up as a misspelling. (A token can never be empty or all-digits under
+// that pattern, so this single check subsumes both of those never-reached
+// cases too.)
+bool containsLetter(const QString &token)
 {
-    if (token.isEmpty())
-        return false;
     for (const QChar &ch : token) {
-        if (!ch.isDigit())
-            return false;
+        if (ch.isLetter())
+            return true;
     }
-    return true;
+    return false;
 }
 
 }
@@ -77,7 +81,7 @@ QList<QPair<int, int>> SpellCheckHighlighter::wordRangesInBlock(const QTextBlock
     while (it.hasNext()) {
         const QRegularExpressionMatch match = it.next();
         const QString word = match.captured();
-        if (word.isEmpty() || isPurelyNumeric(word))
+        if (!containsLetter(word))
             continue;
         ranges.append(qMakePair(match.capturedStart(), match.capturedLength()));
     }

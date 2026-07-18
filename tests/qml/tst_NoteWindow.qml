@@ -385,6 +385,43 @@ Item {
             noteStore.deleteNote(newId)
         }
 
+        // An external change to a note's file (a sync tool, another editor) is
+        // pulled back into the open note by editor.loadFromDisk() — the reload
+        // the noteStore.onNoteContentChangedExternally handler drives. Here the
+        // reload mechanism itself is exercised directly (the file is changed,
+        // then reloaded) for determinism; that it fires only when there are no
+        // unsaved local edits is guarded by NoteStore::hasUnsavedChanges, which
+        // is unit-tested separately.
+        function test_an_external_file_change_can_be_reloaded_into_the_open_note() {
+            const id = noteStore.createNote("original text")
+            const win = restoreOrderTestComponent.createObject(root, {
+                noteId: id,
+                index: 91,
+                noteX: 0,
+                noteY: 0,
+                noteWidth: 260,
+                noteHeight: 260,
+                screenName: "",
+                alwaysOnTop: false,
+            })
+            verify(win !== null)
+            tryCompare(win.editor, "ready", true)
+            compare(win.docHandler.toMarkdown(), "original text",
+                    "the window loads its file's content on open")
+
+            // The file changes on disk underneath the open note.
+            noteStore.saveNoteContent(id, "changed on disk")
+            wait(500) // past NoteStore's 300ms save debounce, so the write lands
+            verify(!noteStore.hasUnsavedChanges(id))
+
+            win.editor.loadFromDisk(false)
+            compare(win.docHandler.toMarkdown(), "changed on disk",
+                    "reloading pulls the new on-disk content into the editor")
+
+            noteStore.deleteNote(id)
+            win.destroy()
+        }
+
         // revealInFileManager() shows this note's own .md file, selected, in the
         // user's file manager — what the context menu's Reveal row calls.
         //

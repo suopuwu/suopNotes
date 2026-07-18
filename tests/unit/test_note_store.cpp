@@ -110,6 +110,55 @@ SCENARIO("Creating a new note", "[note_store]")
     }
 }
 
+SCENARIO("createNote reports failure instead of minting a phantom when the file can't be written",
+         "[note_store]")
+{
+    // Regression: createNote() once inserted the id and returned it even when the
+    // write failed, so the caller (which opens the returned id immediately) got a
+    // note whose file never existed — and the next folder enumeration pruned it
+    // out from under the open window. On a write failure it must roll the id back
+    // and return an empty string so the caller can decline to open anything.
+    GIVEN("a NoteStore pointed at a folder that cannot be written to")
+    {
+        QTemporaryDir tempDir;
+        REQUIRE(tempDir.isValid());
+
+        NoteStore store;
+        store.setNotesFolder(tempDir.path());
+
+        // Drop owner write so no new file can be created inside the folder,
+        // then confirm that actually took effect — running as root bypasses
+        // permission bits, so guard the assertions on a real read-only folder
+        // rather than letting them silently pass in that environment.
+        QFile::setPermissions(tempDir.path(), QFileDevice::ReadOwner | QFileDevice::ExeOwner);
+        QFile probe(tempDir.filePath("write-probe"));
+        const bool folderReallyReadOnly = !probe.open(QIODevice::WriteOnly);
+        if (probe.isOpen()) {
+            probe.close();
+            probe.remove();
+        }
+
+        if (folderReallyReadOnly) {
+            WHEN("createNote() is called")
+            {
+                const QString id = store.createNote(QStringLiteral("some content"));
+
+                THEN("it returns an empty id and records no note")
+                {
+                    CHECK(id.isEmpty());
+                    CHECK(store.noteIds().isEmpty());
+                }
+            }
+        }
+
+        // Restore write so QTemporaryDir can remove itself when it goes out of
+        // scope. (THENs above use non-fatal CHECKs, so this always runs.)
+        QFile::setPermissions(tempDir.path(),
+                              QFileDevice::ReadOwner | QFileDevice::WriteOwner
+                                  | QFileDevice::ExeOwner);
+    }
+}
+
 SCENARIO("Creating a note with initial content (duplicating another note)", "[note_store]")
 {
     GIVEN("a NoteStore pointed at an empty folder")
@@ -183,6 +232,43 @@ SCENARIO("Saving note content is debounced", "[note_store]")
             {
                 QTest::qWait(kPastDebounceMs);
                 CHECK(store.loadNoteContent(id) == "final draft");
+            }
+        }
+    }
+}
+
+SCENARIO("hasUnsavedChanges tracks whether a debounced save is still pending", "[note_store]")
+{
+    // This is what lets an external-change reload (noteContentChangedExternally)
+    // decline to clobber edits the user has typed but that haven't hit disk yet.
+    GIVEN("a note that already exists")
+    {
+        QTemporaryDir tempDir;
+        REQUIRE(tempDir.isValid());
+
+        NoteStore store;
+        store.setNotesFolder(tempDir.path());
+        const QString id = store.createNote();
+
+        THEN("a note with nothing queued reports no unsaved changes")
+        {
+            CHECK_FALSE(store.hasUnsavedChanges(id));
+        }
+
+        WHEN("content is saved but the debounce window has not elapsed")
+        {
+            store.saveNoteContent(id, "a draft the user is typing");
+
+            THEN("it reports unsaved changes")
+            {
+                CHECK(store.hasUnsavedChanges(id));
+            }
+
+            THEN("once the debounce elapses and the write lands, it reports none")
+            {
+                QTest::qWait(kPastDebounceMs);
+                CHECK_FALSE(store.hasUnsavedChanges(id));
+                CHECK(store.loadNoteContent(id) == "a draft the user is typing");
             }
         }
     }

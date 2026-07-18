@@ -72,6 +72,13 @@ public:
     Q_INVOKABLE void deleteNote(const QString &id);
     Q_INVOKABLE void saveNoteContent(const QString &id, const QString &markdownText);
 
+    // Whether this note has edits queued but not yet written to disk — i.e. a
+    // debounced saveNoteContent() is still pending. Lets a caller reloading a
+    // note after an external file change (see noteContentChangedExternally)
+    // decline to clobber the user's own in-flight edits: with unsaved changes
+    // present, the pending local save is the one that should win.
+    Q_INVOKABLE bool hasUnsavedChanges(const QString &id) const;
+
     // Copies an image (a local path or a file:// URL, e.g. from a drag-and-drop
     // or a file dialog) into an "img/" subfolder of the notes folder and returns
     // the note-relative path to reference it by ("img/<name>"), or an empty

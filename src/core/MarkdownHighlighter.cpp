@@ -71,22 +71,17 @@ QTextCharFormat hiddenMarkerFormat()
 }
 
 // How wide each drawn control's reserved slot is, as a percentage of the
-// reserved character's own natural advance. Without widening at all, the column
-// is only as wide as whatever "-" or "[" happens to measure in the user's font
-// (~6px at the default size) — narrower than the control drawn into it, so the
-// bullet/checkbox overflowed on both sides: off the editor's left edge, where
-// it was visibly clipped in half, and rightwards into its own label, leaving no
-// gap (both confirmed on screen).
-//
-// A checkbox gets the wider slot because it is DRAWN bigger than a bullet
-// (feature request: "the display for checkboxes should be a little bigger" —
-// see NoteWindow.qml's checkboxScale). These two numbers and that scale are one
-// tuning decision split across two files: the control is centred in this slot,
-// and the slot's left edge is the editor's left edge, so a control drawn wider
-// than its slot doesn't just overhang — its left half is clipped away by the
-// editor. Grow the glyph and this must grow with it.
-constexpr qreal kBulletSlotPercent = 200.0;
-constexpr qreal kCheckboxSlotPercent = 320.0;
+// reserved character's own natural advance, lives with the marker definition in
+// MarkdownList (kBulletSlotPercent / kCheckboxSlotPercent, applied here via
+// slotPercentForKind). Without widening at all, the column is only as wide as
+// whatever "-" or "[" happens to measure in the user's font (~6px at the default
+// size) — narrower than the control drawn into it, so the bullet/checkbox
+// overflowed on both sides: off the editor's left edge, where it was visibly
+// clipped in half, and rightwards into its own label, leaving no gap (both
+// confirmed on screen). A checkbox gets the wider slot because it is DRAWN
+// bigger than a bullet; that value is shared with NoteWindow.qml's checkboxScale
+// (which draws the control) and TextFormatting (which reserves the matching
+// hanging indent) — one tuning decision three renderers must agree on.
 
 // For punctuation that is replaced by a drawn glyph rather than removed: the
 // "-" of a bullet and the "- [ ]" of a checkbox. Transparent, so the literal
@@ -769,9 +764,7 @@ void MarkdownHighlighter::highlightMarkdown(const QString &text)
             // ordinary space.
             setFormat(0, marker.glyphStart, hiddenMarkerFormat());
             mergeFormat(marker.glyphStart, marker.glyphLength,
-                        reservedMarkerFormat(marker.kind == MarkdownList::Kind::Checkbox
-                                                 ? kCheckboxSlotPercent
-                                                 : kBulletSlotPercent));
+                        reservedMarkerFormat(MarkdownList::slotPercentForKind(marker.kind)));
             setFormat(marker.glyphStart + marker.glyphLength,
                       marker.length - 1 - marker.glyphStart - marker.glyphLength,
                       hiddenMarkerFormat());

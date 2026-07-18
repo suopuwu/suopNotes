@@ -127,9 +127,21 @@ QString NoteStore::createNote(const QString &content)
     m_idToFileName.insert(id, uniqueFileName(NoteFilename::deriveBaseName(content), id));
 
     QSaveFile file(filePathForId(id));
+    bool written = false;
     if (file.open(QIODevice::WriteOnly)) {
         file.write(content.toUtf8());
-        file.commit();
+        written = file.commit();
+    }
+
+    // If the file could not be written (unwritable folder, disk full), undo the
+    // id we just minted and report failure rather than returning an id with no
+    // file behind it. refreshNoteIds() below re-enumerates the folder and would
+    // prune such an id moments later — but the caller opens the returned id
+    // immediately (Main.qml, NoteWindow's duplicate path), so it would open a
+    // phantom, empty note that then vanishes on the next enumeration.
+    if (!written) {
+        m_idToFileName.remove(id);
+        return {};
     }
 
     m_lastWrittenContent[id] = content;
@@ -181,6 +193,14 @@ void NoteStore::saveNoteContent(const QString &id, const QString &markdownText)
     // Restarting an already-running single-shot timer coalesces rapid calls
     // into a single write ~kSaveDebounceMs after the LAST call for this id.
     timer->start(kSaveDebounceMs);
+}
+
+bool NoteStore::hasUnsavedChanges(const QString &id) const
+{
+    // Pending content is cleared the instant flushPendingSave() writes it (see
+    // flushPendingSave), so its presence is exactly "there are edits on screen
+    // that aren't on disk yet."
+    return m_pendingContent.contains(id);
 }
 
 void NoteStore::flushPendingSave(const QString &id)

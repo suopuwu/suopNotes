@@ -269,7 +269,7 @@ Window {
     // because it is per-surface state).
     visible: false
     Component.onCompleted: {
-        const seed = offscreenPoint()
+        const seed = positionManager.offscreenPoint()
         positionManager.applyPosition("noteHud", hudWindow.title, seed.x, seed.y, true)
         hudWindow.show()
         hudWindow.hide()
@@ -278,24 +278,12 @@ Window {
         windowInputMask.setAcceptsInput(hudWindow, false)
     }
 
-    // Verbatim copies of the toolbar's helpers — there is still no shared base
-    // component for these permanently-mapped popups (NoteContextMenu.qml notes
-    // this is now the fourth hand-copy and that one is overdue); kept
-    // consistent with the other three deliberately rather than inventing a
-    // fifth variant.
-    function offscreenPoint() {
-        let maxX = 0
-        let maxY = 0
-        const screens = Qt.application.screens
-        for (let i = 0; i < screens.length; i++) {
-            maxX = Math.max(maxX, screens[i].virtualX + screens[i].width)
-            maxY = Math.max(maxY, screens[i].virtualY + screens[i].height)
-        }
-        return Qt.point(maxX + 1000, maxY + 1000)
-    }
-
+    // The offscreen point is now PositionManager::offscreenPoint() — one shared
+    // definition instead of the hand-copy this used to carry. parkOffscreen
+    // stays local (it references this window's own x/y/title), but the point
+    // math it parks against no longer drifts per window.
     function parkOffscreen(win) {
-        const pt = offscreenPoint()
+        const pt = positionManager.offscreenPoint()
         win.x = pt.x
         win.y = pt.y
         positionManager.moveWindow(win.title, pt.x, pt.y)

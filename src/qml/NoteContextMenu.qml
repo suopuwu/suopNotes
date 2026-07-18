@@ -176,7 +176,7 @@ Window {
         // effect from the very first show() below, and SelectionToolbar.qml
         // records that an on-screen seed produced a real once-per-session
         // flash at the wrong spot before the first reposition landed.
-        const seed = menu.offscreenPoint()
+        const seed = positionManager.offscreenPoint()
         positionManager.applyPosition("noteContextMenu", menu.title, seed.x, seed.y, true)
 
         // The hide()+show() is deliberate, not redundant: KWin does not
@@ -203,29 +203,6 @@ Window {
         // so there is no on-screen resting spot left to correct.
     }
 
-    // Returns a point guaranteed to fall outside the combined virtual desktop
-    // of every connected screen, regardless of monitor arrangement (including
-    // layouts with negative-coordinate monitors above/left of the primary,
-    // where a fixed -10000,-10000 could still land ON a real monitor).
-    //
-    // Duplicated from SelectionToolbar.qml/FindReplacePanel.qml rather than
-    // shared: each copy is a function on that file's own root Window,
-    // unreachable from here. Same for parkOffscreen() below. This is now the
-    // THIRD hand-copy of both, which is the point FindReplacePanel.qml's own
-    // note said they want to become a real shared component — see the summary
-    // note in that file; extracting them is a mechanical change worth doing
-    // on its own, not folded into this feature.
-    function offscreenPoint() {
-        let maxX = 0
-        let maxY = 0
-        const screens = Qt.application.screens
-        for (let i = 0; i < screens.length; i++) {
-            maxX = Math.max(maxX, screens[i].virtualX + screens[i].width)
-            maxY = Math.max(maxY, screens[i].virtualY + screens[i].height)
-        }
-        return Qt.point(maxX + 1000, maxY + 1000)
-    }
-
     // Parks this window where no monitor can show it. Load-bearing for
     // VISIBILITY ONLY — never for input correctness: moveWindow() is async,
     // spawns a fresh untracked thread per call, and its completions arrive in
@@ -233,9 +210,11 @@ Window {
     // show it was meant to undo; it also no-ops entirely if KWin scripting is
     // unreachable. Input correctness is windowInputMask's job instead (see
     // background.onVisibleChanged), which is synchronous and client-side. The
-    // mask stops clicks, the park stops pixels.
+    // mask stops clicks, the park stops pixels. The offscreen point itself is
+    // PositionManager::offscreenPoint() — one shared definition, no longer a
+    // per-window hand-copy.
     function parkOffscreen() {
-        const pt = menu.offscreenPoint()
+        const pt = positionManager.offscreenPoint()
         menu.x = pt.x
         menu.y = pt.y
         positionManager.moveWindow(menu.title, pt.x, pt.y)

@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 #include <QColor>
+#include <QSettings>
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QTemporaryDir>
@@ -678,6 +679,49 @@ SCENARIO("upsertNoteState adds or updates a single note's session state", "[sett
                     REQUIRE(notes.first().width == 111);
                     REQUIRE(notes.first().height == 222);
                 }
+            }
+        }
+    }
+}
+
+SCENARIO("Shrinking the open-notes list leaves no orphaned array entries in the config file",
+         "[settings]")
+{
+    // Regression: writeOpenNotes called beginWriteArray() without clearing the
+    // group first, so when the list shrank (notes closed) the old higher-index
+    // OpenNotes/<n>/* keys were left behind in the INI. Reads stayed correct
+    // (they honor the stored array size), but the file accumulated dead keys
+    // across a session.
+    GIVEN("a config file that has held three open notes, then been rewritten with one")
+    {
+        QTemporaryDir dir;
+        REQUIRE(dir.isValid());
+        {
+            Settings settings(tempConfigPath(dir));
+            settings.upsertNoteState({"note-a", 1, 1, 100, 100});
+            settings.upsertNoteState({"note-b", 2, 2, 200, 200});
+            settings.upsertNoteState({"note-c", 3, 3, 300, 300});
+            REQUIRE(settings.openNotes().size() == 3);
+
+            settings.setOpenNotes({{"note-a", 1, 1, 100, 100}});
+            REQUIRE(settings.openNotes().size() == 1);
+        } // Settings destroyed here, flushing the INI to disk.
+
+        THEN("the raw config file holds only the first array index, no leftover 2nd/3rd")
+        {
+            QSettings raw(tempConfigPath(dir), QSettings::IniFormat);
+            const QString prefix = QStringLiteral("OpenNotes/");
+            for (const QString &key : raw.allKeys()) {
+                if (!key.startsWith(prefix))
+                    continue;
+                const QString rest = key.mid(prefix.size());
+                if (rest == QStringLiteral("size")) // the array-length key
+                    continue;
+                // Entries are "OpenNotes/<1-based-index>/<field>"; only index 1
+                // may survive a rewrite down to a single note.
+                const int slash = rest.indexOf(QLatin1Char('/'));
+                REQUIRE(slash > 0);
+                CHECK(rest.left(slash).toInt() == 1);
             }
         }
     }

@@ -11,6 +11,7 @@
 #include <QTextTable>
 #include <QTextTableFormat>
 
+#include "core/MarkdownList.h"
 #include "core/TextFormatting.h"
 
 namespace
@@ -1437,10 +1438,12 @@ namespace
 {
 // The width a marker actually occupies ON SCREEN, which is what the indent has
 // to reserve — not the width of its literal text. MarkdownHighlighter re-renders
-// bullet/checkbox markers: one reserved glyph character and the marker's
-// trailing space each get PercentageSpacing 200 (double advance), and the rest
-// of the marker collapses to a 0.01pt font. A numbered marker is left alone and
-// so measures as the ordinary text it is.
+// bullet/checkbox markers: the marker's trailing space gets PercentageSpacing
+// 200 (double advance), and the reserved glyph gets a slot that is 200 for a
+// bullet but 320 for a checkbox — which is drawn bigger. The rest of the marker
+// collapses to a 0.01pt font. A numbered marker is left alone and so measures as
+// the ordinary text it is. These slot percentages are read from MarkdownList,
+// the single source of truth all three renderers share.
 qreal renderedMarkerWidthInTest(const QTextDocument &doc, const QTextBlock &block)
 {
     const QFontMetricsF metrics(doc.defaultFont());
@@ -1449,10 +1452,12 @@ qreal renderedMarkerWidthInTest(const QTextDocument &doc, const QTextBlock &bloc
     if (const QRegularExpressionMatch m = numbered.match(text); m.hasMatch())
         return metrics.horizontalAdvance(m.captured(0));
     // Bullet "- ": the "-" is the reserved glyph. Checkbox "- [ ] ": the "[" is.
-    const QString glyph = text.startsWith(QStringLiteral("- ["))
-        ? QStringLiteral("[")
-        : QStringLiteral("-");
-    return 2.0 * metrics.horizontalAdvance(glyph)
+    const bool isCheckbox = text.startsWith(QStringLiteral("- ["));
+    const QString glyph = isCheckbox ? QStringLiteral("[") : QStringLiteral("-");
+    const qreal slot = (isCheckbox ? MarkdownList::kCheckboxSlotPercent
+                                   : MarkdownList::kBulletSlotPercent)
+        / 100.0;
+    return slot * metrics.horizontalAdvance(glyph)
         + 2.0 * metrics.horizontalAdvance(QStringLiteral(" "));
 }
 }
@@ -1635,6 +1640,27 @@ SCENARIO("Bullet, numbered and checkbox items all get a hanging indent", "[text_
             CHECK(format.leftMargin() == -format.textIndent());
             CHECK(format.leftMargin()
                   == Catch::Approx(renderedMarkerWidthInTest(doc, doc.begin())));
+        }
+
+        THEN("the reserved width uses the WIDE checkbox slot (320), not a bullet's (200)")
+        {
+            // Regression: the indent once sized the "[" glyph at the bullet's
+            // 200 while MarkdownHighlighter draws it at 320, so a wrapped
+            // checkbox line's continuation sat ~1.2x the bracket advance too far
+            // left — under the drawn box instead of under the item's own text.
+            // The reserved marker column is glyph-slot + a double-width trailing
+            // space; sizing it at the bullet slot instead would make it strictly
+            // narrower, so the checkbox reserve must exceed the bullet reserve.
+            const QFontMetricsF metrics(doc.defaultFont());
+            const qreal bracket = metrics.horizontalAdvance(QStringLiteral("["));
+            const qreal space = metrics.horizontalAdvance(QStringLiteral(" "));
+            const qreal checkboxReserve =
+                MarkdownList::kCheckboxSlotPercent / 100.0 * bracket + 2.0 * space;
+            const qreal bulletSlotReserve =
+                MarkdownList::kBulletSlotPercent / 100.0 * bracket + 2.0 * space;
+            CHECK(MarkdownList::kCheckboxSlotPercent > MarkdownList::kBulletSlotPercent);
+            CHECK(doc.begin().blockFormat().leftMargin() == Catch::Approx(checkboxReserve));
+            CHECK(doc.begin().blockFormat().leftMargin() > bulletSlotReserve);
         }
     }
 

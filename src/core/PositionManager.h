@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QObject>
+#include <QPointF>
 
 // QML-facing wrapper around KWinRuleApplier.
 class PositionManager : public QObject
@@ -39,6 +40,19 @@ public:
     // to a handful of qdbus6 calls plus a short settle sleep, and nothing
     // here needs to finish before the caller proceeds.
     Q_INVOKABLE void moveWindow(const QString &windowTitle, int x, int y);
+
+    // A point guaranteed to fall outside the combined virtual desktop of every
+    // connected screen. The several frameless "chrome" windows (the selection
+    // toolbar, its popups, the find/replace panel, the HUD and context-menu
+    // windows) stay permanently mapped and hide by parking their content at
+    // this point, where no monitor can show it. Exceeding the desktop's right
+    // and bottom edges by a wide margin clears every monitor arrangement,
+    // including layouts with monitors at negative coordinates where a fixed
+    // negative offset could still land on a real screen. Centralized here — the
+    // object every one of those windows already calls to move itself — so the
+    // definition they all park against lives in exactly one place instead of a
+    // hand-copied function per window (which had already reached four copies).
+    Q_INVOKABLE QPointF offscreenPoint() const;
 
     bool suppressCleanupOnQuit() const;
     void setSuppressCleanupOnQuit(bool suppress);

@@ -128,3 +128,33 @@ SCENARIO("Markers are written in one canonical spelling", "[markdown_list]")
         CHECK_FALSE(MarkdownList::parse(MarkdownList::checkboxMarker(false) + QStringLiteral("x")).checked);
     }
 }
+
+SCENARIO("The reserved drawn-control slot width is shared across every renderer", "[markdown_list]")
+{
+    // MarkdownHighlighter draws a marker's control into this slot, NoteWindow.qml
+    // sizes the control to it, and TextFormatting reserves a matching hanging
+    // indent from it. Keeping the one number here — rather than a private copy in
+    // each — is what stops the three from drifting apart, which last showed up as
+    // wrapped checkbox lines misaligned under their own drawn box.
+    GIVEN("the two marker kinds that are replaced by a drawn control")
+    {
+        THEN("a checkbox reserves a wider slot than a bullet, because it is drawn bigger")
+        {
+            CHECK(MarkdownList::slotPercentForKind(MarkdownList::Kind::Checkbox)
+                  == MarkdownList::kCheckboxSlotPercent);
+            CHECK(MarkdownList::slotPercentForKind(MarkdownList::Kind::Bullet)
+                  == MarkdownList::kBulletSlotPercent);
+            CHECK(MarkdownList::kCheckboxSlotPercent > MarkdownList::kBulletSlotPercent);
+            CHECK(MarkdownList::kBulletSlotPercent > 100.0);
+        }
+    }
+
+    GIVEN("the marker kinds that are left as ordinary text")
+    {
+        THEN("they reserve no drawn-control slot")
+        {
+            CHECK(MarkdownList::slotPercentForKind(MarkdownList::Kind::Numbered) == 0.0);
+            CHECK(MarkdownList::slotPercentForKind(MarkdownList::Kind::None) == 0.0);
+        }
+    }
+}

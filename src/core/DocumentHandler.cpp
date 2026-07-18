@@ -131,6 +131,16 @@ void DocumentHandler::setDocument(QQuickTextDocument *document)
     m_document = document;
     emit documentChanged();
 
+    // The pending-edit debounce holds a position in the PREVIOUS document's
+    // coordinate space (it suppresses the spellcheck underline of the word being
+    // actively typed). That offset is meaningless in a different document, so
+    // clear it on every swap — otherwise computeMisspelledWordRanges() below, and
+    // every recompute until the timer would have fired, suppresses whatever word
+    // happens to sit at the stale offset in the newly-assigned note.
+    m_pendingEditActive = false;
+    m_pendingEditPosition = -1;
+    m_pendingEditDebounce->stop();
+
     if (document && document->textDocument()) {
         m_highlighter = std::make_unique<SpellCheckHighlighter>(document->textDocument(), m_spellCheckerBackend.get());
         m_highlighter->setActive(m_spellcheckEnabled);

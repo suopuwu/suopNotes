@@ -305,6 +305,18 @@ Item {
         function onNoteIdsChanged() { root.reconcileNotesWithDisk() }
     }
 
+    // The user picking a new notes folder in the Settings dialog must reach
+    // NoteStore, which owns enumeration, saving and the folder watcher. main.cpp
+    // seeds the folder once at startup and nothing else pushes later changes in,
+    // so without this a folder switch silently did nothing until the next launch:
+    // saves kept landing in the old folder and the new folder's notes never
+    // appeared. NoteStore::setNotesFolder already flushes and re-enumerates on a
+    // live switch — it just was never being called.
+    Connections {
+        target: settings
+        function onNotesFolderChanged() { noteStore.notesFolder = settings.notesFolder }
+    }
+
     Component.onCompleted: root.reconcileNotesWithDisk()
 
     // Reveals every currently-open note (req. 3) — raises + shows each live
@@ -315,6 +327,10 @@ Item {
     function revealAllNotes() {
         for (let i = 0; i < noteInstantiator.count; ++i) {
             const note = noteInstantiator.objectAt(i)
+            // objectAt() can return null for a delegate still being instantiated
+            // (e.g. a tray click racing note creation); skip rather than throw.
+            if (!note)
+                continue
             note.show()
             note.raise()
             note.requestActivate()
@@ -323,7 +339,10 @@ Item {
 
     function createNewNote() {
         const id = noteStore.createNote()
-        openNotesModel.openNote(id)
+        // Empty id means the file could not be written (unwritable folder / disk
+        // full); there is no note to open, so don't ask the model for a phantom.
+        if (id)
+            openNotesModel.openNote(id)
     }
 
     Platform.SystemTrayIcon {

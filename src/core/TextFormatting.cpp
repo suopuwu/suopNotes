@@ -277,12 +277,16 @@ void replaceMarker(QTextCursor &edit, const QTextBlock &block, const QString &ma
 // NOT the width of the literal marker text: MarkdownHighlighter re-renders
 // markers, so what is measured here has to be what actually gets drawn.
 // Per its list switch, a bullet/checkbox keeps exactly two characters — the
-// reserved glyph slot and the marker's trailing space — each at
-// PercentageSpacing 200, i.e. twice its natural advance; everything else in
-// the marker collapses to a 0.01pt font and is close enough to zero to ignore.
-// A numbered marker is deliberately left unformatted and so measures as the
-// ordinary text it is. The doubling is computed here rather than by handing a
-// letter-spaced font to QFontMetricsF, which does not report it.
+// reserved glyph slot and the marker's trailing space. The trailing space is
+// widened to PercentageSpacing 200 (twice its advance); the glyph slot is
+// widened to MarkdownList::slotPercentForKind — 200 for a bullet but 320 for a
+// checkbox, which is drawn bigger. Everything else in the marker collapses to a
+// 0.01pt font and is close enough to zero to ignore. A numbered marker is
+// deliberately left unformatted and so measures as the ordinary text it is. The
+// widening is computed here rather than by handing a letter-spaced font to
+// QFontMetricsF, which does not report it. Reserving the bullet's 200 for a
+// checkbox (as this once did) left every wrapped checkbox line indented too far
+// left, under the drawn box instead of under the item's own text.
 qreal renderedMarkerWidth(const QFont &font, const QTextBlock &block)
 {
     const QString text = block.text();
@@ -294,7 +298,8 @@ qreal renderedMarkerWidth(const QFont &font, const QTextBlock &block)
     if (marker.kind == MarkdownList::Kind::Numbered)
         return metrics.horizontalAdvance(text.left(marker.length));
 
-    return 2.0 * metrics.horizontalAdvance(text.mid(marker.glyphStart, marker.glyphLength))
+    const qreal glyphSlot = MarkdownList::slotPercentForKind(marker.kind) / 100.0;
+    return glyphSlot * metrics.horizontalAdvance(text.mid(marker.glyphStart, marker.glyphLength))
         + 2.0 * metrics.horizontalAdvance(QStringLiteral(" "));
 }
 
@@ -368,9 +373,21 @@ void applyListIndentRange(QTextDocument *document, int firstBlockNumber, int las
         while (runEnd + 1 <= last && isItem(runEnd + 1))
             ++runEnd;
 
+        // Measure each item's rendered marker width ONCE. Every item's width is
+        // needed twice — for the run's shared widest leftMargin, and again for
+        // that same item's own textIndent below — and each measurement is a
+        // font-metrics pass. This runs reactively on every keystroke near a list
+        // (see maintainHandRolledListNumbering), so re-measuring the whole run
+        // twice per keystroke was pure duplicated work; the values are identical
+        // either way.
+        QList<qreal> widths;
+        widths.reserve(runEnd - i + 1);
         qreal widest = 0;
-        for (int j = i; j <= runEnd; ++j)
-            widest = qMax(widest, renderedMarkerWidth(font, document->findBlockByNumber(j)));
+        for (int j = i; j <= runEnd; ++j) {
+            const qreal width = renderedMarkerWidth(font, document->findBlockByNumber(j));
+            widths.append(width);
+            widest = qMax(widest, width);
+        }
 
         for (int j = i; j <= runEnd; ++j) {
             const QTextBlock block = document->findBlockByNumber(j);
@@ -382,7 +399,7 @@ void applyListIndentRange(QTextDocument *document, int firstBlockNumber, int las
             // Sizing it per-block reserves exactly as much blank space to the
             // left of a narrow marker as a wide one occupies, so text after
             // every marker — first line or wrapped — starts at the same x.
-            setBlockIndent(edit, block, widest, -renderedMarkerWidth(font, block));
+            setBlockIndent(edit, block, widest, -widths.at(j - i));
         }
         i = runEnd + 1;
     }
