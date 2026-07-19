@@ -88,6 +88,16 @@ bool isLinkTextAt(const QTextBlock &block, int position)
     return format.foreground().color() == linkBlue && format.fontUnderline();
 }
 
+// A link's display text: dim grey (the same grey a revealed marker uses) and
+// NOT underlined. The display text is prose the reader sees but is not the link
+// target, so it is de-emphasized rather than styled as the link — the reverse of
+// the URL, which carries the accent link styling.
+bool isDimTextAt(const QTextBlock &block, int position)
+{
+    const QTextCharFormat format = formatAt(block, position);
+    return format.foreground().color() == markerGray && !format.fontUnderline();
+}
+
 // A whole-line image's reserved band: transparent, and blown up to a large
 // point size — that large size is what actually holds the vertical room open
 // for NoteWindow.qml to draw the picture into. The distinction from a collapsed
@@ -321,11 +331,21 @@ SCENARIO("Italic, strikethrough, and inline code each render from their literal 
     }
 }
 
-SCENARIO("A [text](url) link renders its text as a link while the brackets and url collapse", "[markdown_highlighter]")
+SCENARIO("A [text](url) link shows its display text as the link at rest, and flips the accent to the URL once revealed",
+         "[markdown_highlighter]")
 {
-    // Buffer:  s  e  e     [  t  h  e     s  i  t  e  ]  (  h  t ...
-    // Index:   0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 ...
-    // "the site" is the visible text (5..12), "[" at 4, "](url...)" from 13.
+    // Buffer:  s  e  e     [  t  h  e     s  i  t  e  ]  (  h  t  t  p  s  :  /  / ...
+    // Index:   0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19 20 21 22 ...
+    // "the site" is the display text (5..12), "[" at 4, "]" at 13, "(" at 14,
+    // the url "https://example.com" runs 15..33, ")" at 34. Position 20 ("/")
+    // sits inside the url.
+    //
+    // At rest a link is collapsed to just its display text, so the display text
+    // IS the link: accent blue + underline, the one thing the reader sees and
+    // clicks. Only once the cursor enters the link — revealing the raw
+    // "[...](url)" for editing — does the styling flip: the display text goes
+    // dim and the URL, now visible, takes the accent, because at that point the
+    // URL is the real target being edited.
     GIVEN("a document with a link embedded in a sentence")
     {
         QTextDocument doc;
@@ -343,18 +363,19 @@ SCENARIO("A [text](url) link renders its text as a link while the brackets and u
                 CHECK(doc.toPlainText() == QStringLiteral("see [the site](https://example.com) now"));
             }
 
-            THEN("the visible link text is painted in the link colour and underlined")
+            THEN("the display text is the link — accent blue and underlined")
             {
                 CHECK(isLinkTextAt(block, 5));
                 CHECK(isLinkTextAt(block, 12));
             }
 
-            THEN("the [ ]( url ) punctuation collapses out of the rendered line")
+            THEN("the [ ]( url ) punctuation AND the url collapse out of the rendered line")
             {
                 CHECK(isCollapsedMarkerAt(block, 4));  // "["
                 CHECK(isCollapsedMarkerAt(block, 13)); // "]"
                 CHECK(isCollapsedMarkerAt(block, 14)); // "("
                 CHECK(isCollapsedMarkerAt(block, 20)); // inside the url
+                CHECK(isCollapsedMarkerAt(block, 34)); // ")"
             }
 
             THEN("plain text on either side of the link is left unstyled")
@@ -382,9 +403,15 @@ SCENARIO("A [text](url) link renders its text as a link while the brackets and u
                 CHECK(isRevealedMarkerAt(block, 14)); // "("
             }
 
-            THEN("the link text stays styled as a link even while its line is edited")
+            THEN("the accent flips to the url — now the blue, underlined link")
             {
-                CHECK(isLinkTextAt(block, 5));
+                CHECK(isLinkTextAt(block, 20)); // "/" inside the url
+            }
+
+            THEN("the display text goes dim, no longer styled as the link")
+            {
+                CHECK(isDimTextAt(block, 5));
+                CHECK_FALSE(isLinkTextAt(block, 5));
             }
         }
 
@@ -403,15 +430,61 @@ SCENARIO("A [text](url) link renders its text as a link while the brackets and u
             highlightNow(highlighter);
             const QTextBlock block = doc.begin();
 
-            THEN("the [ ]( url ) punctuation stays collapsed — being on the same line is not enough")
+            THEN("the [ ]( url ) punctuation AND the url collapse again — being on the same line is not enough")
             {
                 CHECK(isCollapsedMarkerAt(block, 4));  // "["
                 CHECK(isCollapsedMarkerAt(block, 14)); // "("
+                CHECK(isCollapsedMarkerAt(block, 20)); // inside the url
             }
 
-            THEN("the link text is still rendered as a link")
+            THEN("the display text is back to being the link — accent blue and underlined")
             {
                 CHECK(isLinkTextAt(block, 5));
+            }
+        }
+    }
+}
+
+SCENARIO("A revealed link collapses back to its at-rest styling when the cursor leaves entirely — e.g. the window loses focus",
+         "[markdown_highlighter]")
+{
+    // The editor pushes cursorPosition -1 to the highlighter whenever the note
+    // should show as finished prose rather than raw markdown: a never-edited
+    // note, and — the case this documents — a note whose window is no longer the
+    // app's focused one (NoteWindow.qml's syncMarkerReveal gates on
+    // appHasFocus). So a link left expanded under the cursor must NOT stay
+    // expanded once focus goes to another window: it collapses like any at-rest
+    // link, its display text back to the accent link and its url hidden again.
+    GIVEN("a link that is revealed because the cursor is sitting inside it")
+    {
+        QTextDocument doc;
+        doc.setPlainText("see [the site](https://example.com) now");
+
+        MarkdownHighlighter highlighter(&doc);
+        highlighter.setCursorPosition(6); // inside "the site"
+        highlightNow(highlighter);
+        const QTextBlock block = doc.begin();
+
+        // Precondition: while touched, the accent is on the url and the display
+        // text is dim (the revealed-state styling).
+        REQUIRE(isLinkTextAt(block, 20));  // url is the link
+        REQUIRE(isDimTextAt(block, 5));    // display text dimmed
+
+        WHEN("the window loses focus, so the editor pushes cursorPosition -1")
+        {
+            highlighter.setCursorPosition(-1);
+            highlightNow(highlighter);
+
+            THEN("the display text is the link again — accent blue and underlined")
+            {
+                CHECK(isLinkTextAt(block, 5));
+                CHECK(isLinkTextAt(block, 12));
+            }
+
+            THEN("the url and its punctuation collapse back out of the rendered line")
+            {
+                CHECK(isCollapsedMarkerAt(block, 14)); // "("
+                CHECK(isCollapsedMarkerAt(block, 20)); // inside the url
             }
         }
     }

@@ -234,6 +234,21 @@ Window {
     readonly property alias mainFrame: mainFrame
     readonly property alias lineNumberGutter: lineNumberGutter
 
+    // Whether the app is currently focused on THIS note (or on one of the shared
+    // chrome windows acting on its behalf — the selection toolbar, find panel,
+    // context menu). Driven from Main.qml, which is the only place that can tell
+    // "focus moved to our own toolbar" (stay) apart from "focus moved to another
+    // note or another app entirely" (leave) — see its activeNoteWindow tracking.
+    //
+    // The editor's marker reveal is gated on this (see syncMarkerReveal): a note
+    // the app is no longer focused on collapses its raw markdown back to finished
+    // prose, instead of leaving whatever line the cursor last sat on expanded
+    // while the user works in a different window. Defaults false so a note that
+    // has never been focused shows as prose (Main.qml sets it true only once the
+    // note becomes the active one).
+    property bool appHasFocus: false
+    onAppHasFocusChanged: editor.syncMarkerReveal()
+
     // Code mode (feature request): this note renders as code — a monospaced
     // font (resolved in NoteAppearance::fontFamily, not here) and the
     // line-number gutter below. Resolves the note's own override against the
@@ -2321,7 +2336,15 @@ Window {
                     // MarkdownHighlighter::setCursorBlockNumber).
                     property bool hasBeenEdited: false
                     function syncMarkerReveal() {
-                        docHandler.setCursorPosition(hasBeenEdited ? cursorPosition : -1)
+                        // Reveal the cursor line's raw markdown only when the note
+                        // has actually been edited AND the app is still focused on
+                        // it (noteWindow.appHasFocus). Dropping the app-focus half
+                        // is what collapses an expanded note the moment the user
+                        // switches to another window — the reveal is meaningless
+                        // there, and an unfocused note should read as finished
+                        // prose, exactly like a fresh, never-edited one.
+                        docHandler.setCursorPosition(
+                            hasBeenEdited && noteWindow.appHasFocus ? cursorPosition : -1)
                     }
                     onCursorPositionChanged: syncMarkerReveal()
                     onActiveFocusChanged: {
@@ -2386,6 +2409,20 @@ Window {
                     Keys.onPressed: (event) => {
                         if (event.matches(StandardKey.Copy)) {
                             noteWindow.performCopy()
+                            event.accepted = true
+                        } else if ((event.key === Qt.Key_Up || event.key === Qt.Key_Down)
+                                   && (event.modifiers & Qt.ControlModifier)) {
+                            // Ctrl+Up / Ctrl+Down jump to the top / bottom of
+                            // the current paragraph (feature request), where a
+                            // paragraph is one QTextDocument block — see
+                            // moveToParagraphBoundary below. Handled here in the
+                            // general handler, not Keys.onUpPressed/onDownPressed,
+                            // because Qt emits this generic `pressed` signal first
+                            // and only runs the per-key ones if it wasn't
+                            // accepted — accepting here is what keeps the plain
+                            // Up/Down line-boundary jumps from ALSO firing
+                            // underneath.
+                            moveToParagraphBoundary(event.key === Qt.Key_Up, event)
                             event.accepted = true
                         }
                     }
@@ -2484,6 +2521,41 @@ Window {
                             moveCursorSelection(target, TextEdit.SelectCharacters)
                         else
                             cursorPosition = target
+                    }
+
+                    // Paragraph = one QTextDocument block: the run of text
+                    // between hard newlines (may soft-wrap). The buffer is
+                    // literal plain-text markdown source (textFormat:
+                    // PlainText, see docHandler.setMarkdown), so a block edge is
+                    // exactly a '\n' in `text` — lastIndexOf/indexOf resolve the
+                    // same boundaries QTextDocument splits the buffer on. Reused
+                    // by Ctrl+Up/Down in Keys.onPressed above; Shift extends the
+                    // selection to the edge via the same moveCursorToBoundary()
+                    // the plain line-boundary jumps use.
+                    function paragraphStart(pos) {
+                        return text.lastIndexOf("\n", pos - 1) + 1
+                    }
+                    function paragraphEnd(pos) {
+                        const nl = text.indexOf("\n", pos)
+                        return nl === -1 ? length : nl
+                    }
+                    function moveToParagraphBoundary(goUp, event) {
+                        const pos = cursorPosition
+                        if (goUp) {
+                            let target = paragraphStart(pos)
+                            // Already at this paragraph's top: step to the
+                            // previous paragraph's start.
+                            if (target === pos && target > 0)
+                                target = paragraphStart(target - 1)
+                            moveCursorToBoundary(target, event)
+                        } else {
+                            let target = paragraphEnd(pos)
+                            // Already at this paragraph's bottom: step to the
+                            // next paragraph's end.
+                            if (target === pos && target < length)
+                                target = paragraphEnd(target + 1)
+                            moveCursorToBoundary(target, event)
+                        }
                     }
                 }
             }

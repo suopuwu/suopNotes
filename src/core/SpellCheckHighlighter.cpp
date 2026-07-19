@@ -1,5 +1,7 @@
 #include "SpellCheckHighlighter.h"
 
+#include "MarkdownImage.h"
+#include "MarkdownLink.h"
 #include "MarkdownList.h"
 #include "SpellChecker.h"
 
@@ -77,11 +79,46 @@ QList<QPair<int, int>> SpellCheckHighlighter::wordRangesInBlock(const QTextBlock
     // typo.
     const int searchStart = MarkdownList::parse(text).length;
 
+    // Spans that are markdown plumbing, not prose the user is writing — a word
+    // inside one must never be offered as a misspelling:
+    //  - a link's URL ("[label](url)", capture 2): a url is a machine target,
+    //    not language, so its host/slug words aren't typos. The label (capture
+    //    1) is deliberately NOT excluded — it IS prose the reader sees, and it
+    //    stays visible when the link collapses, so checking it is both wanted
+    //    and safe. Excluding only the url is also what fixes the "floating
+    //    underline": the "](url)" punctuation collapses to zero width off the
+    //    cursor's line, so a squiggle the QML overlay drew under a url word was
+    //    left hanging over the collapsed link.
+    //  - a whole-line image ("![alt](src)"): the entire line collapses to a
+    //    drawn image band off-cursor, so a squiggle under any word in it (alt
+    //    OR src) would float the same way — the whole span is excluded.
+    QList<QPair<int, int>> excludedSpans;
+    QRegularExpressionMatchIterator links = MarkdownLink::pattern().globalMatch(text);
+    while (links.hasNext()) {
+        const QRegularExpressionMatch link = links.next();
+        if (link.capturedLength(2) > 0)
+            excludedSpans.append(qMakePair(link.capturedStart(2), link.capturedLength(2)));
+    }
+    if (const MarkdownImage::Match image = MarkdownImage::parse(text); image.isValid)
+        excludedSpans.append(qMakePair(image.spanStart, image.spanLength));
+
+    const auto inExcludedSpan = [&excludedSpans](int start, int length) {
+        const int end = start + length;
+        for (const auto &span : excludedSpans) {
+            // Half-open overlap: the word [start, end) meets span [s, s+len).
+            if (start < span.first + span.second && span.first < end)
+                return true;
+        }
+        return false;
+    };
+
     QRegularExpressionMatchIterator it = wordPattern().globalMatch(text, searchStart);
     while (it.hasNext()) {
         const QRegularExpressionMatch match = it.next();
         const QString word = match.captured();
         if (!containsLetter(word))
+            continue;
+        if (inExcludedSpan(match.capturedStart(), match.capturedLength()))
             continue;
         ranges.append(qMakePair(match.capturedStart(), match.capturedLength()));
     }

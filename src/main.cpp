@@ -119,7 +119,18 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty("fileRevealer", &fileRevealer);
     engine.addImageProvider(QStringLiteral("notecount"), new TrayIconProvider);
 
+    // Coalesce every restored window's KWin rule write into a single
+    // reconfigure. loadFromModule() below synchronously constructs all the
+    // note windows and frameless chrome windows, each calling
+    // positionManager.applyPosition() from Component.onCompleted; batching
+    // makes those share one reconfigure instead of paying a 200ms settle per
+    // window. The batch must close before app.exec() — the windows are marked
+    // visible during the load, but their Wayland surfaces don't actually map
+    // (when KWin evaluates the spawn-position rule) until the event loop runs.
+    // See PositionManager::beginBatch().
+    positionManager.beginBatch();
     engine.loadFromModule("SuopNotesUi", "Main");
+    positionManager.endBatch();
 
     if (engine.rootObjects().isEmpty())
         return -1;

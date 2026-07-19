@@ -347,3 +347,126 @@ SCENARIO("A run of bare apostrophes is not a word and is never flagged as a miss
         }
     }
 }
+
+SCENARIO("A link's URL is not spellchecked, but the link's display text is", "[spell_check_highlighter]")
+{
+    // A markdown link is "[label](url)". The url is a machine target, not prose
+    // — its host/slug words must never be flagged as typos. The label, by
+    // contrast, IS the language the reader sees and stays visible when the link
+    // collapses off-cursor, so it must still be checked. (Checking the url would
+    // also leave a "floating underline" behind once the "](url)" punctuation
+    // collapses to zero width.)
+    GIVEN("a link whose label AND url are both words the backend calls misspelled")
+    {
+        QTextDocument doc;
+        doc.setPlainText(QStringLiteral("[mistaek](exmaple)"));
+        FakeSpellCheckerBackend backend(true, {QStringLiteral("mistaek"), QStringLiteral("exmaple")});
+
+        THEN("only the label is tokenized as a word; the url is excluded entirely")
+        {
+            const auto ranges = SpellCheckHighlighter::wordRangesInBlock(doc.begin());
+            REQUIRE(ranges.size() == 1);
+            CHECK(doc.begin().text().mid(ranges.first().first, ranges.first().second)
+                  == QStringLiteral("mistaek"));
+        }
+
+        WHEN("a SpellCheckHighlighter is attached")
+        {
+            SpellCheckHighlighter highlighter(&doc, &backend);
+            highlighter.rehighlight();
+            const QTextBlock block = doc.begin();
+
+            THEN("every character of the label carries the misspelling underline")
+            {
+                // "[mistaek](exmaple)" — label at offsets 1..7.
+                for (int i = 1; i <= 7; ++i)
+                    CHECK(isFlaggedMisspelled(block, i));
+            }
+
+            THEN("no character of the url carries a misspelling underline")
+            {
+                // url "exmaple" at offsets 10..16 — nothing to float on collapse.
+                for (int i = 10; i <= 16; ++i)
+                    CHECK_FALSE(isFlaggedMisspelled(block, i));
+            }
+        }
+    }
+}
+
+SCENARIO("A whole-line image is not spellchecked at all (alt or src)", "[spell_check_highlighter]")
+{
+    // A whole-line image "![alt](src)" collapses to a drawn image band off the
+    // cursor's line, so a squiggle under ANY word in it — the alt text or the
+    // src — would float over the collapsed band. The entire span is excluded.
+    GIVEN("an image line whose alt AND src are both words the backend calls misspelled")
+    {
+        QTextDocument doc;
+        doc.setPlainText(QStringLiteral("![mistaek](exmaple)"));
+        FakeSpellCheckerBackend backend(true, {QStringLiteral("mistaek"), QStringLiteral("exmaple")});
+
+        THEN("no word in the image span is tokenized")
+        {
+            const auto ranges = SpellCheckHighlighter::wordRangesInBlock(doc.begin());
+            CHECK(ranges.isEmpty());
+        }
+
+        WHEN("a SpellCheckHighlighter is attached")
+        {
+            SpellCheckHighlighter highlighter(&doc, &backend);
+            highlighter.rehighlight();
+
+            THEN("no position in the block carries a misspelling underline")
+            {
+                const QTextBlock block = doc.begin();
+                for (int i = 0; i < block.text().length(); ++i)
+                    CHECK_FALSE(isFlaggedMisspelled(block, i));
+            }
+        }
+    }
+}
+
+SCENARIO("An ordinary misspelled word next to a link is still flagged", "[spell_check_highlighter]")
+{
+    // Regression guard: the url exclusion must be scoped to the url span only,
+    // not the whole line — a plain misspelled word sitting beside a link must
+    // still get its squiggle.
+    GIVEN("a misspelled word followed by a link whose url is also misspelled")
+    {
+        QTextDocument doc;
+        doc.setPlainText(QStringLiteral("teh [ok](exmaple)"));
+        FakeSpellCheckerBackend backend(true, {QStringLiteral("teh"), QStringLiteral("exmaple")});
+
+        THEN("the ordinary word is tokenized but the url is excluded")
+        {
+            // The link label "ok" is prose too, so it is also tokenized — the
+            // point of this scenario is only that the exclusion is scoped to
+            // the url span: "teh" is present, "exmaple" (the url) is not.
+            const auto ranges = SpellCheckHighlighter::wordRangesInBlock(doc.begin());
+            QStringList words;
+            for (const auto &range : ranges)
+                words << doc.begin().text().mid(range.first, range.second);
+            CHECK(words.contains(QStringLiteral("teh")));
+            CHECK_FALSE(words.contains(QStringLiteral("exmaple")));
+        }
+
+        WHEN("a SpellCheckHighlighter is attached")
+        {
+            SpellCheckHighlighter highlighter(&doc, &backend);
+            highlighter.rehighlight();
+            const QTextBlock block = doc.begin();
+
+            THEN("the ordinary word is flagged")
+            {
+                // "teh" at offset 0.
+                CHECK(isFlaggedMisspelled(block, 0));
+            }
+
+            THEN("the link's url is not flagged")
+            {
+                // url "exmaple" at offsets 9..15.
+                for (int i = 9; i <= 15; ++i)
+                    CHECK_FALSE(isFlaggedMisspelled(block, i));
+            }
+        }
+    }
+}

@@ -41,7 +41,38 @@ void PositionManager::applyPosition(const QString &noteId, const QString &window
     spec.y = y;
     spec.alwaysOnTop = alwaysOnTop;
 
-    KWinRuleApplier::applyRule(noteId, spec);
+    // writeRule() returns false when the on-disk rule already matches — then
+    // there's nothing to reconfigure either, in or out of a batch.
+    if (!KWinRuleApplier::writeRule(noteId, spec))
+        return;
+
+    if (m_batching) {
+        // Defer: endBatch() will issue one reconfigure for the whole startup
+        // burst. Safe because the batch closes before app.exec(), i.e. before
+        // any window actually maps — see beginBatch()'s comment.
+        m_batchReconfigurePending = true;
+        return;
+    }
+
+    // Runtime path (note opened from the tray, pin toggle): the event loop is
+    // already running and the window maps promptly, so its rule must be live
+    // now, not at some later batch boundary.
+    KWinRuleApplier::reconfigure();
+}
+
+void PositionManager::beginBatch()
+{
+    m_batching = true;
+    m_batchReconfigurePending = false;
+}
+
+void PositionManager::endBatch()
+{
+    m_batching = false;
+    if (!m_batchReconfigurePending)
+        return; // every restored rule already matched — nothing to reload
+    m_batchReconfigurePending = false;
+    KWinRuleApplier::reconfigure();
 }
 
 void PositionManager::removePosition(const QString &noteId)

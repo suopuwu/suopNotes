@@ -36,6 +36,21 @@ struct KWinRuleSpec
 // see KWinRuleApplier for the live, non-pure half.
 QMap<QString, QString> buildKWinRuleKeys(const KWinRuleSpec &spec);
 
+// Read-only change detection: returns true iff writing `desiredKeys` to
+// `group` in the kwinrulesrc INI at `filePath` would be a complete no-op —
+// the group is already listed in [General]'s rules, already has every desired
+// key at exactly its value, and carries no stale screen/screenrule key that
+// would need deleting. Any mismatch (or a missing file) returns false. This is
+// what lets a normal restart skip re-writing (and re-reconfiguring) rules that
+// are already correct. Reads the file with a plain INI line scan rather than
+// QSettings on purpose: QSettings' IniFormat parses an unquoted comma value
+// like position=640,120 as a QStringList, so it would misread every position
+// and report it changed. Reading is safe; nothing here writes the file (the
+// reason WRITES go through kwriteconfig6 is corruption risk, which a read
+// can't cause).
+bool kwinRuleAlreadyMatches(const QString &filePath, const QString &group,
+                            const QMap<QString, QString> &desiredKeys);
+
 // Result of a best-effort live-position query. found=false whenever the
 // probe couldn't complete for any reason (no KWin session, window not
 // currently open, timing/parsing failure) — callers should fall back to
@@ -74,8 +89,29 @@ public:
     // Writes/updates this note's rule group with the given spec and
     // triggers a KWin reconfigure. The note's own id is reused as the
     // group name (already a UUID from NoteStore) — no separate rule-id
-    // bookkeeping needed.
+    // bookkeeping needed. Equivalent to writeRule() followed by a
+    // reconfigure() only if something actually changed.
     static void applyRule(const QString &noteId, const KWinRuleSpec &spec);
+
+    // The config-writing half of applyRule WITHOUT the trailing KWin
+    // reconfigure. Returns true iff it actually wrote anything — i.e. the
+    // group didn't already have exactly these keys (and its [General] listing
+    // and no stale screen rule). A false return means the on-disk rule is
+    // already what this spec would produce, so both the writes AND the
+    // reconfigure can be skipped; a normal restart (every note's rule
+    // identical to last session's) hits this path for every window, turning
+    // startup from a per-window kwriteconfig6 storm + reconfigure-each into
+    // near-nothing. Split out from applyRule so a batch of writes (all the
+    // windows restored at startup) can share ONE reconfigure at the end
+    // instead of paying its settle cost per window — see PositionManager's
+    // beginBatch()/endBatch().
+    static bool writeRule(const QString &noteId, const KWinRuleSpec &spec);
+
+    // Asks KWin to reload its rule cache so freshly-written rules take
+    // effect. Public (was private) so a batched caller can issue a single
+    // reconfigure covering many writeRule() calls. Carries its own short
+    // settle delay — see the definition.
+    static void reconfigure();
 
     // Deletes this note's rule group's keys and drops it from
     // [General]'s rules list, then triggers a KWin reconfigure.
@@ -103,5 +139,4 @@ public:
 private:
     static QString groupNameFor(const QString &noteId);
     static void updateGeneralRulesList(const QString &groupName, bool add);
-    static void reconfigure();
 };

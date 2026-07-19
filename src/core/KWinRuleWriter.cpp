@@ -3,10 +3,13 @@
 #include <QDateTime>
 #include <QDebug>
 #include <QDir>
+#include <QFile>
+#include <QHash>
 #include <QProcess>
 #include <QSet>
 #include <QStandardPaths>
 #include <QTemporaryFile>
+#include <QTextStream>
 #include <QThread>
 
 #include <atomic>
@@ -121,6 +124,86 @@ void deleteKConfigKey(const QString &group, const QString &key)
                { "--file", "kwinrulesrc", "--group", group, "--key", key, "--delete", QString() });
 }
 
+// The whole kwinrulesrc parsed once into memory: every group's flat key/value
+// map, plus [General]'s rules list already split. Used only to decide whether
+// a write is even needed — see writeRule/removeRule.
+struct RulesFile
+{
+    QHash<QString, QHash<QString, QString>> groups;
+    QStringList generalRules;
+};
+
+// kwriteconfig6 --file kwinrulesrc (a relative name) resolves to
+// $XDG_CONFIG_HOME/kwinrulesrc, i.e. GenericConfigLocation/kwinrulesrc — the
+// same path we read back here so change-detection sees exactly what those
+// writes produce.
+QString kwinRulesFilePath()
+{
+    return QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation)
+        + QStringLiteral("/kwinrulesrc");
+}
+
+// Read-only, hand-parsed INI. Deliberately NOT QSettings — see
+// kwinRuleAlreadyMatches' header comment for why. This only READS; it never
+// rewrites the file, so it carries none of the corruption risk that makes the
+// write path go through kwriteconfig6.
+RulesFile readRulesFile(const QString &filePath)
+{
+    RulesFile result;
+
+    QFile file(filePath);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
+        return result; // no file yet (fresh config) — every rule reads as absent
+
+    QString currentGroup;
+    QTextStream stream(&file);
+    while (!stream.atEnd()) {
+        const QString line = stream.readLine().trimmed();
+        if (line.isEmpty() || line.startsWith(QLatin1Char('#')))
+            continue;
+        if (line.startsWith(QLatin1Char('[')) && line.endsWith(QLatin1Char(']'))) {
+            currentGroup = line.mid(1, line.size() - 2);
+            continue;
+        }
+        const int eq = line.indexOf(QLatin1Char('='));
+        if (eq < 0)
+            continue;
+        const QString key = line.left(eq).trimmed();
+        const QString value = line.mid(eq + 1).trimmed();
+        result.groups[currentGroup].insert(key, value);
+    }
+
+    const QString rules = result.groups.value(QStringLiteral("General")).value(QStringLiteral("rules"));
+    result.generalRules = rules.isEmpty() ? QStringList() : rules.split(',', Qt::SkipEmptyParts);
+    return result;
+}
+
+}
+
+bool kwinRuleAlreadyMatches(const QString &filePath, const QString &group,
+                            const QMap<QString, QString> &desiredKeys)
+{
+    const RulesFile existing = readRulesFile(filePath);
+
+    // Absent from [General]'s rules list means KWin wouldn't apply the group
+    // even if its keys look right — so this must count as "changed" so the
+    // caller re-adds it.
+    if (!existing.generalRules.contains(group))
+        return false;
+
+    const QHash<QString, QString> current = existing.groups.value(group);
+    for (auto it = desiredKeys.constBegin(); it != desiredKeys.constEnd(); ++it) {
+        if (current.value(it.key()) != it.value())
+            return false;
+    }
+
+    // A leftover screen/screenrule from an older app version would still be
+    // silently pinning the note to one monitor — writeRule deletes those, so
+    // their mere presence means work remains even if every other key matches.
+    if (current.contains(QStringLiteral("screen")) || current.contains(QStringLiteral("screenrule")))
+        return false;
+
+    return true;
 }
 
 bool KWinRuleApplier::isAvailable()
@@ -141,11 +224,27 @@ QString KWinRuleApplier::groupNameFor(const QString &noteId)
 
 void KWinRuleApplier::applyRule(const QString &noteId, const KWinRuleSpec &spec)
 {
+    if (writeRule(noteId, spec))
+        reconfigure();
+}
+
+bool KWinRuleApplier::writeRule(const QString &noteId, const KWinRuleSpec &spec)
+{
     if (!isAvailable())
-        return;
+        return false;
 
     const QString group = groupNameFor(noteId);
     const QMap<QString, QString> keys = buildKWinRuleKeys(spec);
+
+    // Change detection: if the on-disk rule already matches, do nothing at all
+    // — no kwriteconfig6 spawns, and (via the false return) no reconfigure.
+    // This is the whole startup-speed win: on a normal restart every restored
+    // note's rule is byte-identical to what last session wrote, so all of them
+    // short-circuit here instead of each re-running ~17 kwriteconfig6 processes
+    // plus a KWin reconfigure with its 200ms settle.
+    if (kwinRuleAlreadyMatches(kwinRulesFilePath(), group, keys))
+        return false;
+
     for (auto it = keys.constBegin(); it != keys.constEnd(); ++it)
         writeKConfig(group, it.key(), it.value());
 
@@ -157,11 +256,13 @@ void KWinRuleApplier::applyRule(const QString &noteId, const KWinRuleSpec &spec)
     // one left over from before would otherwise keep forcibly pinning the
     // note to one monitor forever. Deleting a key that was never present
     // is a harmless no-op, so this doesn't need to know which case it's in.
+    // (kwinRuleAlreadyMatches above deliberately reports "changed" whenever
+    // such a stale key is present, so this cleanup is never skipped.)
     deleteKConfigKey(group, QStringLiteral("screen"));
     deleteKConfigKey(group, QStringLiteral("screenrule"));
 
     updateGeneralRulesList(group, /*add=*/true);
-    reconfigure();
+    return true;
 }
 
 void KWinRuleApplier::removeRule(const QString &noteId)
@@ -170,6 +271,18 @@ void KWinRuleApplier::removeRule(const QString &noteId)
         return;
 
     const QString group = groupNameFor(noteId);
+
+    // Nothing to remove: the group is neither listed in [General] nor has any
+    // keys on disk. Skip the deletes and (more importantly) the reconfigure —
+    // e.g. a note whose rule KWin was unavailable to write in the first place,
+    // or one already cleaned up, shouldn't trigger a KWin rule-cache reload
+    // for no change.
+    const RulesFile existing = readRulesFile(kwinRulesFilePath());
+    const bool listed = existing.generalRules.contains(group);
+    const bool hasKeys = !existing.groups.value(group).isEmpty();
+    if (!listed && !hasKeys)
+        return;
+
     // buildKWinRuleKeys' key SET is fixed regardless of the spec's values,
     // so this always matches exactly what applyRule wrote for this group.
     const QMap<QString, QString> keys = buildKWinRuleKeys(KWinRuleSpec());

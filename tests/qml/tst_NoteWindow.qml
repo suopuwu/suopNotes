@@ -1160,6 +1160,141 @@ Item {
                     "Shift+Down on the last line should extend the selection on to that line's end")
         }
 
+        // Ctrl+Down jumps the caret to the END of the paragraph (one
+        // hard-newline-delimited block) it currently sits in, not to the end
+        // of the whole document. With the caret inside the middle block
+        // "bravo", it should land at that block's end (offset 11), leaving the
+        // final "charlie" block untouched.
+        function test_ctrl_down_moves_caret_to_end_of_current_paragraph() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+
+            win.docHandler.setMarkdown("alpha\nbravo\ncharlie")
+            wait(50)
+
+            editor.cursorPosition = editor.text.indexOf("bravo") + 2
+            win.requestActivate()
+            tryCompare(win, "active", true)
+            editor.forceActiveFocus()
+            tryCompare(editor, "activeFocus", true)
+
+            keyClick(Qt.Key_Down, Qt.ControlModifier)
+
+            compare(editor.cursorPosition,
+                    editor.text.indexOf("bravo") + "bravo".length,
+                    "Ctrl+Down should land at the current paragraph's end, not the document end")
+        }
+
+        // Ctrl+Up is the mirror: from inside the middle block "bravo" the
+        // caret jumps to that block's START (offset 6), not to the top of the
+        // whole document.
+        function test_ctrl_up_moves_caret_to_start_of_current_paragraph() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+
+            win.docHandler.setMarkdown("alpha\nbravo\ncharlie")
+            wait(50)
+
+            editor.cursorPosition = editor.text.indexOf("bravo") + 2
+            win.requestActivate()
+            tryCompare(win, "active", true)
+            editor.forceActiveFocus()
+            tryCompare(editor, "activeFocus", true)
+
+            keyClick(Qt.Key_Up, Qt.ControlModifier)
+
+            compare(editor.cursorPosition, editor.text.indexOf("bravo"),
+                    "Ctrl+Up should land at the current paragraph's start, not the document start")
+        }
+
+        // Repeated presses walk paragraph by paragraph: when the caret is
+        // ALREADY at a paragraph's start, Ctrl+Up carries on into the previous
+        // paragraph and lands at ITS start. From the start of "bravo" that is
+        // the start of "alpha" (offset 0).
+        function test_ctrl_up_at_paragraph_start_jumps_to_previous_paragraph_start() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+
+            win.docHandler.setMarkdown("alpha\nbravo\ncharlie")
+            wait(50)
+
+            editor.cursorPosition = editor.text.indexOf("bravo")
+            win.requestActivate()
+            tryCompare(win, "active", true)
+            editor.forceActiveFocus()
+            tryCompare(editor, "activeFocus", true)
+
+            keyClick(Qt.Key_Up, Qt.ControlModifier)
+
+            compare(editor.cursorPosition, 0,
+                    "Ctrl+Up at a paragraph's start should step to the previous paragraph's start")
+        }
+
+        // The Ctrl+Down mirror of the walk: from a paragraph's END the press
+        // steps on to the next paragraph and lands at ITS end. From the end of
+        // "bravo" (offset 11) that is the end of "charlie" (the document end).
+        function test_ctrl_down_at_paragraph_end_jumps_to_next_paragraph_end() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+
+            win.docHandler.setMarkdown("alpha\nbravo\ncharlie")
+            wait(50)
+
+            editor.cursorPosition = editor.text.indexOf("bravo") + "bravo".length
+            win.requestActivate()
+            tryCompare(win, "active", true)
+            editor.forceActiveFocus()
+            tryCompare(editor, "activeFocus", true)
+
+            keyClick(Qt.Key_Down, Qt.ControlModifier)
+
+            compare(editor.cursorPosition, editor.length,
+                    "Ctrl+Down at a paragraph's end should step to the next paragraph's end")
+        }
+
+        // Holding Shift with Ctrl+Down EXTENDS the selection to the paragraph
+        // end rather than collapsing it, matching how plain Shift+Down already
+        // behaves at line boundaries. From position 8 inside "bravo" the
+        // selection should grow to the block end (offset 11) with the anchor
+        // kept at 8.
+        function test_ctrl_shift_down_extends_selection_to_end_of_current_paragraph() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+
+            win.docHandler.setMarkdown("alpha\nbravo\ncharlie")
+            wait(50)
+
+            editor.cursorPosition = 8
+            win.requestActivate()
+            tryCompare(win, "active", true)
+            editor.forceActiveFocus()
+            tryCompare(editor, "activeFocus", true)
+
+            keyClick(Qt.Key_Down, Qt.ControlModifier | Qt.ShiftModifier)
+
+            compare(editor.selectionStart, 8,
+                    "Ctrl+Shift+Down should keep the anchor where the caret started")
+            compare(editor.selectionEnd, 11,
+                    "Ctrl+Shift+Down should extend the selection to the current paragraph's end")
+        }
+
+        // The cursor-line marker reveal (raw markdown shown for editing) is
+        // gated on appHasFocus: it stays revealed only while the app is focused
+        // on this note or the shared chrome acting for it, and collapses back to
+        // finished prose the moment focus moves to another window. Main.qml owns
+        // that decision (root.activeNoteWindow === thisNoteWindow) — untestable
+        // here — but the gate must DEFAULT off, so a note that has merely been
+        // constructed, or is not the focused one, never reveals. (The
+        // reveal/collapse the gate drives is covered in the C++ highlighter
+        // suite; see "A revealed link collapses back to its at-rest styling
+        // when the cursor leaves entirely" in test_markdown_highlighter.cpp.)
+        function test_marker_reveal_is_gated_off_by_default_until_the_app_focuses_the_note() {
+            const win = instantiator.objectAt(0)
+
+            compare(win.appHasFocus, false,
+                    "a note must not consider itself app-focused until Main.qml says so, so a fresh or unfocused note shows as prose")
+        }
+
         // The boundary jump must also respect a selection that's already
         // under way rather than only a fresh one: Shift+Down held from the
         // first line down past the last keeps one continuous selection

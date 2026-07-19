@@ -41,6 +41,25 @@ public:
     // here needs to finish before the caller proceeds.
     Q_INVOKABLE void moveWindow(const QString &windowTitle, int x, int y);
 
+    // Coalesces the KWin reconfigure across a burst of applyPosition() calls.
+    // main.cpp brackets the QML engine load (which synchronously constructs
+    // every restored note window and the frameless chrome windows, each of
+    // which calls applyPosition() from its Component.onCompleted) between
+    // these two. While batching, applyPosition() writes its rule but defers
+    // the reconfigure; endBatch() issues a single reconfigure covering the
+    // whole burst instead of one per window (each with its own 200ms settle).
+    //
+    // This is safe to do before the reconfigure without windows spawning at
+    // the wrong spot because it runs BEFORE app.exec(): the windows have set
+    // visible=true during the load, but Wayland doesn't actually map their
+    // surfaces (the moment KWin evaluates the Apply-Initially position rule)
+    // until the event loop runs — which is after endBatch(). Outside a batch
+    // (a note opened at runtime, a pin toggle), applyPosition() reconfigures
+    // synchronously as before, since there the event loop is already live and
+    // the window maps promptly.
+    void beginBatch();
+    void endBatch();
+
     // A point guaranteed to fall outside the combined virtual desktop of every
     // connected screen. The several frameless "chrome" windows (the selection
     // toolbar, its popups, the find/replace panel, the HUD and context-menu
@@ -69,4 +88,11 @@ signals:
 
 private:
     bool m_suppressCleanupOnQuit = false;
+
+    // See beginBatch()/endBatch(). m_batching gates whether applyPosition()
+    // reconfigures inline; m_batchReconfigurePending records whether any
+    // write during the batch actually changed something, so an all-unchanged
+    // batch (the normal-restart case) ends without reconfiguring at all.
+    bool m_batching = false;
+    bool m_batchReconfigurePending = false;
 };

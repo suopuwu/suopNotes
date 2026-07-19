@@ -140,6 +140,17 @@ Item {
         model: openNotesModel
         delegate: NoteWindow {
             id: thisNoteWindow
+
+            // Drives the note's marker reveal: it stays expanded only while the
+            // app is focused on THIS note (or on the shared chrome acting for it,
+            // which keeps activeNoteWindow pinned here — see noteOrChromeActive
+            // and the clear debounce). The instant focus moves to another note or
+            // another app, activeNoteWindow stops being this window and the note
+            // collapses its raw markdown back to prose. Deliberately NOT the
+            // note's own `active`: clicking the selection toolbar deactivates the
+            // note without meaning to leave it, and this must not collapse then.
+            appHasFocus: root.activeNoteWindow === thisNoteWindow
+
             onActiveChanged: {
                 if (active) {
                     activeNoteWindowClearDebounce.stop()

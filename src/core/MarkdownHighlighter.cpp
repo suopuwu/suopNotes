@@ -286,11 +286,13 @@ QTextCharFormat strikethroughFormat()
     return format;
 }
 
-// The visible text of a [text](url) link — a mid-blue underline, matching the
-// HUD/toolbar accent so links read as the app's one "interactive" color. Unlike
-// emphasis delimiters, this styling stays applied on the cursor's own line too:
-// the surrounding [ ]( url ) punctuation reveals/collapses with the cursor, but
-// the text itself is always shown as a link.
+// The accent styling for a link — a mid-blue underline, matching the HUD/toolbar
+// accent so links read as the app's one "interactive" color. Which part of the
+// link wears it depends on whether the link is revealed (see applyLinks): at
+// rest the collapsed link shows only its display text, so the display text is
+// the accent link; once the cursor enters the link and the raw "[...](url)" is
+// revealed, the accent moves to the URL — the real target being edited — and
+// the display text goes dim.
 QTextCharFormat linkTextFormat()
 {
     QTextCharFormat format;
@@ -803,9 +805,13 @@ void MarkdownHighlighter::highlightMarkdown(const QString &text)
         }
     };
 
-    // [text](url): the visible text is styled as a link and stays styled
-    // everywhere; the surrounding "[" and "](url)" collapse EXCEPT while the
-    // cursor is actually touching this specific link, exactly like emphasis
+    // [text](url): at rest the link is collapsed to just its display text, which
+    // wears the accent link styling (blue + underline). Once the cursor enters
+    // the link the raw "[...](url)" reveals: the display text goes dim and the
+    // accent moves to the URL, the real target being edited. The display text
+    // stays visible everywhere;
+    // the surrounding "[" and "](url)" collapse EXCEPT while the cursor is
+    // actually touching this specific link, exactly like emphasis
     // delimiters — except position-based, not block-level (bug found live:
     // with block-level reveal, "[the site](url) and more prose" stayed fully
     // expanded as long as the cursor was anywhere on that line — several words
@@ -826,7 +832,6 @@ void MarkdownHighlighter::highlightMarkdown(const QString &text)
 
             const int textStart = match.capturedStart(1);
             const int textLen = match.capturedLength(1);
-            mergeFormat(textStart, textLen, linkTextFormat());
 
             // Absolute document position, compared against THIS match's own
             // span (not the whole line) — see the comment above.
@@ -834,6 +839,14 @@ void MarkdownHighlighter::highlightMarkdown(const QString &text)
             const int absoluteMatchEnd = currentBlock().position() + match.capturedEnd();
             const bool linkTouched =
                 m_cursorPosition >= absoluteMatchStart && m_cursorPosition <= absoluteMatchEnd;
+
+            // The display text is what a collapsed link shows, so at rest it IS
+            // the link: accent blue + underline. Only once the cursor enters the
+            // link (revealing the raw "[...](url)") does the styling flip — the
+            // display text goes dim and the URL, now visible, takes the accent
+            // instead, since the URL is the real target being edited.
+            mergeFormat(textStart, textLen, linkTouched ? revealedMarkerFormat() : linkTextFormat());
+
             const auto applyLinkMarkerFormat = [&](int start, int length) {
                 if (linkTouched)
                     mergeFormat(start, length, revealedMarkerFormat());
@@ -842,8 +855,18 @@ void MarkdownHighlighter::highlightMarkdown(const QString &text)
             };
             // Leading "[" ...
             applyLinkMarkerFormat(match.capturedStart(), textStart - match.capturedStart());
-            // ... and trailing "](url)".
-            applyLinkMarkerFormat(textStart + textLen, match.capturedEnd() - (textStart + textLen));
+            // ... the "](" and ")" punctuation reveal/collapse like any marker,
+            // but the URL between them (capture 2) is the real link target: it
+            // takes the accent link styling when the link is revealed, and still
+            // collapses with the surrounding punctuation when it isn't touched.
+            const int urlStart = match.capturedStart(2);
+            const int urlLen = match.capturedLength(2);
+            applyLinkMarkerFormat(textStart + textLen, urlStart - (textStart + textLen)); // "]("
+            if (linkTouched)
+                mergeFormat(urlStart, urlLen, linkTextFormat());
+            else
+                setFormat(urlStart, urlLen, hiddenMarkerFormat());
+            applyLinkMarkerFormat(urlStart + urlLen, match.capturedEnd() - (urlStart + urlLen)); // ")"
             mask(match.capturedStart(), match.capturedLength());
             searchFrom = match.capturedEnd();
         }
