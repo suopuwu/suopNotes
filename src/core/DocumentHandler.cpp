@@ -1,5 +1,7 @@
 #include "DocumentHandler.h"
 #include "MarkdownHighlighter.h"
+#include "MarkdownImage.h"
+#include "MarkdownLink.h"
 #include "MarkdownList.h"
 #include "MarkdownTable.h"
 #include "SpellCheckHighlighter.h"
@@ -478,23 +480,6 @@ void DocumentHandler::emitTableRangesChangedIfNeeded()
     emit tableRangesChanged();
 }
 
-namespace
-{
-// A line that is nothing but an image: "![alt](src)", optionally indented or
-// trailing-padded. Group 1 is the whole image span itself — from "!" to the
-// closing ")", EXCLUDING any surrounding whitespace. Group 2 is the alt text,
-// group 3 the src (either may be empty). Kept in sync with MarkdownHighlighter's
-// own image detection — the highlighter reserves the band, this reports where
-// to draw into it; a disagreement would draw an image with no reserved space or
-// vice versa.
-const QRegularExpression &imageLinePattern()
-{
-    static const QRegularExpression pattern(
-        QStringLiteral("^\\s*(!\\[([^\\]\\n]*)\\]\\(([^)\\n]*)\\))\\s*$"));
-    return pattern;
-}
-}
-
 QVariantList DocumentHandler::imageRanges() const
 {
     return computeImageRanges();
@@ -508,22 +493,20 @@ QVariantList DocumentHandler::computeImageRanges() const
 
     const QTextDocument *document = m_document->textDocument();
     for (QTextBlock block = document->begin(); block.isValid(); block = block.next()) {
-        const QString text = block.text();
-        const QRegularExpressionMatch match = imageLinePattern().match(text);
-        if (!match.hasMatch())
+        const MarkdownImage::Match image = MarkdownImage::parse(block.text());
+        if (!image.isValid)
             continue;
 
-        // The image markdown's OWN span (group 1) — excluding any surrounding
-        // line whitespace — not the whole line. This is what NoteWindow.qml's
-        // overlay compares the cursor against to decide whether it's "touching"
-        // the image (bug found live: using the full line let a trailing space
-        // after the image count as touching it too, same class of bug the
-        // highlighter's own touch test had — see its imageLinePattern comment).
+        // The image markdown's OWN span — excluding any surrounding line
+        // whitespace — not the whole line. This is what NoteWindow.qml's overlay
+        // compares the cursor against to decide whether it's "touching" the
+        // image (see MarkdownImage::Match::spanStart for the trailing-space bug
+        // that motivated it).
         QVariantMap range;
-        range.insert(QStringLiteral("start"), block.position() + match.capturedStart(1));
-        range.insert(QStringLiteral("end"), block.position() + match.capturedEnd(1));
-        range.insert(QStringLiteral("alt"), match.captured(2));
-        range.insert(QStringLiteral("src"), match.captured(3));
+        range.insert(QStringLiteral("start"), block.position() + image.spanStart);
+        range.insert(QStringLiteral("end"), block.position() + image.spanStart + image.spanLength);
+        range.insert(QStringLiteral("alt"), image.alt);
+        range.insert(QStringLiteral("src"), image.src);
         ranges.append(range);
     }
     return ranges;
@@ -576,16 +559,15 @@ void DocumentHandler::setImageSourceAt(int position, const QString &relativePath
     if (!block.isValid())
         return;
 
-    const QString text = block.text();
-    const QRegularExpressionMatch match = imageLinePattern().match(text);
-    if (!match.hasMatch())
+    const MarkdownImage::Match image = MarkdownImage::parse(block.text());
+    if (!image.isValid)
         return;
 
-    // Replace exactly the src (capture 3) — which may be empty ("![]()") — with
-    // the new path, as one undoable edit, leaving the alt text untouched.
+    // Replace exactly the src — which may be empty ("![]()") — with the new
+    // path, as one undoable edit, leaving the alt text untouched.
     QTextCursor cursor(document);
-    cursor.setPosition(block.position() + match.capturedStart(3));
-    cursor.setPosition(block.position() + match.capturedEnd(3), QTextCursor::KeepAnchor);
+    cursor.setPosition(block.position() + image.srcStart);
+    cursor.setPosition(block.position() + image.srcStart + image.srcLength, QTextCursor::KeepAnchor);
     cursor.beginEditBlock();
     cursor.insertText(relativePath);
     cursor.endEditBlock();
@@ -1564,20 +1546,9 @@ QString DocumentHandler::linkUrlAt(int position) const
     if (!block.isValid())
         return QString();
 
-    // Same pattern MarkdownHighlighter uses for links, kept in sync deliberately
-    // (a link the highlighter styled but this didn't recognize would render
-    // clickable-looking yet do nothing). Scans this block only — a link never
-    // spans lines — so it's cheap on every hover move.
-    static const QRegularExpression pattern(QStringLiteral("(?<!!)\\[([^\\]\\n]+)\\]\\(([^)\\n]*)\\)"));
-    const int posInBlock = position - block.position();
-    const QString text = block.text();
-    QRegularExpressionMatchIterator it = pattern.globalMatch(text);
-    while (it.hasNext()) {
-        const QRegularExpressionMatch match = it.next();
-        // The hit region is the visible text (capture 1) — what actually
-        // renders as the link — not the collapsed "](url)" punctuation.
-        if (posInBlock >= match.capturedStart(1) && posInBlock < match.capturedEnd(1))
-            return match.captured(2);
-    }
-    return QString();
+    // Delegated to MarkdownLink, the shared source of truth the highlighter
+    // styles links from too (a link the highlighter styled but this didn't
+    // recognize would render clickable-looking yet do nothing). Scans this block
+    // only — a link never spans lines — so it's cheap on every hover move.
+    return MarkdownLink::urlAt(block.text(), position - block.position());
 }

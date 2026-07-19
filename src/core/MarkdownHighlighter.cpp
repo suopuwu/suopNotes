@@ -1,5 +1,7 @@
 #include "MarkdownHighlighter.h"
 
+#include "MarkdownImage.h"
+#include "MarkdownLink.h"
 #include "MarkdownList.h"
 #include "MarkdownTable.h"
 
@@ -173,20 +175,6 @@ QTextCharFormat imageBandFormat(qreal pointSize)
     return format;
 }
 
-// A line that is nothing but an image: "![alt](src)", optionally indented or
-// trailing-padded. Group 1 is the whole image span itself — from "!" to the
-// closing ")", EXCLUDING any surrounding whitespace — used for the touch test
-// below (bug found live: using the full line, whitespace included, meant a
-// trailing space after the image counted as "touching" it too). Group 2 is the
-// src (possibly empty), used to pick the band height above. Kept in sync with
-// DocumentHandler's own imageLinePattern.
-const QRegularExpression &imageLinePattern()
-{
-    static const QRegularExpression pattern(
-        QStringLiteral("^\\s*(!\\[[^\\]\\n]*\\]\\(([^)\\n]*)\\))\\s*$"));
-    return pattern;
-}
-
 // The find/replace panel's "here's everywhere else your term appears" wash, and
 // the stronger version marking the one match the panel's own "3 of 7" counter
 // is pointing at.
@@ -311,16 +299,6 @@ QTextCharFormat linkTextFormat()
     return format;
 }
 
-// [text](url), but NOT ![alt](url) — the negative lookbehind on "!" is what
-// tells a link apart from an image (images are rendered as a block, see
-// DocumentHandler::computeImageRanges). The url is allowed to be empty so a
-// freshly-inserted "[]()" still parses as a link while it's being filled in.
-const QRegularExpression &linkPattern()
-{
-    static const QRegularExpression pattern(QStringLiteral("(?<!!)\\[([^\\]\\n]+)\\]\\(([^)\\n]*)\\)"));
-    return pattern;
-}
-
 // Precedence matters and is load-bearing:
 //  - code first, so its contents are masked from every emphasis rule;
 //  - bold before italic, since "**x**" would otherwise be read by the italic
@@ -410,7 +388,8 @@ void MarkdownHighlighter::setCursorPosition(int position)
         return;
     const QTextBlock block = document()->findBlockByNumber(blockNumber);
     if (block.isValid()
-        && (linkPattern().match(block.text()).hasMatch() || imageLinePattern().match(block.text()).hasMatch()))
+        && (MarkdownLink::pattern().match(block.text()).hasMatch()
+            || MarkdownImage::parse(block.text()).isValid))
         rehighlightBlock(block);
 }
 
@@ -473,18 +452,18 @@ void MarkdownHighlighter::collectBlockNumbers(const QList<TextSearch::Match> &ma
 
 bool MarkdownHighlighter::highlightImageLine(const QString &text)
 {
-    const QRegularExpressionMatch match = imageLinePattern().match(text);
-    if (!match.hasMatch())
+    const MarkdownImage::Match image = MarkdownImage::parse(text);
+    if (!image.isValid)
         return false;
 
     // Position-based touch test (NOT block-level revealMarkers — see
     // m_cursorPosition's own doc comment): only while the cursor is actually
     // within the image's own "![alt](src)" span does the raw markdown stay at
     // normal size for editing. Any surrounding whitespace on the line (leading
-    // indentation, or trailing padding) does NOT count as touching, which is
-    // what group 1 (the outer capture, excluding that whitespace) buys here.
-    const int absoluteStart = currentBlock().position() + match.capturedStart(1);
-    const int absoluteEnd = currentBlock().position() + match.capturedEnd(1);
+    // indentation, or trailing padding) does NOT count as touching — the span
+    // (excluding that whitespace) is what buys that here.
+    const int absoluteStart = currentBlock().position() + image.spanStart;
+    const int absoluteEnd = absoluteStart + image.spanLength;
     const bool touching = m_cursorPosition >= absoluteStart && m_cursorPosition <= absoluteEnd;
 
     // Off the touched span, reserve a band: a tall one for a real image to draw
@@ -492,7 +471,7 @@ bool MarkdownHighlighter::highlightImageLine(const QString &text)
     // an unfilled placeholder isn't a big blank square).
     if (!touching) {
         const qreal pointSize =
-            match.captured(2).isEmpty() ? kImagePlaceholderPointSize : kImageBandPointSize;
+            image.src.isEmpty() ? kImagePlaceholderPointSize : kImageBandPointSize;
         setFormat(0, text.size(), imageBandFormat(pointSize));
     }
     return true;
@@ -837,7 +816,7 @@ void MarkdownHighlighter::highlightMarkdown(const QString &text)
     const auto applyLinks = [&]() {
         int searchFrom = contentStart;
         while (searchFrom < text.size()) {
-            const QRegularExpressionMatch match = linkPattern().match(text, searchFrom);
+            const QRegularExpressionMatch match = MarkdownLink::pattern().match(text, searchFrom);
             if (!match.hasMatch())
                 break;
             if (overlapsMask(match.capturedStart(), match.capturedLength())) {

@@ -1382,19 +1382,12 @@ Window {
                         // End exactly where they were) — see
                         // refreshFormatState()'s own comment above.
                         onFormattingChanged: noteWindow.refreshFormatState()
-                        // Keeps misspelledWordOverlay's ListModel in sync
-                        // via targeted updates rather than handing it a
-                        // fresh QVariantList directly — see that model's
-                        // own comment for why (avoids a full underline
-                        // delegate rebuild on every keystroke).
-                        onMisspelledWordRangesChanged: misspelledWordOverlay.syncMisspelledWordsModel()
-                        // Same deal for the bullet/checkbox glyph overlay —
-                        // see listMarkerOverlay's own model comment.
-                        onListMarkerRangesChanged: listMarkerOverlay.syncListMarkersModel()
-                        // And for the table grid — see tableGridOverlay.
+                        // The misspelled-word, list-marker and image overlays are
+                        // RangeOverlays now — each syncs its own model off its
+                        // own `ranges: docHandler.<x>Ranges` binding, so no
+                        // explicit sync is wired here. Only the table grid, which
+                        // isn't a flat per-item overlay, keeps its own.
                         onTableRangesChanged: tableGridOverlay.syncTablesModel()
-                        // And for inline images — see imageOverlay.
-                        onImageRangesChanged: imageOverlay.syncImagesModel()
 
                         // Debounced + atomic on NoteStore's side (~300ms after
                         // the last keystroke) — instant-feeling without a
@@ -1465,65 +1458,20 @@ Window {
                     // scroll-tracking needed. Purely decorative: a plain Item
                     // has no input handling by default, so it never competes
                     // with the TapHandler/MouseAreas above for clicks.
-                    Item {
+                    RangeOverlay {
                         id: misspelledWordOverlay
                         anchors.fill: parent
                         z: 1
-
-                        // Bug found live ("every letter typed seems to
-                        // recalculate the spellcheck, causing the underline
-                        // to flicker" — persisted even after excluding the
-                        // in-progress word and adding DocumentHandler's own
-                        // per-block cache): docHandler.misspelledWordRanges
-                        // reports ABSOLUTE document positions, so typing or
-                        // deleting anywhere before a misspelled word
-                        // genuinely shifts that word's own start/end by the
-                        // edit's size — correct, not a bug, and true for
-                        // EVERY misspelled word after the edit point, not
-                        // just the one being typed. Feeding that plain
-                        // QVariantList straight to a Repeater's `model` used
-                        // to mean a single keystroke near the top of a note
-                        // with several typos further down destroyed and
-                        // recreated ALL of their underline delegates at
-                        // once, every keystroke — visible as the whole
-                        // note's underlines flickering, not just the word
-                        // under the cursor. A ListModel kept in sync via
-                        // targeted set()/append()/remove() calls (see
-                        // syncMisspelledWordsModel() below) instead lets the
-                        // Repeater reuse each delegate whose entry merely
-                        // shifted position: only its bound start/end
-                        // properties change, so its Canvas node persists and
-                        // simply repositions, with nothing torn down.
-                        ListModel {
-                            id: misspelledWordsModel
-                        }
-
-                        // Diffs docHandler.misspelledWordRanges against the
-                        // model's current contents by index (misspelled
-                        // words don't reorder relative to each other, so
-                        // index-based matching is exactly right for a pure
-                        // shift; the rare case of a word being newly
-                        // inserted or removed from the middle of the list
-                        // just means everything after that point gets a
-                        // set() too, which is still a plain property update,
-                        // never a destroy/recreate).
-                        function syncMisspelledWordsModel() {
-                            const ranges = docHandler.misspelledWordRanges
-                            const n = Math.min(misspelledWordsModel.count, ranges.length)
-                            for (let i = 0; i < n; i++) {
-                                const existing = misspelledWordsModel.get(i)
-                                if (existing.start !== ranges[i].start || existing.end !== ranges[i].end)
-                                    misspelledWordsModel.set(i, ranges[i])
-                            }
-                            while (misspelledWordsModel.count < ranges.length)
-                                misspelledWordsModel.append(ranges[misspelledWordsModel.count])
-                            while (misspelledWordsModel.count > ranges.length)
-                                misspelledWordsModel.remove(misspelledWordsModel.count - 1)
-                        }
+                        // See RangeOverlay for why a plain QVariantList can't be
+                        // fed straight to the Repeater: these are absolute
+                        // positions, so an edit shifts every later word's
+                        // start/end, and a raw-list model rebuilt every underline
+                        // delegate on every keystroke (whole-note flicker).
+                        ranges: docHandler.misspelledWordRanges
 
                         Repeater {
                             id: misspelledWordRepeater
-                            model: misspelledWordsModel
+                            model: misspelledWordOverlay.model
 
                             delegate: Canvas {
                                 id: underlineCanvas
@@ -1732,41 +1680,19 @@ Window {
                     // targeted updates so delegates are never needlessly
                     // rebuilt, and one debounced imperative recompute rather
                     // than a reactive binding on positionToRectangle().
-                    Item {
+                    RangeOverlay {
                         id: listMarkerOverlay
                         anchors.fill: parent
                         z: 1
-
-                        ListModel {
-                            id: listMarkersModel
-                        }
-
-                        // See syncMisspelledWordsModel() above — identical
-                        // reasoning: these are ABSOLUTE document positions, so
-                        // typing anywhere above a list shifts every marker
-                        // below it, and handing the raw QVariantList to the
-                        // Repeater would destroy and rebuild every bullet in
-                        // the note on those keystrokes.
-                        function syncListMarkersModel() {
-                            const ranges = docHandler.listMarkerRanges
-                            const n = Math.min(listMarkersModel.count, ranges.length)
-                            for (let i = 0; i < n; i++) {
-                                const existing = listMarkersModel.get(i)
-                                const incoming = ranges[i]
-                                if (existing.start !== incoming.start || existing.end !== incoming.end
-                                        || existing.kind !== incoming.kind
-                                        || existing.checked !== incoming.checked)
-                                    listMarkersModel.set(i, incoming)
-                            }
-                            while (listMarkersModel.count < ranges.length)
-                                listMarkersModel.append(ranges[listMarkersModel.count])
-                            while (listMarkersModel.count > ranges.length)
-                                listMarkersModel.remove(listMarkersModel.count - 1)
-                        }
+                        // Identical reasoning to the misspelled-word overlay —
+                        // see RangeOverlay: absolute positions, so a raw-list
+                        // model would rebuild every bullet in the note on any
+                        // keystroke above the list.
+                        ranges: docHandler.listMarkerRanges
 
                         Repeater {
                             id: listMarkerRepeater
-                            model: listMarkersModel
+                            model: listMarkerOverlay.model
 
                             delegate: Item {
                                 id: markerGlyph
@@ -1949,41 +1875,15 @@ Window {
                     // highlighter holds the vertical space open, and this draws
                     // the picture — or, for an empty src, a Browse placeholder
                     // the user fills in. Nothing here touches the buffer.
-                    Item {
+                    RangeOverlay {
                         id: imageOverlay
                         anchors.fill: parent
                         z: 1
-
-                        ListModel {
-                            id: imagesModel
-                        }
-
-                        // Targeted diff, same reasoning as syncListMarkersModel:
-                        // these are absolute document positions, so typing above
-                        // an image shifts it, and handing the raw list to the
-                        // Repeater would tear down and rebuild the (potentially
-                        // expensive) Image delegate on unrelated keystrokes.
-                        function syncImagesModel() {
-                            const ranges = docHandler.imageRanges
-                            const n = Math.min(imagesModel.count, ranges.length)
-                            for (let i = 0; i < n; i++) {
-                                const existing = imagesModel.get(i)
-                                const incoming = ranges[i]
-                                if (existing.start !== incoming.start || existing.end !== incoming.end
-                                        || existing.src !== incoming.src || existing.alt !== incoming.alt)
-                                    imagesModel.set(i, incoming)
-                            }
-                            while (imagesModel.count < ranges.length)
-                                imagesModel.append(ranges[imagesModel.count])
-                            while (imagesModel.count > ranges.length)
-                                imagesModel.remove(imagesModel.count - 1)
-                        }
-
-                        Component.onCompleted: syncImagesModel()
+                        ranges: docHandler.imageRanges
 
                         Repeater {
                             id: imageRepeater
-                            model: imagesModel
+                            model: imageOverlay.model
 
                             delegate: Item {
                                 id: imageBox
@@ -2207,11 +2107,14 @@ Window {
                             }
                         }
 
-                        // Same reasoning as syncMisspelledWordsModel(): these
-                        // are absolute document positions, so typing anywhere
-                        // above (or inside) a table shifts them, and handing the
-                        // raw QVariantList to the Repeater would tear down and
-                        // rebuild the whole grid on every keystroke.
+                        // Same reasoning as RangeOverlay's own diff (which the
+                        // other three overlays now use): these are absolute
+                        // document positions, so typing anywhere above (or inside)
+                        // a table shifts them, and handing the raw QVariantList to
+                        // the Repeater would tear down and rebuild the whole grid
+                        // on every keystroke. This one keeps its own sync because
+                        // a table row isn't a flat {start,end} entry — it carries
+                        // column boundaries and per-row starts.
                         function syncTablesModel() {
                             const tables = docHandler.tableRanges
                             const n = Math.min(tablesModel.count, tables.length)

@@ -9,6 +9,9 @@ qt_add_executable(suopNotes_qml_tests
 # didn't resolve reliably even for the app itself, so each binary now just
 # compiles the module directly, exactly like the app did before that
 # split — simpler and known to work.)
+set_source_files_properties(${CMAKE_SOURCE_DIR}/src/qml/ChromeGlass.qml
+    PROPERTIES QT_RESOURCE_ALIAS "ChromeGlass.qml"
+)
 set_source_files_properties(${CMAKE_SOURCE_DIR}/src/qml/ChromeWindow.qml
     PROPERTIES QT_RESOURCE_ALIAS "ChromeWindow.qml"
 )
@@ -36,6 +39,9 @@ set_source_files_properties(${CMAKE_SOURCE_DIR}/src/qml/PerNoteSettingsPopup.qml
 set_source_files_properties(${CMAKE_SOURCE_DIR}/src/qml/InteractableHighlight.qml
     PROPERTIES QT_RESOURCE_ALIAS "InteractableHighlight.qml"
 )
+set_source_files_properties(${CMAKE_SOURCE_DIR}/src/qml/RangeOverlay.qml
+    PROPERTIES QT_RESOURCE_ALIAS "RangeOverlay.qml"
+)
 set_source_files_properties(${CMAKE_SOURCE_DIR}/src/qml/ResizeHandle.qml
     PROPERTIES QT_RESOURCE_ALIAS "ResizeHandle.qml"
 )
@@ -53,6 +59,7 @@ qt_add_qml_module(suopNotes_qml_tests
     URI SuopNotesUi
     VERSION 1.0
     QML_FILES
+        ${CMAKE_SOURCE_DIR}/src/qml/ChromeGlass.qml
         ${CMAKE_SOURCE_DIR}/src/qml/ChromeWindow.qml
         ${CMAKE_SOURCE_DIR}/src/qml/NoteWindow.qml
         ${CMAKE_SOURCE_DIR}/src/qml/NoteHud.qml
@@ -62,6 +69,7 @@ qt_add_qml_module(suopNotes_qml_tests
         ${CMAKE_SOURCE_DIR}/src/qml/GlassOverlay.qml
         ${CMAKE_SOURCE_DIR}/src/qml/PerNoteSettingsPopup.qml
         ${CMAKE_SOURCE_DIR}/src/qml/InteractableHighlight.qml
+        ${CMAKE_SOURCE_DIR}/src/qml/RangeOverlay.qml
         ${CMAKE_SOURCE_DIR}/src/qml/ResizeHandle.qml
         ${CMAKE_SOURCE_DIR}/src/qml/SelectionToolbar.qml
         ${CMAKE_SOURCE_DIR}/src/qml/ShortcutField.qml

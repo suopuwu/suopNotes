@@ -992,16 +992,10 @@ ChromeWindow {
     // settings.chromeGlassFollowsNote (feature request) lets that default
     // be overridden to a fixed on/off instead, independent of whichever
     // note is currently tracked.
-    GlassOverlay {
+    ChromeGlass {
         anchors.fill: background
         cornerRadius: background.radius
-        visible: settings.chromeGlassFollowsNote
-            ? (bar.noteWindow ? bar.noteWindow.noteAppearance.glassEnabled : false)
-            : settings.chromeGlassEnabled
-        tintColor: bar.noteWindow ? bar.noteWindow.noteAppearance.glassTintColor : "#ffffff"
-        sheenOpacity: bar.noteWindow ? bar.noteWindow.noteAppearance.glassSheenOpacity : 0.12
-        ringCount: bar.noteWindow ? bar.noteWindow.noteAppearance.glassSheenStrength : 10
-        sheenSize: bar.noteWindow ? bar.noteWindow.noteAppearance.glassSheenSize : 0.18
+        noteWindow: bar.noteWindow
     }
 
     // A GridLayout, not a Grid/Row — it needs to reflow between a single
@@ -1423,16 +1417,11 @@ ChromeWindow {
         // Same glass treatment as the main bar's own background (feature
         // request: every popup should look like it belongs to the
         // toolbar, not a plain flat rectangle).
-        GlassOverlay {
+        ChromeGlass {
             anchors.fill: columnOptionsBackground
             cornerRadius: columnOptionsBackground.radius
-            visible: columnOptionsBackground.visible && (settings.chromeGlassFollowsNote
-                ? (bar.noteWindow ? bar.noteWindow.noteAppearance.glassEnabled : false)
-                : settings.chromeGlassEnabled)
-            tintColor: bar.noteWindow ? bar.noteWindow.noteAppearance.glassTintColor : "#ffffff"
-            sheenOpacity: bar.noteWindow ? bar.noteWindow.noteAppearance.glassSheenOpacity : 0.12
-            ringCount: bar.noteWindow ? bar.noteWindow.noteAppearance.glassSheenStrength : 10
-            sheenSize: bar.noteWindow ? bar.noteWindow.noteAppearance.glassSheenSize : 0.18
+            noteWindow: bar.noteWindow
+            contentShowing: columnOptionsBackground.visible
         }
 
         RowLayout {
@@ -2289,16 +2278,11 @@ ChromeWindow {
         // Same glass treatment as the main bar's/columnOptionsPopup's own
         // backgrounds (feature request: every popup should look like it
         // belongs to the toolbar, not a plain flat rectangle).
-        GlassOverlay {
+        ChromeGlass {
             anchors.fill: spellingSuggestionsBackground
             cornerRadius: spellingSuggestionsBackground.radius
-            visible: spellingSuggestionsBackground.visible && (settings.chromeGlassFollowsNote
-                ? (bar.noteWindow ? bar.noteWindow.noteAppearance.glassEnabled : false)
-                : settings.chromeGlassEnabled)
-            tintColor: bar.noteWindow ? bar.noteWindow.noteAppearance.glassTintColor : "#ffffff"
-            sheenOpacity: bar.noteWindow ? bar.noteWindow.noteAppearance.glassSheenOpacity : 0.12
-            ringCount: bar.noteWindow ? bar.noteWindow.noteAppearance.glassSheenStrength : 10
-            sheenSize: bar.noteWindow ? bar.noteWindow.noteAppearance.glassSheenSize : 0.18
+            noteWindow: bar.noteWindow
+            contentShowing: spellingSuggestionsBackground.visible
         }
 
         // A stacked column of suggestion buttons reads more naturally than
@@ -2521,16 +2505,11 @@ ChromeWindow {
         // child of it, so it paints on top of the flat background color
         // but still below tooltipLabel (same layering columnOptionsPopup's
         // own GlassOverlay/columnOptionsContent already use).
-        GlassOverlay {
+        ChromeGlass {
             anchors.fill: tooltipBackground
             cornerRadius: tooltipBackground.radius
-            visible: tooltipBackground.visible && (settings.chromeGlassFollowsNote
-                ? (bar.noteWindow ? bar.noteWindow.noteAppearance.glassEnabled : false)
-                : settings.chromeGlassEnabled)
-            tintColor: bar.noteWindow ? bar.noteWindow.noteAppearance.glassTintColor : "#ffffff"
-            sheenOpacity: bar.noteWindow ? bar.noteWindow.noteAppearance.glassSheenOpacity : 0.12
-            ringCount: bar.noteWindow ? bar.noteWindow.noteAppearance.glassSheenStrength : 10
-            sheenSize: bar.noteWindow ? bar.noteWindow.noteAppearance.glassSheenSize : 0.18
+            noteWindow: bar.noteWindow
+            contentShowing: tooltipBackground.visible
         }
 
         Text {

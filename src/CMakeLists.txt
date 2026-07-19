@@ -23,6 +23,10 @@ qt_add_library(suopNotesCore STATIC
     core/SpellCheckHighlighter.cpp
     core/MarkdownHighlighter.h
     core/MarkdownHighlighter.cpp
+    core/MarkdownImage.h
+    core/MarkdownImage.cpp
+    core/MarkdownLink.h
+    core/MarkdownLink.cpp
     core/MarkdownList.h
     core/MarkdownList.cpp
     core/MarkdownTable.h
@@ -93,6 +97,7 @@ qt_add_qml_module(suopNotes
     URI SuopNotesUi
     VERSION 1.0
     QML_FILES
+        qml/ChromeGlass.qml
         qml/ChromeWindow.qml
         qml/Main.qml
         qml/NoteWindow.qml
@@ -104,6 +109,7 @@ qt_add_qml_module(suopNotes
         qml/PerNoteSettingsPopup.qml
         qml/GlassOverlay.qml
         qml/InteractableHighlight.qml
+        qml/RangeOverlay.qml
         qml/ResizeHandle.qml
         qml/SelectionToolbar.qml
         qml/ShortcutField.qml

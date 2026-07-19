@@ -544,16 +544,11 @@ ChromeWindow {
 
     // Same glass treatment as every other chrome window's background, honoring
     // the same chromeGlassFollowsNote setting the toolbar's popups do.
-    GlassOverlay {
+    ChromeGlass {
         anchors.fill: background
         cornerRadius: background.radius
-        visible: background.visible && (settings.chromeGlassFollowsNote
-            ? (menu.noteWindow ? menu.noteWindow.noteAppearance.glassEnabled : false)
-            : settings.chromeGlassEnabled)
-        tintColor: menu.noteWindow ? menu.noteWindow.noteAppearance.glassTintColor : "#ffffff"
-        sheenOpacity: menu.noteWindow ? menu.noteWindow.noteAppearance.glassSheenOpacity : 0.12
-        ringCount: menu.noteWindow ? menu.noteWindow.noteAppearance.glassSheenStrength : 10
-        sheenSize: menu.noteWindow ? menu.noteWindow.noteAppearance.glassSheenSize : 0.18
+        noteWindow: menu.noteWindow
+        contentShowing: background.visible
     }
 
     ColumnLayout {
