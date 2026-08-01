@@ -20,6 +20,10 @@
 #include "core/TrayIconProvider.h"
 #include "core/WindowInputMask.h"
 
+#ifdef SUOPNOTES_HAVE_TICKTICK
+#include "TickTickModule.h"
+#endif
+
 namespace
 {
 QString windowTitleForNote(const QString &noteId)
@@ -95,6 +99,13 @@ int main(int argc, char *argv[])
     AutostartManager autostartManager;
     FileRevealer fileRevealer;
 
+#ifdef SUOPNOTES_HAVE_TICKTICK
+    // Optional feature module — see src/modules/ticktick/. Stack-allocated and
+    // unparented like every other service here, so it lives for the whole
+    // process and is torn down in reverse order after exec() returns.
+    TickTickModule tickTickModule;
+#endif
+
     // A replace-quit isn't the user closing these notes (see
     // PositionManager::suppressCleanupOnQuit) — must be set before app.quit()
     // actually unwinds the QML engine and starts destroying NoteWindow
@@ -117,6 +128,9 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty("positionManager", &positionManager);
     engine.rootContext()->setContextProperty("autostart", &autostartManager);
     engine.rootContext()->setContextProperty("fileRevealer", &fileRevealer);
+#ifdef SUOPNOTES_HAVE_TICKTICK
+    engine.rootContext()->setContextProperty("tickTick", &tickTickModule);
+#endif
     engine.addImageProvider(QStringLiteral("notecount"), new TrayIconProvider);
 
     // Coalesce every restored window's KWin rule write into a single

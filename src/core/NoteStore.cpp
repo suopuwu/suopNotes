@@ -445,6 +445,12 @@ void NoteStore::writeNoteToDisk(const QString &id, const QString &content)
         // content is on disk (so the cross-note reference check sees the edit),
         // and only ever deletes files that no note references any longer.
         cleanupRemovedImages(previousContent, content);
+
+        // Last thing in the successful-write path, deliberately: by here the
+        // content is committed, the rename (if any) is done, the watcher is
+        // re-armed and the image GC has run, so a slot that reads this note
+        // back sees fully settled state rather than a half-applied write.
+        emit noteSaved(id);
     }
 }
 

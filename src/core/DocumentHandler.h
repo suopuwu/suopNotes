@@ -574,6 +574,21 @@ private:
     // that property; comparing the text explicitly restores it.
     QString m_lastMaintainedText;
 
+    // True only for the duration of setMarkdown()'s document rewrite. A
+    // programmatic load is not a user edit, and must not be reported as one:
+    // contentEdited() is what QML hangs the save-and-auto-format pass off, so
+    // emitting it for a load makes the app immediately write the just-loaded
+    // text straight back out. That is invisible today (identical bytes) but is
+    // an echo loop the moment content arrives from anywhere slower than a local
+    // file. It also means an external-change reload currently re-runs auto-list
+    // and auto-link over text another editor just wrote, silently rewriting it.
+    //
+    // Note this suppresses ONLY the signal. The spellcheck pending-edit
+    // bookkeeping in onContentsChange still runs, because loaded text does
+    // need spellchecking — that path was already reached on first load and
+    // stays byte-for-byte unchanged.
+    bool m_loadingContent = false;
+
     // Constructed once in the constructor as a stable UserDictionaryFilteringBackend
     // wrapper (its own inner backend may be null, degrading spellcheck to a
     // clean no-op, if built without Sonnet and without a bundled dictionary).

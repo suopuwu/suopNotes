@@ -89,6 +89,14 @@ if(SUOPNOTES_BUNDLED_DICTIONARY_FOUND)
     )
 endif()
 
+# Optional feature modules. Each owns its own subdirectory entirely; the only
+# coupling is the link plus a SUOPNOTES_HAVE_* definition, matching how the
+# optional dependencies above are wired. Removing a module is deleting its
+# directory, its option() in the top-level file, and this block.
+if(SUOPNOTES_ENABLE_TICKTICK)
+    add_subdirectory(modules/ticktick)
+endif()
+
 qt_add_executable(suopNotes
     main.cpp
 )
@@ -126,5 +134,10 @@ target_link_libraries(suopNotes PRIVATE
     Qt6::LabsPlatform
     Qt6::Widgets
 )
+
+if(SUOPNOTES_ENABLE_TICKTICK)
+    target_link_libraries(suopNotes PRIVATE suopNotesTickTick)
+    target_compile_definitions(suopNotes PRIVATE SUOPNOTES_HAVE_TICKTICK)
+endif()
 
 install(TARGETS suopNotes RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})

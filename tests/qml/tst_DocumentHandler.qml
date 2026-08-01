@@ -30,6 +30,12 @@ Item {
         id: handler
     }
 
+    SignalSpy {
+        id: contentEditedSpy
+        target: handler
+        signalName: "contentEdited"
+    }
+
     TestCase {
         name: "DocumentHandler"
         when: windowShown
@@ -41,6 +47,62 @@ Item {
             handler.spellcheckEnabled = false
             handler.autoFormattingEnabled = true
             handler.spellcheckDebounceMs = 300
+            contentEditedSpy.clear()
+        }
+
+        // --- contentEdited means "the user changed something" ---
+        //
+        // QML hangs the save-and-auto-format pass off contentEdited, so what
+        // this signal does and does not cover decides whether loading a note can
+        // write straight back out again.
+
+        // Counts are asserted as "at least one", never as an exact number: a
+        // bulk text assignment lands as many separate document changes, so the
+        // question that matters is whether an edit is reported at all.
+        function test_typing_reports_a_content_edit() {
+            handler.document = editorA.textDocument
+            contentEditedSpy.clear()
+
+            editorA.text = "typed by the user"
+
+            verify(contentEditedSpy.count > 0)
+        }
+
+        function test_loading_content_does_not_report_a_content_edit() {
+            handler.document = editorA.textDocument
+            contentEditedSpy.clear()
+
+            handler.setMarkdown("loaded from storage")
+
+            // A load is not an edit. Reporting it as one makes the app save the
+            // text it just loaded — invisible for a local file (identical bytes)
+            // but an echo loop for content arriving from anywhere slower, and it
+            // re-runs auto-format over text another writer just produced.
+            compare(contentEditedSpy.count, 0)
+            compare(handler.toMarkdown(), "loaded from storage")
+        }
+
+        function test_editing_after_a_load_still_reports_a_content_edit() {
+            handler.document = editorA.textDocument
+            handler.setMarkdown("loaded from storage")
+            contentEditedSpy.clear()
+
+            // The suppression lasts exactly as long as the load — the very next
+            // real edit must be reported, or nothing would ever get saved again.
+            editorA.text = "then edited"
+
+            verify(contentEditedSpy.count > 0)
+        }
+
+        function test_a_second_load_is_still_not_an_edit() {
+            handler.document = editorA.textDocument
+            handler.setMarkdown("first load")
+            editorA.text = "an edit in between"
+            contentEditedSpy.clear()
+
+            handler.setMarkdown("second load")
+
+            compare(contentEditedSpy.count, 0)
         }
 
         // --- list marker ranges ---

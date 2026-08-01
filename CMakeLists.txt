@@ -94,6 +94,35 @@ else()
     set(SUOPNOTES_BUNDLED_DICTIONARY_FOUND FALSE)
 endif()
 
+# --- Optional feature modules ------------------------------------------------
+# Unlike every optional dependency above, a module's presence is not something
+# to detect: TickTick sync needs no library that isn't already required (Qt
+# Network is), so there is nothing for a find_package to answer. It gets an
+# explicit switch instead — the first option() in this project.
+#
+# OFF must produce a build with no trace of the module: no target, no link, no
+# behavior. That is the property worth protecting, since this is the first of
+# several planned modules and the pattern is easier to keep honest than to
+# retrofit.
+option(SUOPNOTES_ENABLE_TICKTICK "Build the TickTick sync module" ON)
+
+# qtkeychain keeps the TickTick access token in the platform secret store rather
+# than plaintext config. Optional, and only looked for when the module is
+# actually being built. Note this can NOT double as the module's on/off switch:
+# without qtkeychain the module still builds and degrades to plaintext, so
+# presence-of-dependency and want-this-feature are genuinely separate questions
+# here — which is exactly why the option() above has to exist.
+if(SUOPNOTES_ENABLE_TICKTICK)
+    find_package(Qt6Keychain QUIET)
+    if(Qt6Keychain_FOUND)
+        message(STATUS "suopNotes: Qt6Keychain found — TickTick token stored in the platform secret store")
+    else()
+        message(STATUS "suopNotes: Qt6Keychain NOT found — TickTick token would fall back to plaintext config")
+    endif()
+else()
+    message(STATUS "suopNotes: TickTick module disabled")
+endif()
+
 enable_testing()
 
 include(GNUInstallDirs)

@@ -332,7 +332,12 @@ void DocumentHandler::onContentsChange(int from, int charsRemoved, int charsAdde
         m_pendingEditPosition = from + charsAdded;
         m_pendingEditActive = true;
         m_pendingEditDebounce->start(m_spellcheckDebounceMs);
-        emit contentEdited();
+        // A setMarkdown() load reaches here too, but it is not an edit — see
+        // m_loadingContent. Everything above still runs for it (loaded text
+        // needs spellchecking); only the "the user changed something" report
+        // is withheld.
+        if (!m_loadingContent)
+            emit contentEdited();
     }
 
     // Block-merge detection used to live here, purely to invoke
@@ -998,6 +1003,12 @@ void DocumentHandler::setMarkdown(const QString &markdown)
     // adding to undo history, and leaves the stack empty so the user's first
     // real edit becomes undo step #1.
     QTextDocument *document = m_document->textDocument();
+    // Spans exactly the window in which the document's text changes, so the
+    // contentsChange this provokes is reported as a load rather than as a user
+    // edit (see m_loadingContent). Everything after the undo re-enable below is
+    // formatting, cache invalidation and range signals — none of it alters text,
+    // so none of it can reach the guarded branch.
+    m_loadingContent = true;
     document->setUndoRedoEnabled(false);
     document->setPlainText(markdown);
     // Inside the undo-disabled window, and only once setPlainText() has
@@ -1012,6 +1023,7 @@ void DocumentHandler::setMarkdown(const QString &markdown)
     // the editor is ready, so the reactive maintenance pass never sees a load.
     TextFormatting::applyListIndentToDocument(document);
     document->setUndoRedoEnabled(true);
+    m_loadingContent = false;
     // The loaded buffer is, by definition, already maintained — seed the gate
     // so the first thing that can move it is the user's own next keystroke.
     m_lastMaintainedText = document->toPlainText();

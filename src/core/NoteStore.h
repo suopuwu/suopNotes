@@ -94,6 +94,18 @@ signals:
     void notesFolderChanged();
     void noteIdsChanged();
     void noteContentChangedExternally(const QString &id);
+    // Fires once a debounced save has landed on disk AND the post-write image
+    // GC has run, i.e. the note's stored state is both durable and consistent.
+    // Anything that mirrors note content somewhere else (an export, an upload)
+    // can hang off this instead of running its own timer — which is the point:
+    // there was previously no post-save hook at all, so the only way to notice
+    // a save was to poll, and this app does not poll (see CLAUDE.md).
+    //
+    // Deliberately NOT emitted by createNote(): that writes through its own
+    // synchronous path rather than writeNoteToDisk(), and a brand-new note is
+    // already announced by noteIdsChanged(). "Saved" here means "an existing
+    // note's content changed and has been persisted".
+    void noteSaved(const QString &id);
 
 private slots:
     void onDirectoryChanged(const QString &path);

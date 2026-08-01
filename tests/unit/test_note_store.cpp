@@ -414,6 +414,93 @@ SCENARIO("External changes to the notes folder are detected", "[note_store]")
     }
 }
 
+SCENARIO("Saves are announced once the content is durably on disk", "[note_store]")
+{
+    GIVEN("a NoteStore with one note")
+    {
+        QTemporaryDir tempDir;
+        REQUIRE(tempDir.isValid());
+
+        NoteStore store;
+        store.setNotesFolder(tempDir.path());
+        const QString id = store.createNote();
+
+        QSignalSpy savedSpy(&store, &NoteStore::noteSaved);
+
+        WHEN("a debounced save completes")
+        {
+            store.saveNoteContent(id, "some content");
+            QTest::qWait(kPastDebounceMs);
+
+            THEN("noteSaved fires once, naming that note")
+            {
+                REQUIRE(savedSpy.count() == 1);
+                CHECK(savedSpy.at(0).at(0).toString() == id);
+            }
+
+            THEN("the content it announces is already readable from disk")
+            {
+                REQUIRE(savedSpy.count() == 1);
+                CHECK(store.loadNoteContent(id) == "some content");
+            }
+        }
+
+        WHEN("a save is queued but the debounce has not yet elapsed")
+        {
+            store.saveNoteContent(id, "not yet written");
+
+            THEN("noteSaved has not fired — it means persisted, not requested")
+            {
+                CHECK(savedSpy.count() == 0);
+            }
+        }
+
+        WHEN("several edits land inside one debounce window")
+        {
+            store.saveNoteContent(id, "first");
+            store.saveNoteContent(id, "second");
+            store.saveNoteContent(id, "third");
+            QTest::qWait(kPastDebounceMs);
+
+            THEN("noteSaved fires once for the single coalesced write")
+            {
+                REQUIRE(savedSpy.count() == 1);
+                CHECK(store.loadNoteContent(id) == "third");
+            }
+        }
+    }
+}
+
+SCENARIO("Creating a note does not report itself as a save", "[note_store]")
+{
+    GIVEN("a NoteStore watching an empty folder")
+    {
+        QTemporaryDir tempDir;
+        REQUIRE(tempDir.isValid());
+
+        NoteStore store;
+        store.setNotesFolder(tempDir.path());
+
+        QSignalSpy savedSpy(&store, &NoteStore::noteSaved);
+
+        WHEN("a note is created")
+        {
+            const QString id = store.createNote("hello");
+            QTest::qWait(kPastDebounceMs);
+
+            THEN("noteSaved does not fire — creation is announced by noteIdsChanged")
+            {
+                // createNote() writes synchronously through its own path rather
+                // than writeNoteToDisk(), so there is no save to report. A
+                // consumer that needs to know about new notes watches
+                // noteIdsChanged() instead.
+                CHECK(savedSpy.count() == 0);
+                CHECK(store.loadNoteContent(id) == "hello");
+            }
+        }
+    }
+}
+
 SCENARIO("External creation/removal of files updates enumeration", "[note_store]")
 {
     GIVEN("a NoteStore watching an empty folder")
