@@ -5,8 +5,14 @@ import SuopNotesUi
 
 Item {
     id: root
-    width: 200
-    height: 100
+    // Large enough that every fixture the click-based tests use fits INSIDE
+    // the test window. Synthesized mouse events are delivered in window
+    // coordinates, so a fixture parked past the window's edge silently never
+    // receives them — the geometry-only fixtures below (verticalHud, the
+    // backdrop note frame) can sit outside because mapToItem() works
+    // regardless, but tickTickHud is clicked and cannot.
+    width: 400
+    height: 400
 
     // Sits directly behind the HUD (declared first + explicit z below the
     // HUD's own z, so it never shadows the HUD's glyphs for hit-testing) so
@@ -40,7 +46,19 @@ Item {
         id: defaultHud
     }
 
-    // Vertical column variant (the layout NoteHudWindow uses): the same five
+    // A ribbon with the optional TickTick integration switched on, so the
+    // new-task glyph exists. Separate from `hud` above rather than toggled on
+    // it mid-test: the glyph's absence is the interesting default, and the
+    // untouched fixture keeps asserting it.
+    NoteHud {
+        id: tickTickHud
+        x: 0
+        y: 120
+        alwaysExpanded: true
+        tickTickEnabled: true
+    }
+
+    // Vertical column variant (the layout NoteHudWindow uses): the same
     // glyphs stacked top-to-bottom instead of left-to-right. Placed clear of
     // the other fixtures so its geometry assertions read cleanly.
     NoteHud {
@@ -102,15 +120,33 @@ Item {
     }
 
     SignalSpy {
-        id: duplicateSpy
+        id: newNoteSpy
         target: hud
-        signalName: "duplicateRequested"
+        signalName: "newNoteRequested"
+    }
+
+    SignalSpy {
+        id: newTaskSpy
+        target: hud
+        signalName: "newTaskRequested"
     }
 
     SignalSpy {
         id: closeSpy
         target: hud
         signalName: "closeRequested"
+    }
+
+    SignalSpy {
+        id: tickTickNewTaskSpy
+        target: tickTickHud
+        signalName: "newTaskRequested"
+    }
+
+    SignalSpy {
+        id: tickTickNewNoteSpy
+        target: tickTickHud
+        signalName: "newNoteRequested"
     }
 
     SignalSpy {
@@ -126,7 +162,10 @@ Item {
         function init() {
             pinSpy.clear()
             settingsSpy.clear()
-            duplicateSpy.clear()
+            newNoteSpy.clear()
+            newTaskSpy.clear()
+            tickTickNewTaskSpy.clear()
+            tickTickNewNoteSpy.clear()
             closeSpy.clear()
             searchSpy.clear()
             behindArea.behindClickCount = 0
@@ -138,6 +177,49 @@ Item {
             compare(defaultHud.alwaysExpanded, false)
             compare(defaultHud.iconColor, "#ffffff")
             compare(defaultHud.accentColor, "#4da6ff")
+            // TickTick is an optional module, so the ribbon assumes it is
+            // absent unless a host says otherwise.
+            compare(defaultHud.tickTickEnabled, false)
+        }
+
+        // ---- The new-task glyph, gated on the optional TickTick module ----
+
+        // Absent, not merely disabled: a button that could only ever report
+        // "TickTick isn't connected" is worse than no button at all.
+        function test_new_task_glyph_is_absent_when_tickTick_is_disabled() {
+            verify(!hud.newTaskGlyphItem.visible,
+                   "the new-task glyph must not be shown when TickTick is off")
+        }
+
+        // With the glyph gone the row closes up rather than leaving a gap, so
+        // the ribbon is genuinely narrower — this is what proves it was removed
+        // from the layout, not just painted transparent.
+        function test_ribbon_is_narrower_without_the_new_task_glyph() {
+            verify(hud.width < tickTickHud.width,
+                   "a ribbon without the new-task glyph must be narrower than one with it")
+        }
+
+        function test_new_task_glyph_appears_when_tickTick_is_enabled() {
+            verify(tickTickHud.newTaskGlyphItem.visible)
+        }
+
+        // Tapping it asks the host for a blank TickTick task — distinctly, not
+        // as a second way to trigger the plain new-note action beside it.
+        function test_tapping_new_task_glyph_emits_newTaskRequested() {
+            const glyph = tickTickHud.newTaskGlyphItem
+            mouseClick(glyph, glyph.width / 2, glyph.height / 2)
+            compare(tickTickNewTaskSpy.count, 1)
+            compare(tickTickNewNoteSpy.count, 0)
+        }
+
+        // The two creation glyphs sit next to each other, with the plain note
+        // first — they are a pair, and reading order should say so.
+        function test_new_note_glyph_precedes_the_new_task_glyph() {
+            const notePos = tickTickHud.newNoteGlyphItem.mapToItem(root, 0, 0)
+            const taskPos = tickTickHud.newTaskGlyphItem.mapToItem(root, 0, 0)
+            const gearPos = tickTickHud.gearGlyphItem.mapToItem(root, 0, 0)
+            verify(notePos.x < taskPos.x)
+            verify(taskPos.x < gearPos.x)
         }
 
         function test_tapping_gear_glyph_emits_settingsRequested() {
@@ -153,12 +235,15 @@ Item {
             compare(settingsSpy.count, 0)
         }
 
-        // Tapping the duplicate glyph asks the host to make a copy of the
-        // note (once, and without also triggering any other action).
-        function test_tapping_duplicate_glyph_emits_duplicateRequested() {
-            const glyph = hud.duplicateGlyphItem
+        // Tapping the plus glyph asks the host for a brand-new blank note
+        // (once, and without also triggering any other action). This glyph used
+        // to duplicate the note it belongs to; duplicating now lives only in
+        // the right-click menu.
+        function test_tapping_new_note_glyph_emits_newNoteRequested() {
+            const glyph = hud.newNoteGlyphItem
             mouseClick(glyph, glyph.width / 2, glyph.height / 2)
-            compare(duplicateSpy.count, 1)
+            compare(newNoteSpy.count, 1)
+            compare(newTaskSpy.count, 0)
             compare(pinSpy.count, 0)
             compare(settingsSpy.count, 0)
             compare(closeSpy.count, 0)
@@ -172,7 +257,7 @@ Item {
             compare(searchSpy.count, 1)
             compare(pinSpy.count, 0)
             compare(settingsSpy.count, 0)
-            compare(duplicateSpy.count, 0)
+            compare(newNoteSpy.count, 0)
             compare(closeSpy.count, 0)
         }
 
@@ -186,15 +271,15 @@ Item {
             const closePos = hud.closeGlyphItem.mapToItem(root, 0, 0)
             const pinPos = hud.pinGlyphItem.mapToItem(root, 0, 0)
             const gearPos = hud.gearGlyphItem.mapToItem(root, 0, 0)
-            const duplicatePos = hud.duplicateGlyphItem.mapToItem(root, 0, 0)
+            const newNotePos = hud.newNoteGlyphItem.mapToItem(root, 0, 0)
             const searchPos = hud.searchGlyphItem.mapToItem(root, 0, 0)
             verify(closePos.x < pinPos.x)
             verify(closePos.x < gearPos.x)
-            verify(closePos.x < duplicatePos.x)
+            verify(closePos.x < newNotePos.x)
             verify(closePos.x < searchPos.x)
             // Pin trails as the rightmost, the mirror of close leading.
             verify(pinPos.x > gearPos.x)
-            verify(pinPos.x > duplicatePos.x)
+            verify(pinPos.x > newNotePos.x)
             verify(pinPos.x > searchPos.x)
         }
 
@@ -277,17 +362,17 @@ Item {
             const closePos = verticalHud.closeGlyphItem.mapToItem(root, 0, 0)
             const pinPos = verticalHud.pinGlyphItem.mapToItem(root, 0, 0)
             const gearPos = verticalHud.gearGlyphItem.mapToItem(root, 0, 0)
-            const duplicatePos = verticalHud.duplicateGlyphItem.mapToItem(root, 0, 0)
+            const newNotePos = verticalHud.newNoteGlyphItem.mapToItem(root, 0, 0)
             const searchPos = verticalHud.searchGlyphItem.mapToItem(root, 0, 0)
 
             // Stacked downward with close at the top: close sits above every
             // other glyph, pin below every other.
             verify(closePos.y < pinPos.y)
             verify(closePos.y < gearPos.y)
-            verify(closePos.y < duplicatePos.y)
+            verify(closePos.y < newNotePos.y)
             verify(closePos.y < searchPos.y)
             verify(pinPos.y > gearPos.y)
-            verify(pinPos.y > duplicatePos.y)
+            verify(pinPos.y > newNotePos.y)
             verify(pinPos.y > searchPos.y)
 
             // A single column: every glyph sits at essentially the same x.
@@ -298,7 +383,7 @@ Item {
             // tolerance (10px) is far below the vertical gap between rows (~34px
             // per the y values above), so this still unambiguously asserts a
             // column, not a row.
-            const xs = [pinPos.x, gearPos.x, duplicatePos.x, searchPos.x, closePos.x]
+            const xs = [pinPos.x, gearPos.x, newNotePos.x, searchPos.x, closePos.x]
             verify(Math.max(...xs) - Math.min(...xs) < 10,
                    "all glyphs share one narrow column (x spread stays tiny)")
         }

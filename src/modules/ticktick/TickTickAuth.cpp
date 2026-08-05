@@ -175,6 +175,21 @@ bool TickTickAuth::isAuthorized() const
     return !m_accessToken.isEmpty();
 }
 
+QString TickTickAuth::accessToken() const
+{
+    return m_accessToken;
+}
+
+QString TickTickAuth::clientId() const
+{
+    return m_clientId;
+}
+
+int TickTickAuth::callbackPortValue() const
+{
+    return m_callbackPort;
+}
+
 void TickTickAuth::loadPersistedState()
 {
     m_clientId = m_tokenStore.clientId();
@@ -197,15 +212,21 @@ void TickTickAuth::loadPersistedState()
 
 void TickTickAuth::setClientCredentials(const QString &clientId, const QString &clientSecret)
 {
-    const bool wasConfigured = isConfigured();
     m_clientId = clientId;
-    m_clientSecret = clientSecret;
+    // Empty means "leave it as it is" — see the header. The settings form shows
+    // an empty secret field, so treating empty as a clear would delete the
+    // secret whenever the user saved any other field.
+    if (!clientSecret.isEmpty())
+        m_clientSecret = clientSecret;
+
     m_tokenStore.setClientId(clientId);
     // Persisted alongside whatever token is currently held, so entering
     // credentials does not silently discard an existing session.
-    m_tokenStore.storeSecrets(clientSecret, m_accessToken, 0);
-    if (isConfigured() != wasConfigured)
-        emit configuredChanged();
+    m_tokenStore.storeSecrets(m_clientSecret, m_accessToken, 0);
+
+    // Unconditional: clientId is itself an exposed property, so the form has to
+    // be told even when the configured/not-configured answer did not change.
+    emit configuredChanged();
 }
 
 void TickTickAuth::setCallbackPort(quint16 port)
@@ -310,6 +331,10 @@ void TickTickAuth::exchangeCodeForToken(const QString &code)
                       QStringLiteral("application/x-www-form-urlencoded"));
     request.setRawHeader(QByteArrayLiteral("Authorization"),
                          basicAuthHeader(m_clientId, m_clientSecret));
+    // HTTP/1.1 for the same reason as TickTickClient::jsonRequest — Qt's h2
+    // handler spams "device not open" warnings when the server closes the
+    // connection after this one-off exchange.
+    request.setAttribute(QNetworkRequest::Http2AllowedAttribute, false);
 
     QNetworkReply *reply = m_network->post(request, buildTokenRequestBody(code, redirectUri()));
 

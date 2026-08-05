@@ -5,6 +5,8 @@
 #include <QDir>
 #include <QFile>
 #include <QHash>
+#include <QMutex>
+#include <QMutexLocker>
 #include <QProcess>
 #include <QSet>
 #include <QStandardPaths>
@@ -85,6 +87,42 @@ QMap<QString, QString> buildKWinRuleKeys(const KWinRuleSpec &spec)
 namespace {
 
 constexpr int kProcessTimeoutMs = 3000;
+
+// Serializes every mutation of kwinrulesrc this process makes.
+//
+// Not defensive programming — this closes a bug seen live: the TickTick task
+// note's rule group sat in the file with a perfectly correct
+// skiptaskbar=true, but was missing from [General]'s rules list, so KWin
+// ignored the group entirely and the note showed up in the taskbar. Five
+// other note groups were orphaned the same way, keys intact, i.e. their
+// removals had been half-applied.
+//
+// The cause is that a write here is not one file operation. Each
+// kwriteconfig6 invocation reads the WHOLE kwinrulesrc, edits one key and
+// writes the whole thing back, and one logical rule change is ~17 of those in
+// a row — while PositionManager::removePosition deliberately runs removeRule
+// on its own throwaway thread per closing note (a removal is slow and nothing
+// waits on it). Close several notes at once and those threads interleave with
+// each other and with the main thread's writeRule: a process that read the
+// file before a neighbour's write finishes writes its stale copy back over
+// it, silently undoing that neighbour. [General]'s rules list is the most
+// damaging place for that to land, because losing one entry there disables a
+// rule that otherwise looks completely correct on disk.
+//
+// One note opening or closing on its own never raced anything, which is why
+// this survived until a change that closes a batch of notes in one go (the
+// TickTick one-note-for-all-tasks migration) made it reproducible.
+//
+// Held across a whole logical operation, not per process spawn — the point is
+// that another writer cannot observe a half-finished one. Deliberately NOT
+// held across reconfigure(): that is a D-Bus call plus a 200ms settle sleep
+// which touches no file, and holding it there would park the main thread
+// behind a background removal's sleep for no benefit.
+QMutex &rulesFileMutex()
+{
+    static QMutex mutex;
+    return mutex;
+}
 
 const QSet<QString> &boolValuedKeys()
 {
@@ -215,6 +253,34 @@ bool kwinRuleAlreadyMatches(const QString &filePath, const QString &group,
 
 bool KWinRuleApplier::isAvailable()
 {
+    // Test escape hatch, and a bug fix rather than tidiness. kwinrulesrc is a
+    // single file shared by the whole desktop session — kwriteconfig6 --file
+    // kwinrulesrc always means the REAL ~/.config/kwinrulesrc, with no
+    // equivalent of the temp dirs the QML harness points Settings, the notes
+    // folder and the TickTick module at. So every NoteWindow a test constructs
+    // used to write (and then, on teardown, delete) a real rule group in the
+    // tester's own live config.
+    //
+    // Mere litter for a test note with an invented id — confirmed from a real
+    // user's kwinrulesrc, which held leftover suopNotes-chromeWindowTest and
+    // suopNotes-toolbar-test-note-* groups from earlier runs. NOT litter for the
+    // one test window that deliberately borrows the REAL TickTick task note's id
+    // (tst_NoteWindow.qml asks the module for it, so that it really is the task
+    // note): that window shares the live note's rule group AND its window title,
+    // so a suite run against an open app rewrites the real note's spawn position
+    // to the test window's, then deletes the group outright on teardown. Until
+    // the app next writes it, that note has no spawn rule at all and KWin places
+    // it by its own default — on whichever monitor happens to be active.
+    //
+    // Checked here rather than in each caller so BOTH halves (writeRule and
+    // removeRule) go inert together — a guard on the write alone would leave
+    // the teardown still deleting the real group. The live/scripting half
+    // (isScriptingAvailable) is deliberately not gated: it only reads window
+    // geometry and moves already-open windows, so it cannot outlive the test.
+    static const bool disabled = qEnvironmentVariableIsSet("SUOPNOTES_NO_KWIN_RULES");
+    if (disabled)
+        return false;
+
     return !QStandardPaths::findExecutable(QStringLiteral("kwriteconfig6")).isEmpty()
         && !QStandardPaths::findExecutable(QStringLiteral("kreadconfig6")).isEmpty();
 }
@@ -239,6 +305,13 @@ bool KWinRuleApplier::writeRule(const QString &noteId, const KWinRuleSpec &spec)
 {
     if (!isAvailable())
         return false;
+
+    // Everything below reads kwinrulesrc and then writes it back key by key,
+    // so it must not interleave with another thread doing the same — see
+    // rulesFileMutex(). The change-detection read is inside the lock too: a
+    // removal landing between that read and the writes would make this decide
+    // "already correct" against a file that is about to stop being correct.
+    const QMutexLocker locker(&rulesFileMutex());
 
     const QString group = groupNameFor(noteId);
     const QMap<QString, QString> keys = buildKWinRuleKeys(spec);
@@ -269,6 +342,31 @@ bool KWinRuleApplier::writeRule(const QString &noteId, const KWinRuleSpec &spec)
     deleteKConfigKey(group, QStringLiteral("screenrule"));
 
     updateGeneralRulesList(group, /*add=*/true);
+
+    // Read the file back and, if the group still isn't what was just written to
+    // it, write it once more.
+    //
+    // A rule is not one file operation but ~17 separate kwriteconfig6 processes,
+    // each of which reads the WHOLE file, edits one key and writes it back — and
+    // runProcess's failure answer is DISCARDED by writeKConfig. So any single
+    // one of them failing (killed on the 3s process timeout, or losing to a
+    // writer this process's own mutex cannot see) leaves a group that looks
+    // entirely present but is quietly missing keys, and nothing notices: such a
+    // group is listed in [General] and holds real keys, so only comparing every
+    // key against what belongs there can tell. A group missing `position` reads
+    // to KWin as "this window has no spawn position", and the note is placed by
+    // KWin's own default instead — on whatever monitor happens to be active.
+    //
+    // Retried rather than reported, because there is nothing a user could do
+    // with the report. Once rather than in a loop, so a genuinely unwritable
+    // config cannot spin here — a second failure just leaves the note to KWin's
+    // default placement, exactly as it would have been anyway.
+    if (!kwinRuleAlreadyMatches(kwinRulesFilePath(), group, keys)) {
+        for (auto it = keys.constBegin(); it != keys.constEnd(); ++it)
+            writeKConfig(group, it.key(), it.value());
+        updateGeneralRulesList(group, /*add=*/true);
+    }
+
     return true;
 }
 
@@ -279,24 +377,33 @@ void KWinRuleApplier::removeRule(const QString &noteId)
 
     const QString group = groupNameFor(noteId);
 
-    // Nothing to remove: the group is neither listed in [General] nor has any
-    // keys on disk. Skip the deletes and (more importantly) the reconfigure —
-    // e.g. a note whose rule KWin was unavailable to write in the first place,
-    // or one already cleaned up, shouldn't trigger a KWin rule-cache reload
-    // for no change.
-    const RulesFile existing = readRulesFile(kwinRulesFilePath());
-    const bool listed = existing.generalRules.contains(group);
-    const bool hasKeys = !existing.groups.value(group).isEmpty();
-    if (!listed && !hasKeys)
-        return;
+    // Scoped so the lock is released before reconfigure() below: that call
+    // touches no file and sleeps 200ms, and this whole function runs on a
+    // throwaway background thread, so holding it there would stall a note
+    // being opened on the main thread for no reason. See rulesFileMutex().
+    {
+        const QMutexLocker locker(&rulesFileMutex());
 
-    // buildKWinRuleKeys' key SET is fixed regardless of the spec's values,
-    // so this always matches exactly what applyRule wrote for this group.
-    const QMap<QString, QString> keys = buildKWinRuleKeys(KWinRuleSpec());
-    for (auto it = keys.constBegin(); it != keys.constEnd(); ++it)
-        deleteKConfigKey(group, it.key());
+        // Nothing to remove: the group is neither listed in [General] nor has
+        // any keys on disk. Skip the deletes and (more importantly) the
+        // reconfigure — e.g. a note whose rule KWin was unavailable to write in
+        // the first place, or one already cleaned up, shouldn't trigger a KWin
+        // rule-cache reload for no change.
+        const RulesFile existing = readRulesFile(kwinRulesFilePath());
+        const bool listed = existing.generalRules.contains(group);
+        const bool hasKeys = !existing.groups.value(group).isEmpty();
+        if (!listed && !hasKeys)
+            return;
 
-    updateGeneralRulesList(group, /*add=*/false);
+        // buildKWinRuleKeys' key SET is fixed regardless of the spec's values,
+        // so this always matches exactly what applyRule wrote for this group.
+        const QMap<QString, QString> keys = buildKWinRuleKeys(KWinRuleSpec());
+        for (auto it = keys.constBegin(); it != keys.constEnd(); ++it)
+            deleteKConfigKey(group, it.key());
+
+        updateGeneralRulesList(group, /*add=*/false);
+    }
+
     reconfigure();
 }
 

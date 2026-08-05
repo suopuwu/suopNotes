@@ -37,6 +37,27 @@ Item {
         alwaysOnTop: false
     }
 
+    // The one aggregated TickTick task note, identified exactly the way the
+    // app identifies it (TickTickSync::taskNoteId) rather than by a
+    // hand-written id — that call IS the definition, and matching it is what
+    // makes noteWindow.isTickTickTaskNote true here without the toolbar or
+    // this file needing to know the id scheme.
+    //
+    // Falls back to an ordinary id when the optional module isn't built, in
+    // which case isTickTickTaskNote is false and the tests below skip rather
+    // than assert against a note that cannot be the task note.
+    NoteWindow {
+        id: taskNote
+        noteId: tickTick !== null ? tickTick.sync.taskNoteId() : "toolbar-test-not-a-task-note"
+        index: 92
+        noteX: 300
+        noteY: 300
+        noteWidth: 260
+        noteHeight: 260
+        screenName: ""
+        alwaysOnTop: false
+    }
+
     SelectionToolbar {
         id: bar
     }
@@ -112,6 +133,85 @@ Item {
             compare(bar.content.visible, false)
             compare(bar.boldButton.enabled, false)
             compare(bar.dragArea.enabled, false)
+        }
+
+        // The TickTick task note is a machine-rendered flat checkbox list of
+        // open task titles, not free-form markdown — so the toolbar drops
+        // every block-structure button for it (feature request: "remove the
+        // unnecessary toolbar buttons like numbered list for just the
+        // ticktick version"). Headings, bullet/numbered/checkbox lists,
+        // tables and images are each either undone on the spot by the
+        // per-edit checkbox repair or pushed to TickTick as literal markup in
+        // a task title, so none of them can do anything useful there.
+        function test_block_structure_buttons_are_absent_on_the_tickTick_task_note() {
+            if (tickTick === null)
+                skip("the TickTick module is not built into this binary")
+
+            bar.noteWindow = taskNote
+            wait(80)
+
+            verify(bar.taskListNote, "the task note should be recognized as such")
+            compare(bar.heading1Button.visible, false)
+            compare(bar.heading2Button.visible, false)
+            compare(bar.bulletListButton.visible, false)
+            compare(bar.numberedListButton.visible, false)
+            compare(bar.checkboxListButton.visible, false)
+            compare(bar.insertTableButton.visible, false)
+            compare(bar.insertImageButton.visible, false)
+        }
+
+        // Inline emphasis is the one kind of formatting that survives the
+        // round trip intact: it lives inside a single task's title, so it is
+        // uploaded, pulled back and re-rendered unchanged rather than being
+        // rewritten by the checkbox repair.
+        function test_inline_formatting_buttons_remain_on_the_tickTick_task_note() {
+            if (tickTick === null)
+                skip("the TickTick module is not built into this binary")
+
+            bar.noteWindow = taskNote
+            wait(80)
+
+            compare(bar.boldButton.visible, true)
+            compare(bar.italicButton.visible, true)
+            compare(bar.strikethroughButton.visible, true)
+        }
+
+        // The window is a fixed size that has to be told what it holds —
+        // content's own implicit size can't be used (see barLength's own
+        // comment) — so a shorter button row means a genuinely shorter
+        // surface. Without this the bar would keep its full-width surface and
+        // three buttons would sit marooned in the middle of it, and the extra
+        // width would keep intercepting clicks meant for whatever is beneath.
+        function test_the_bar_shrinks_to_fit_the_task_note_s_shorter_button_row() {
+            if (tickTick === null)
+                skip("the TickTick module is not built into this binary")
+
+            bar.noteWindow = noteA
+            wait(80)
+            const fullLength = bar.barLength
+            compare(fullLength, 374)
+
+            bar.noteWindow = taskNote
+            wait(80)
+            compare(bar.barLength, 136)
+            verify(bar.barLength >= bar.content.implicitWidth,
+                   "the surface must stay at least as wide as the row it holds, "
+                   + "or the last button's hit region falls outside the window")
+            compare(bar.barLength % 2, 0, "reposition() halves this, so it must stay even")
+        }
+
+        // Every other note keeps the full row — this is a property of the one
+        // TickTick task note, not a global simplification of the toolbar.
+        function test_ordinary_notes_keep_every_button() {
+            bar.noteWindow = noteA
+            wait(80)
+
+            compare(bar.taskListNote, false)
+            compare(bar.heading1Button.visible, true)
+            compare(bar.numberedListButton.visible, true)
+            compare(bar.checkboxListButton.visible, true)
+            compare(bar.insertTableButton.visible, true)
+            compare(bar.insertImageButton.visible, true)
         }
 
         // Tooltip on hover (feature request): every toolbar button gets a

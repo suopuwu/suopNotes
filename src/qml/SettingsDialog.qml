@@ -8,6 +8,7 @@ import Qt.labs.platform as Platform
 ApplicationWindow {
     id: root
 
+    readonly property alias settingsTabBar: settingsTabBar
     readonly property alias fontFamilyCombo: fontFamilyCombo
     readonly property alias spellcheckLanguageCombo: spellcheckLanguageCombo
     readonly property alias spellcheckMaxSuggestionsSpinBox: spellcheckMaxSuggestionsSpinBox
@@ -82,10 +83,23 @@ ApplicationWindow {
         onAccepted: settings.spellcheckUnderlineColor = color
     }
 
+    // Folders rather than one endless column. The general settings and the
+    // integrations have nothing to do with each other, and the module system
+    // means integrations keep arriving — so they get their own page instead
+    // of being appended to the bottom of everything else.
+    header: TabBar {
+        id: settingsTabBar
+        TabButton { text: "General" }
+        TabButton { text: "Integrations" }
+    }
+
+    // Two sibling views toggled by `visible`, not a StackLayout: same result,
+    // one less level of nesting, and no QtQuick.Layouts import.
     ScrollView {
         anchors.fill: parent
         anchors.margins: 16
         contentWidth: availableWidth
+        visible: settingsTabBar.currentIndex === 0
 
         Column {
             width: parent.width
@@ -95,7 +109,11 @@ ApplicationWindow {
                 width: parent.width
                 spacing: 4
                 Label { text: "Window radius: " + Math.round(radiusSlider.value) }
-                Slider {
+                // WheelSafeSlider, not Slider: the desktop style lets the
+                // wheel drag a slider's value, which in this dialog means a
+                // stray scroll silently rewrites a saved setting. See
+                // WheelSafeSlider.qml.
+                WheelSafeSlider {
                     id: radiusSlider
                     width: parent.width
                     from: 0
@@ -109,7 +127,7 @@ ApplicationWindow {
                 width: parent.width
                 spacing: 4
                 Label { text: "Background opacity: " + opacitySlider.value.toFixed(2) }
-                Slider {
+                WheelSafeSlider {
                     id: opacitySlider
                     width: parent.width
                     from: 0
@@ -136,6 +154,16 @@ ApplicationWindow {
                 Label { text: "Spellcheck language:"; anchors.verticalCenter: parent.verticalCenter }
                 ComboBox {
                     id: spellcheckLanguageCombo
+                    // The KDE desktop style (org.kde.desktop, selected by
+                    // Plasma's platform theme) forces wheelEnabled: true on
+                    // every ComboBox and SpinBox, so a wheel that merely
+                    // passes over one silently rewrites the setting — and
+                    // these bindings persist immediately, with no Apply step
+                    // to catch it. Opting back out also leaves the event
+                    // unaccepted, so it reaches the enclosing ScrollView and
+                    // scrolls the pane, which is what the gesture meant.
+                    // Every combo and spin box in this file does the same.
+                    wheelEnabled: false
                     model: settings.availableSpellcheckLanguages()
                     textRole: "name"
                     valueRole: "code"
@@ -160,6 +188,8 @@ ApplicationWindow {
                 Label { text: "Max spelling suggestions shown:"; anchors.verticalCenter: parent.verticalCenter }
                 SpinBox {
                     id: spellcheckMaxSuggestionsSpinBox
+                    // Same style opt-out as spellcheckLanguageCombo above.
+                    wheelEnabled: false
                     from: 0
                     to: 10
                     value: settings.spellcheckMaxSuggestions
@@ -172,6 +202,8 @@ ApplicationWindow {
                 Label { text: "Spellcheck debounce (ms):"; anchors.verticalCenter: parent.verticalCenter }
                 SpinBox {
                     id: spellcheckDebounceMsSpinBox
+                    // Same style opt-out as spellcheckLanguageCombo above.
+                    wheelEnabled: false
                     from: 0
                     to: 5000
                     stepSize: 100
@@ -184,7 +216,7 @@ ApplicationWindow {
                 width: parent.width
                 spacing: 4
                 Label { text: "Underline width: " + Math.round(spellcheckUnderlineWidthSlider.value) }
-                Slider {
+                WheelSafeSlider {
                     id: spellcheckUnderlineWidthSlider
                     width: parent.width
                     from: 1
@@ -261,7 +293,7 @@ ApplicationWindow {
                 width: parent.width
                 spacing: 4
                 Label { text: "Glass sheen opacity: " + glassSheenOpacitySlider.value.toFixed(2) }
-                Slider {
+                WheelSafeSlider {
                     id: glassSheenOpacitySlider
                     width: parent.width
                     from: 0.0
@@ -275,7 +307,7 @@ ApplicationWindow {
                 width: parent.width
                 spacing: 4
                 Label { text: "Glass sheen strength: " + Math.round(glassSheenStrengthSlider.value) }
-                Slider {
+                WheelSafeSlider {
                     id: glassSheenStrengthSlider
                     width: parent.width
                     from: 0
@@ -289,7 +321,7 @@ ApplicationWindow {
                 width: parent.width
                 spacing: 4
                 Label { text: "Glass sheen size: " + glassSheenSizeSlider.value.toFixed(2) }
-                Slider {
+                WheelSafeSlider {
                     id: glassSheenSizeSlider
                     width: parent.width
                     from: 0.05
@@ -433,7 +465,7 @@ ApplicationWindow {
                     width: parent.width
                     spacing: 4
                     Label { text: "Highlight opacity: " + interactableHighlightOpacitySlider.value.toFixed(2) }
-                    Slider {
+                    WheelSafeSlider {
                         id: interactableHighlightOpacitySlider
                         width: parent.width
                         from: 0
@@ -474,7 +506,7 @@ ApplicationWindow {
                 width: parent.width
                 spacing: 4
                 Label { text: "Border width: " + Math.round(borderWidthSlider.value) }
-                Slider {
+                WheelSafeSlider {
                     id: borderWidthSlider
                     width: parent.width
                     from: 0
@@ -501,7 +533,7 @@ ApplicationWindow {
                 width: parent.width
                 spacing: 4
                 Label { text: "Scrollbar width: " + Math.round(scrollbarWidthSlider.value) }
-                Slider {
+                WheelSafeSlider {
                     id: scrollbarWidthSlider
                     width: parent.width
                     from: 0
@@ -515,6 +547,8 @@ ApplicationWindow {
                 spacing: 8
                 Label { text: "Font size:"; anchors.verticalCenter: parent.verticalCenter }
                 SpinBox {
+                    // Same style opt-out as spellcheckLanguageCombo above.
+                    wheelEnabled: false
                     from: 8
                     to: 48
                     value: settings.fontSize
@@ -527,6 +561,8 @@ ApplicationWindow {
                 Label { text: "Font family:"; anchors.verticalCenter: parent.verticalCenter }
                 ComboBox {
                     id: fontFamilyCombo
+                    // Same style opt-out as spellcheckLanguageCombo above.
+                    wheelEnabled: false
                     model: Qt.fontFamilies()
                     // Previews the selected family in the closed box; each
                     // dropdown entry gets its own font via the delegate below.
@@ -593,7 +629,7 @@ ApplicationWindow {
                 width: parent.width
                 spacing: 4
                 Label { text: "Text highlight opacity: " + highlightOpacitySlider.value.toFixed(2) }
-                Slider {
+                WheelSafeSlider {
                     id: highlightOpacitySlider
                     width: parent.width
                     from: 0
@@ -703,11 +739,61 @@ ApplicationWindow {
                     }
                 }
             }
+        }
+    }
 
-            Button {
-                text: "Close"
-                onClicked: root.close()
+    ScrollView {
+        anchors.fill: parent
+        anchors.margins: 16
+        contentWidth: availableWidth
+        visible: settingsTabBar.currentIndex === 1
+
+        Column {
+            width: parent.width
+            spacing: 12
+
+            // Shown when the build has no integrations compiled in at all, so
+            // the page explains itself rather than looking broken.
+            Label {
+                objectName: "noIntegrationsLabel"
+                width: parent.width
+                wrapMode: Text.WordWrap
+                visible: !tickTickLoader.active
+                text: "No integrations are available in this build."
             }
+
+            // TickTick is an optional build-time module, so `tickTick` is null
+            // when it was not compiled in. A Loader rather than `visible:`
+            // because the bindings inside the section dereference it freely —
+            // with the section merely hidden they would still evaluate and log
+            // TypeErrors on every settings dialog.
+            //
+            // The section itself is module-owned QML, loaded by relative URL
+            // rather than by type name: the file is only compiled into this
+            // QML module when the TickTick module is built (see the guarded
+            // qt_target_qml_sources in src/CMakeLists.txt), and `active` is
+            // false in exactly the builds where the URL would not resolve.
+            Loader {
+                id: tickTickLoader
+                objectName: "tickTickSection"
+                width: parent.width
+                active: tickTick !== null
+                source: "TickTickSettingsSection.qml"
+                onLoaded: item.dialog = root
+            }
+
+        }
+    }
+
+    // In the footer, not at the bottom of a scrolled column — closing the
+    // dialog shouldn't require scrolling to the end of a page to find the
+    // button.
+    footer: Row {
+        padding: 12
+        layoutDirection: Qt.RightToLeft
+        Button {
+            text: "Close"
+            onClicked: root.close()
         }
     }
 }

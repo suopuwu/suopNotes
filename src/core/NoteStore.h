@@ -3,10 +3,13 @@
 #include <QDateTime>
 #include <QFileSystemWatcher>
 #include <QHash>
+#include <QList>
 #include <QObject>
 #include <QString>
 #include <QStringList>
 #include <QTimer>
+
+class NoteContentProvider;
 
 // NoteStore manages a folder of plain .md files on disk, one file per note.
 //
@@ -90,6 +93,20 @@ public:
     // no OTHER note still references an image before deleting it.
     Q_INVOKABLE QString importImage(const QString &sourceUrl);
 
+    // Register a source of notes that is not the notes folder — see
+    // NoteContentProvider. Once registered, its notes appear in noteIds() and
+    // are served by loadNoteContent()/saveNoteContent()/deleteNote() alongside
+    // local ones, so QML keeps talking only to noteStore and never learns that
+    // a second kind of note exists.
+    //
+    // Routing lives here rather than in the callers because reconcile treats
+    // noteIds() as the complete set of notes: a provider's notes have to be in
+    // that list or every refresh would force them closed.
+    //
+    // Does not take ownership. Providers are expected to live for the whole
+    // process, like every other service in main().
+    void registerProvider(NoteContentProvider *provider);
+
 signals:
     void notesFolderChanged();
     void noteIdsChanged();
@@ -110,6 +127,10 @@ signals:
 private slots:
     void onDirectoryChanged(const QString &path);
     void onFileChanged(const QString &path);
+
+private:
+    // The provider that claims this id, or nullptr for an ordinary local note.
+    NoteContentProvider *providerForId(const QString &id) const;
     void flushPendingSave(const QString &id);
 
 private:
@@ -146,6 +167,9 @@ private:
     QString m_notesFolder;
     QStringList m_noteIds;
     QFileSystemWatcher m_watcher;
+
+    // Non-owning; registered from main() and expected to outlive this store.
+    QList<NoteContentProvider *> m_providers;
 
     // id -> current on-disk base name (no ".md"). The authoritative,
     // in-memory source of truth for "what file backs this id right now";

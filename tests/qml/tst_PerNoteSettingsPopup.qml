@@ -137,6 +137,12 @@ Item {
             compare(popup.fontFamilyCombo.font.family, families[2])
         }
 
+        // Same rule as the global settings dialog: a wheel over this combo
+        // scrolls the popup rather than silently writing a per-note override.
+        function test_wheeling_over_the_font_combo_never_sets_an_override() {
+            compare(popup.fontFamilyCombo.wheelEnabled, false)
+        }
+
         // ------------------------------------------------------------------
         // Code mode (feature request)
         //

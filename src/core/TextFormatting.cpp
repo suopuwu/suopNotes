@@ -16,6 +16,8 @@
 #include <QTextLayout>
 #include <QTextLine>
 
+#include <utility>
+
 namespace TextFormatting
 {
 
@@ -650,6 +652,187 @@ bool tryToggleCheckboxAtPosition(QTextCursor cursor)
         return false;
 
     return toggleCheckboxChecked(cursor);
+}
+
+CheckboxRepair repairCheckboxList(QTextCursor cursor, int cursorPosition)
+{
+    CheckboxRepair result;
+    result.cursorPosition = cursorPosition;
+
+    QTextDocument *document = cursor.document();
+    if (!document)
+        return result;
+
+    QTextCursor edit(document);
+    // One undo step for the whole repair: a user pressing Ctrl+Z must undo
+    // their own edit, not peel markers back one line at a time.
+    edit.beginEditBlock();
+
+    for (QTextBlock block = document->begin(); block.isValid(); block = block.next()) {
+        const QString line = block.text();
+        if (line.isEmpty())
+            continue; // see the header — a blank line stays blank
+
+        const MarkdownList::Marker marker = MarkdownList::parse(line);
+        if (marker.kind == MarkdownList::Kind::Checkbox)
+            continue;
+
+        // A bullet's own "- " is replaced rather than prefixed, so a
+        // half-deleted checkbox comes back as one box and not "- [ ] - item".
+        const int replaceLength = marker.kind == MarkdownList::Kind::Bullet ? marker.length : 0;
+
+        edit.setPosition(block.position());
+        edit.setPosition(block.position() + replaceLength, QTextCursor::KeepAnchor);
+        const QString inserted = MarkdownList::checkboxMarker(false);
+        edit.insertText(inserted);
+
+        const int delta = inserted.length() - replaceLength;
+        if (result.cursorPosition >= block.position())
+            result.cursorPosition += delta;
+        result.changed = true;
+    }
+
+    edit.endEditBlock();
+    return result;
+}
+
+CheckboxRepair ensureFirstLineCheckbox(QTextCursor cursor, int cursorPosition)
+{
+    CheckboxRepair result;
+    result.cursorPosition = cursorPosition;
+
+    QTextDocument *document = cursor.document();
+    if (!document)
+        return result;
+
+    const QTextBlock block = document->begin();
+    if (!block.isValid() || !block.text().isEmpty())
+        return result;   // non-empty lines are repairCheckboxList's business
+
+    QTextCursor edit(document);
+    edit.beginEditBlock();
+    edit.setPosition(block.position());
+    const QString inserted = MarkdownList::checkboxMarker(false);
+    edit.insertText(inserted);
+    edit.endEditBlock();
+
+    // Same convention as repairCheckboxList: a caret at or after the insertion
+    // point moves along with its text, which for the emptied slot means it ends
+    // up at the label start, ready to type.
+    if (result.cursorPosition >= block.position())
+        result.cursorPosition += inserted.length();
+    result.changed = true;
+    return result;
+}
+
+bool removeCheckedCheckboxLine(QTextCursor cursor)
+{
+    const QTextBlock block = cursor.block();
+    if (!block.isValid())
+        return false;
+
+    const MarkdownList::Marker marker = MarkdownList::parse(block.text());
+    if (marker.kind != MarkdownList::Kind::Checkbox || !marker.checked)
+        return false;
+
+    return removeLine(cursor);
+}
+
+bool removeLine(QTextCursor cursor)
+{
+    const QTextBlock block = cursor.block();
+    if (!block.isValid())
+        return false;
+
+    QTextCursor edit(cursor);
+    // Three cases, and only three: a following newline to take with it, no
+    // following one but a preceding one, or neither (this is the whole
+    // document, which ends up empty).
+    if (block.next().isValid()) {
+        edit.setPosition(block.position());
+        edit.setPosition(block.next().position(), QTextCursor::KeepAnchor);
+    } else if (block.previous().isValid()) {
+        // Back up over the newline that joins this line to the one above, so
+        // the previous line does not end up with a trailing empty line.
+        edit.setPosition(block.position() - 1);
+        edit.setPosition(block.position() + block.length() - 1, QTextCursor::KeepAnchor);
+    } else {
+        edit.setPosition(block.position());
+        edit.setPosition(block.position() + block.length() - 1, QTextCursor::KeepAnchor);
+    }
+    edit.removeSelectedText();
+    return true;
+}
+
+bool removeLines(QTextCursor cursor, int start, int end)
+{
+    QTextDocument *document = cursor.document();
+    if (!document)
+        return false;
+
+    if (start > end)
+        std::swap(start, end);
+
+    const int lastValidPosition = qMax(0, document->characterCount() - 1);
+    QTextBlock startBlock = document->findBlock(qBound(0, start, lastValidPosition));
+    QTextBlock endBlock = document->findBlock(qBound(0, end, lastValidPosition));
+    if (!startBlock.isValid() || !endBlock.isValid())
+        return false;
+
+    // Block 0 is permanent furniture (the compose slot) — a range that
+    // reaches it starts its removal from block 1 instead. Its next block is
+    // guaranteed valid whenever there is anything else in the document to
+    // remove at all; if the document is only block 0, there is nothing this
+    // call may remove.
+    if (startBlock.blockNumber() == 0) {
+        const QTextBlock afterFirst = startBlock.next();
+        if (!afterFirst.isValid())
+            return false;
+        startBlock = afterFirst;
+    }
+    // The whole range collapsed into block 0 alone (e.g. both `start` and
+    // `end` fell inside it) — nothing left to remove.
+    if (endBlock.blockNumber() < startBlock.blockNumber())
+        return false;
+
+    QTextCursor edit(document);
+    if (endBlock.next().isValid()) {
+        // Take the FOLLOWING newline with the removed lines, same
+        // three-case convention removeLine above follows.
+        edit.setPosition(startBlock.position());
+        edit.setPosition(endBlock.next().position(), QTextCursor::KeepAnchor);
+    } else {
+        // No following block — `endBlock` is the document's last line. Back
+        // up over the newline that joins `startBlock` to whatever precedes
+        // it instead, so nothing is left dangling below. That predecessor is
+        // always block 0 or later: `startBlock` was already bumped past
+        // block 0 above, so its own previous block always exists.
+        edit.setPosition(startBlock.position() - 1);
+        edit.setPosition(endBlock.position() + endBlock.length() - 1, QTextCursor::KeepAnchor);
+    }
+    edit.removeSelectedText();
+    return true;
+}
+
+QString listLabelText(QTextCursor cursor)
+{
+    const QTextBlock block = cursor.block();
+    if (!block.isValid())
+        return QString();
+
+    const QString line = block.text();
+    const MarkdownList::Marker marker = MarkdownList::parse(line);
+    return marker.isValid() ? line.mid(marker.length) : line;
+}
+
+int listLabelStart(QTextCursor cursor)
+{
+    const QTextBlock block = cursor.block();
+    if (!block.isValid())
+        return cursor.position();
+
+    const MarkdownList::Marker marker = MarkdownList::parse(block.text());
+    return block.position() + (marker.isValid() ? marker.length : 0);
 }
 
 int listLabelPosition(QTextCursor cursor)

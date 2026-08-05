@@ -50,6 +50,18 @@ Item {
             contentEditedSpy.clear()
         }
 
+        // This Qt version's QML TestCase has no built-in "type this whole
+        // string" helper — plain per-character keyClick() loop, same as
+        // tst_FindReplacePanel.qml's and tst_NoteWindow.qml's own typeText().
+        // Needed (rather than a bulk `editorA.text = ...` assignment) for the
+        // undo-stack tests below: assigning to `text` routes through
+        // QQuickTextEdit::setText(), which calls clearUndoRedoStacks() itself
+        // and so can never produce real undo history to test against.
+        function typeText(text) {
+            for (let i = 0; i < text.length; ++i)
+                keyClick(text[i])
+        }
+
         // --- contentEdited means "the user changed something" ---
         //
         // QML hangs the save-and-auto-format pass off contentEdited, so what
@@ -101,6 +113,66 @@ Item {
             contentEditedSpy.clear()
 
             handler.setMarkdown("second load")
+
+            compare(contentEditedSpy.count, 0)
+        }
+
+        // --- setMarkdown vs. replaceAllTextPreservingUndo: first open must
+        //     start with an empty undo stack, but a mid-session reload (the
+        //     app rewriting an already-open note's file, e.g. TickTick's sync
+        //     module) must not throw away undo history the user already
+        //     built up. See DocumentHandler.h's doc comments on both for the
+        //     full contract. ---
+
+        function test_setMarkdown_leaves_the_undo_stack_empty() {
+            handler.document = editorA.textDocument
+            editorA.forceActiveFocus()
+            verify(editorA.activeFocus)
+            typeText("typed before the load")
+            verify(editorA.canUndo, "precondition: typing should leave undo history")
+
+            handler.setMarkdown("loaded from storage")
+
+            verify(!editorA.canUndo,
+                   "setMarkdown must clear undo history, same as a fresh note open")
+        }
+
+        function test_replaceAllTextPreservingUndo_produces_the_same_text_as_setMarkdown() {
+            handler.document = editorA.textDocument
+            handler.setMarkdown("original text")
+
+            handler.replaceAllTextPreservingUndo("replacement text")
+
+            compare(handler.toMarkdown(), "replacement text")
+        }
+
+        function test_replaceAllTextPreservingUndo_leaves_exactly_one_undo_step() {
+            handler.document = editorA.textDocument
+            handler.setMarkdown("original text")
+            const original = handler.toMarkdown()
+            // setMarkdown clears undo history, so the stack starts empty.
+            verify(!editorA.canUndo)
+
+            handler.replaceAllTextPreservingUndo("replacement text")
+
+            verify(editorA.canUndo,
+                   "the reload itself must be undoable, unlike setMarkdown's load")
+
+            // A single undo restores the original text verbatim.
+            editorA.undo()
+            compare(handler.toMarkdown(), original)
+            // Exactly ONE step: nothing else is left to undo.
+            verify(!editorA.canUndo)
+        }
+
+        function test_replaceAllTextPreservingUndo_does_not_report_a_content_edit() {
+            handler.document = editorA.textDocument
+            handler.setMarkdown("original text")
+            contentEditedSpy.clear()
+
+            // A reload is not a user edit, same reasoning as setMarkdown —
+            // see m_loadingContent's doc comment.
+            handler.replaceAllTextPreservingUndo("replacement text")
 
             compare(contentEditedSpy.count, 0)
         }
@@ -216,6 +288,74 @@ Item {
             // previous document's pending-edit position in place.
             handler.document = editorB.textDocument
             compare(handler.misspelledWordRanges.length, 1)
+        }
+
+        // --- removeCheckedCheckboxLineAt / setFadedLine: the completion-fade
+        //     wiring the TickTick task note's "tick it, it disappears" feature
+        //     is built on ---
+
+        function test_removing_a_ticked_checkbox_line_deletes_it_and_reports_a_content_edit() {
+            editorA.text = "- [ ] milk\n- [x] eggs"
+            handler.document = editorA.textDocument
+            contentEditedSpy.clear()
+
+            var removed = handler.removeCheckedCheckboxLineAt(14) // inside "- [x] eggs"
+
+            verify(removed)
+            compare(editorA.text, "- [ ] milk")
+            // A real edit, so it must reach the autosave path.
+            verify(contentEditedSpy.count > 0)
+        }
+
+        function test_removing_an_unticked_checkbox_line_does_nothing_and_reports_no_edit() {
+            editorA.text = "- [ ] milk\n- [ ] eggs"
+            handler.document = editorA.textDocument
+            contentEditedSpy.clear()
+
+            var removed = handler.removeCheckedCheckboxLineAt(14) // inside "- [ ] eggs"
+
+            verify(!removed)
+            compare(editorA.text, "- [ ] milk\n- [ ] eggs")
+            compare(contentEditedSpy.count, 0)
+        }
+
+        function test_setFadedLine_does_not_report_a_content_edit_at_any_opacity() {
+            editorA.text = "- [ ] milk\n- [x] eggs"
+            handler.document = editorA.textDocument
+            contentEditedSpy.clear()
+
+            // The fade runs ~18 times over 320ms — if each frame counted as an
+            // edit it would restart TickTickSync's 2s upload debounce on every
+            // one of them and push the completion out indefinitely.
+            handler.setFadedLine(14, 1.0, "black")
+            handler.setFadedLine(14, 0.7, "black")
+            handler.setFadedLine(14, 0.3, "black")
+            handler.setFadedLine(14, 0.0, "black")
+
+            compare(contentEditedSpy.count, 0)
+        }
+
+        function test_clearing_a_fade_also_reports_no_content_edit() {
+            editorA.text = "- [ ] milk\n- [x] eggs"
+            handler.document = editorA.textDocument
+            handler.setFadedLine(14, 0.5, "black")
+            contentEditedSpy.clear()
+
+            handler.setFadedLine(-1, 1.0, "black")
+
+            compare(contentEditedSpy.count, 0)
+        }
+
+        function test_setFadedLine_leaves_the_documents_text_byte_identical() {
+            editorA.text = "- [ ] milk\n- [x] eggs"
+            handler.document = editorA.textDocument
+            var before = editorA.text
+
+            handler.setFadedLine(14, 0.5, "black")
+            compare(editorA.text, before)
+
+            handler.setFadedLine(-1, 1.0, "black")
+            compare(editorA.text, before)
         }
     }
 }

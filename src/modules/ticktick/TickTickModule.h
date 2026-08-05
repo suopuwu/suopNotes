@@ -4,13 +4,25 @@
 #include <QString>
 
 #include "TickTickAuth.h"
+#include "TickTickNotes.h"
+#include "TickTickSync.h"
 #include "TickTickTokenStore.h"
 
-// TickTick sync module — the first of the app's optional feature modules, and
-// deliberately shaped so removing it is a delete rather than an unpicking:
-// everything it owns lives under src/modules/ticktick/, and the only traces
-// outside this directory are one option() in the top-level CMakeLists.txt, one
-// guarded block in src/CMakeLists.txt, and one #ifdef island in main.cpp.
+// TickTick sync module — the first of the app's optional feature modules.
+//
+// What lives where, honestly stated. The C++ is fully self-contained:
+// everything under src/modules/ticktick/ (including this module's own QML in
+// qml/), with the only traces outside being one option() in the top-level
+// CMakeLists.txt, guarded blocks in src/CMakeLists.txt and
+// tests/qml/CMakeLists.txt, and one #ifdef island in main.cpp — core C++ has
+// zero TickTick code, and the "tt:" id prefix never escapes this directory.
+// The QML side is looser: the settings section, sync footer and list title
+// are module-owned files here, Loader-referenced by URL from shared QML, but
+// the task note's editing behavior (compose slot chrome and key handling,
+// the completion fade, multi-line-selection guards) is threaded through
+// NoteWindow.qml behind `tickTick !== null` guards. A build with the module
+// OFF is clean and correct; removing the module from the SOURCE means also
+// unpicking those NoteWindow.qml sections.
 //
 // Design context lives in .task/ticktick-proposal.md. The two decisions that
 // shape this class:
@@ -38,11 +50,26 @@ class TickTickModule : public QObject
     // owns is reached through it, so adding a part later costs no new context
     // property and no further change to main.cpp.
     Q_PROPERTY(TickTickAuth *auth READ auth CONSTANT)
+    Q_PROPERTY(TickTickSync *sync READ sync CONSTANT)
 
 public:
     explicit TickTickModule(QObject *parent = nullptr);
 
+    // Test seam, matching the explicit-path constructors on Settings,
+    // TickTickTokenStore and TickTickNotes. Uses the config-file-only secret
+    // backend, so a test can never reach the developer's real keyring — where
+    // it would otherwise overwrite their actual TickTick credentials, since the
+    // service name is the same one the app uses.
+    TickTickModule(const QString &configFilePath,
+                   const QString &cacheDirPath,
+                   QObject *parent = nullptr);
+
     TickTickAuth *auth();
+
+    TickTickSync *sync();
+
+    // The note provider, for registering with NoteStore in main().
+    TickTickNotes *notes();
 
     // Whether this build can put the access token in the platform secret store
     // instead of plaintext config. Reported rather than assumed because
@@ -89,4 +116,6 @@ private:
     // holds a reference to it, since members are destroyed in reverse.
     TickTickTokenStore m_tokenStore;
     TickTickAuth m_auth;
+    TickTickNotes m_notes;
+    TickTickSync m_sync;
 };

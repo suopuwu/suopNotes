@@ -2,6 +2,7 @@
 
 #include "TextSearch.h"
 
+#include <QColor>
 #include <QList>
 #include <QSet>
 #include <QSyntaxHighlighter>
@@ -130,6 +131,20 @@ public:
     const QList<TextSearch::Match> &searchMatches() const;
     int currentSearchMatch() const;
 
+    // Paints the whole line containing `position` at `opacity` (1 = normal,
+    // 0 = invisible), so a caller can animate a line out of view without
+    // touching a byte of the buffer. Pass position -1 to clear.
+    //
+    // `baseTextColor` is the editor's own text color, and has to be passed in:
+    // most characters carry no explicit foreground at all (they inherit the
+    // TextArea's), so there is no color here to take an alpha off — and
+    // defaulting to black would turn a dark note's text black on its way out.
+    //
+    // Repaints only the old and new lines, like setSearchMatches above. Meant
+    // to be called once per animation frame, which is why it is one
+    // rehighlightBlock and nothing else.
+    void setFadedLine(int position, qreal opacity, const QColor &baseTextColor);
+
 protected:
     void highlightBlock(const QString &text) override;
 
@@ -143,6 +158,17 @@ private:
     // Merges the match highlight over whatever the markdown pass already put
     // down, so highlighting a search hit inside a **bold** word keeps it bold.
     void applySearchHighlight(const QString &text);
+
+    // Scales the alpha of every character on the faded line, LAST, over
+    // everything the markdown and search passes put down.
+    //
+    // Multiplying the existing alpha rather than assigning one is load-bearing,
+    // not a nicety: a collapsed marker is transparent text that still occupies
+    // its slot (see hiddenMarkerFormat), so ASSIGNING an alpha to it would make
+    // the literal "- [ ] " the user never sees fade INTO view as the line faded
+    // out. Zero times anything is still zero, so multiplying keeps it hidden,
+    // and dims revealed punctuation and link color proportionally for free.
+    void applyLineFade(const QString &text);
 
     // Block numbers every match in `matches` touches — which lines
     // setSearchMatches() has to repaint. Adds to `out` rather than returning,
@@ -178,4 +204,8 @@ private:
     bool m_markdownDecorationEnabled = true;
     QList<TextSearch::Match> m_searchMatches;
     int m_currentSearchMatch = -1;
+    // -1 when nothing is fading, which is almost always.
+    int m_fadedLinePosition = -1;
+    qreal m_fadeOpacity = 1.0;
+    QColor m_fadeBaseColor;
 };

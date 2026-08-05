@@ -104,6 +104,10 @@ int main(int argc, char *argv[])
     // unparented like every other service here, so it lives for the whole
     // process and is torn down in reverse order after exec() returns.
     TickTickModule tickTickModule;
+    // Its notes then appear in noteStore.noteIds() and are served by
+    // loadNoteContent(), so the rest of the app — reconcile included — needs no
+    // knowledge that a second kind of note exists.
+    noteStore.registerProvider(tickTickModule.notes());
 #endif
 
     // A replace-quit isn't the user closing these notes (see
@@ -128,8 +132,13 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty("positionManager", &positionManager);
     engine.rootContext()->setContextProperty("autostart", &autostartManager);
     engine.rootContext()->setContextProperty("fileRevealer", &fileRevealer);
+    // Always defined, so QML can test it rather than referencing a name that
+    // may not exist: an undefined identifier is a hard ReferenceError in a
+    // binding, whereas null is something the UI can simply hide itself on.
 #ifdef SUOPNOTES_HAVE_TICKTICK
     engine.rootContext()->setContextProperty("tickTick", &tickTickModule);
+#else
+    engine.rootContext()->setContextProperty("tickTick", nullptr);
 #endif
     engine.addImageProvider(QStringLiteral("notecount"), new TrayIconProvider);
 

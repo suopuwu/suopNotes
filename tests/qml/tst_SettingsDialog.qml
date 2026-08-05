@@ -11,6 +11,15 @@ Item {
         id: dialog
     }
 
+    // A second, freshly-created dialog for tests that must observe declarative
+    // bindings in their original state. Assigning to a bound property from JS
+    // removes the binding, so any test that has already poked a field leaves
+    // the shared `dialog` above unable to show binding-related behaviour.
+    Component {
+        id: freshDialogComponent
+        SettingsDialog {}
+    }
+
     TestCase {
         name: "SettingsDialog"
         when: windowShown
@@ -33,6 +42,168 @@ Item {
             }
         }
 
+        // The dialog is two folders, not one scroll: everything general on the
+        // first page, anything that talks to an outside service on the second.
+        function test_settings_are_split_into_a_general_and_an_integrations_page() {
+            compare(dialog.settingsTabBar.count, 2)
+            compare(dialog.settingsTabBar.itemAt(0).text, "General")
+            compare(dialog.settingsTabBar.itemAt(1).text, "Integrations")
+            // General is what opens, since it is what a user usually wants.
+            compare(dialog.settingsTabBar.currentIndex, 0)
+        }
+
+        // Whatever page it sits on, the TickTick section must be reachable
+        // from the Integrations tab and not from General.
+        function test_the_ticktick_section_lives_on_the_integrations_page() {
+            var section = findChild(dialog, "tickTickSection")
+            verify(section !== null)
+            dialog.settingsTabBar.currentIndex = 1
+            verify(section.parent !== null)
+            // The page it belongs to is the one shown for tab 1.
+            var page = section.parent
+            while (page && page.contentWidth === undefined)
+                page = page.parent
+            verify(page !== null)
+            dialog.settingsTabBar.currentIndex = 0
+        }
+
+        // A build with no integrations at all must say so rather than showing
+        // an empty page; a build with TickTick compiled in must show the
+        // section instead of the label. The harness mirrors both
+        // arrangements (see tst_qml_main.cpp), so this asserts whichever one
+        // this build actually is — same pattern as
+        // test_the_ticktick_section_matches_whether_the_module_is_built()
+        // above.
+        function test_the_integrations_page_shows_the_label_only_when_there_is_nothing_to_show() {
+            dialog.settingsTabBar.currentIndex = 1
+            var section = findChild(dialog, "tickTickSection")
+            var label = findChild(dialog, "noIntegrationsLabel")
+            verify(section !== null)
+            verify(label !== null)
+            if (tickTick === null) {
+                compare(section.active, false)
+                compare(label.visible, true)
+            } else {
+                compare(section.active, true)
+                compare(label.visible, false)
+            }
+            dialog.settingsTabBar.currentIndex = 0
+        }
+
+        // TickTick is an optional build-time module. main.cpp binds `tickTick`
+        // to the module when it is built and to null when it is not — never
+        // leaving the name undefined, which would be a hard ReferenceError.
+        // The harness mirrors both arrangements, so this asserts whichever one
+        // this build actually is.
+        function test_the_ticktick_section_matches_whether_the_module_is_built() {
+            var section = findChild(dialog, "tickTickSection")
+            verify(section !== null)
+            if (tickTick === null) {
+                // Not merely hidden: its bindings dereference tickTick
+                // directly, so leaving it loaded would log a TypeError every
+                // time the dialog opened.
+                compare(section.active, false)
+                compare(section.item, null)
+            } else {
+                compare(section.active, true)
+                verify(section.item !== null)
+            }
+        }
+
+        // Typed the way a user types, NOT by assigning .text. The distinction
+        // is the whole point: assigning from JS removes a declarative binding
+        // on `text`, while typing goes through C++ and leaves it installed —
+        // so a field bound to a property that changes while the user is on the
+        // form gets silently reset under them, and only real typing shows it.
+        function typeInto(field, text) {
+            field.forceActiveFocus()
+            // Focus has to have actually landed, or the first keystroke is
+            // delivered nowhere and silently lost.
+            tryVerify(function() { return field.activeFocus })
+            // selectAll() + typing replaces the contents the way a user would.
+            // Deliberately not `field.text = ""`: assigning from JS removes the
+            // binding, which is the very thing under test here.
+            field.selectAll()
+            for (var i = 0; i < text.length; ++i)
+                keyClick(text[i])
+        }
+
+        function test_typed_credentials_survive_clicking_save() {
+            if (tickTick === null)
+                skip("TickTick module not built into this test binary")
+
+            // Fresh dialog: the field's binding must still be installed, and a
+            // shown window, or key events are not delivered at all.
+            var freshDialog = createTemporaryObject(freshDialogComponent, root)
+            verify(freshDialog !== null)
+            freshDialog.show()
+            tryVerify(function() { return freshDialog.visible })
+            // TickTick lives on the Integrations page now; typing into it
+            // needs that page actually shown, or forceActiveFocus()/keyClick()
+            // below have nothing on-screen to focus.
+            freshDialog.settingsTabBar.currentIndex = 1
+
+            var idField = findChild(freshDialog, "tickTickClientIdField")
+            var secretField = findChild(freshDialog, "tickTickClientSecretField")
+            verify(idField !== null && secretField !== null)
+
+            typeInto(idField, "typed-id")
+            typeInto(secretField, "typed-secret")
+            compare(idField.text, "typed-id")
+
+            findChild(freshDialog, "tickTickSaveButton").clicked()
+
+            // The reported bug: clicking Save wiped the field instead of
+            // saving, because saving emits a change notification and the
+            // still-live binding re-evaluated back to the stored (empty) id.
+            compare(idField.text, "typed-id")
+            compare(tickTick.auth.clientId, "typed-id")
+            verify(tickTick.auth.configured)
+        }
+
+        // The first thing anyone does with this feature, and nothing else in it
+        // is reachable until it works.
+        function test_saving_credentials_configures_the_module() {
+            if (tickTick === null)
+                skip("TickTick module not built into this test binary")
+
+            var idField = findChild(dialog, "tickTickClientIdField")
+            var secretField = findChild(dialog, "tickTickClientSecretField")
+            var saveButton = findChild(dialog, "tickTickSaveButton")
+            verify(idField !== null && secretField !== null && saveButton !== null)
+
+            idField.text = "typed-client-id"
+            secretField.text = "typed-secret"
+
+            saveButton.clicked()
+
+            // The credentials must actually reach the module...
+            compare(tickTick.auth.clientId, "typed-client-id")
+            verify(tickTick.auth.configured)
+            // ...and the id must still be on screen afterwards. Clearing it
+            // would look exactly like the save having silently failed.
+            compare(idField.text, "typed-client-id")
+            // The secret field is cleared on purpose — it is a secret, and an
+            // empty field means "keep the stored one" on the next save.
+            compare(secretField.text, "")
+        }
+
+        function test_connecting_becomes_possible_once_credentials_are_saved() {
+            if (tickTick === null)
+                skip("TickTick module not built into this test binary")
+
+            var connectButton = findChild(dialog, "tickTickConnectButton")
+            verify(connectButton !== null)
+
+            findChild(dialog, "tickTickClientIdField").text = "an-id"
+            findChild(dialog, "tickTickClientSecretField").text = "a-secret"
+            findChild(dialog, "tickTickSaveButton").clicked()
+
+            // Without this the user has no way to tell a successful save from a
+            // failed one — the form gives no other feedback.
+            verify(connectButton.enabled)
+        }
+
         function test_font_family_combo_lists_every_installed_system_font() {
             compare(dialog.fontFamilyCombo.model.length, Qt.fontFamilies().length)
         }
@@ -52,6 +223,23 @@ Item {
             var families = Qt.fontFamilies()
             settings.fontFamily = families[0]
             compare(dialog.fontFamilyCombo.currentText, families[0])
+        }
+
+        // A wheel over a dropdown or a number field must scroll this pane,
+        // never edit the setting under the cursor. The KDE desktop style
+        // turns wheelEnabled on for every ComboBox and SpinBox, so each of
+        // ours turns it back off. (This suite runs offscreen under the Basic
+        // style, where the flag is already false — so this asserts the
+        // explicit opt-out is present, which is what the desktop-styled app
+        // actually depends on.)
+        function test_wheeling_over_a_dropdown_never_changes_the_setting() {
+            compare(dialog.spellcheckLanguageCombo.wheelEnabled, false)
+            compare(dialog.fontFamilyCombo.wheelEnabled, false)
+        }
+
+        function test_wheeling_over_a_number_field_never_changes_the_setting() {
+            compare(dialog.spellcheckMaxSuggestionsSpinBox.wheelEnabled, false)
+            compare(dialog.spellcheckDebounceMsSpinBox.wheelEnabled, false)
         }
 
         function test_closed_box_previews_the_selected_family_in_its_own_font() {

@@ -67,6 +67,13 @@ Window {
     // knows the right-button gesture ended without becoming a window drag.
     signal contextMenuRequested(int screenX, int screenY)
 
+    // "Take me to the TickTick compose slot" — emitted by the ribbon's task
+    // glyph on any note that ISN'T the task note. A signal for the same reason
+    // findRequested is: the slot is a line in a different note's window, and no
+    // note holds a handle on another. Main.qml joins it up. The task note itself
+    // never emits this — it can just move its own caret. See createNewTask.
+    signal newTaskRequested()
+
     // Live "is this format active at the current cursor/selection" state
     // (feature request: the toolbar should show, not just apply, formatting
     // — e.g. the Bold button should look pressed when the selection is
@@ -233,6 +240,9 @@ Window {
     readonly property alias scrollHandle: scrollHandle
     readonly property alias mainFrame: mainFrame
     readonly property alias lineNumberGutter: lineNumberGutter
+    readonly property alias tickTickRefreshDebounce: tickTickRefreshDebounce
+    readonly property alias listMarkerRepeater: listMarkerRepeater
+    readonly property alias tickTickCompletionFade: tickTickCompletionFade
 
     // Whether the app is currently focused on THIS note (or on one of the shared
     // chrome windows acting on its behalf — the selection toolbar, find panel,
@@ -247,7 +257,32 @@ Window {
     // has never been focused shows as prose (Main.qml sets it true only once the
     // note becomes the active one).
     property bool appHasFocus: false
-    onAppHasFocusChanged: editor.syncMarkerReveal()
+    onAppHasFocusChanged: {
+        editor.syncMarkerReveal()
+
+        // Coming back to the task note REFRESHES it, not just its "synced N
+        // ago" label: that is the moment stale content matters, since the very
+        // next thing the user does is edit against what they see, and the
+        // scheduled pull is hourly.
+        //
+        // Driven off appHasFocus rather than this window's own `active`, and
+        // the difference is the whole point — it is the same stay/leave
+        // distinction the marker reveal above needs. `active` drops every time
+        // the user touches the shared chrome (selecting text hands focus to
+        // the selection toolbar, opening find hands it to the panel), so
+        // returning from any of those would re-read as "just came back" and
+        // fire a pull mid-edit. appHasFocus goes false->true only on a genuine
+        // return from another note or another app. Its default of false also
+        // means a NoteWindow with no Main.qml around it — the QML test
+        // harness — never pulls on its own.
+        //
+        // Routed through the shared debounce rather than pulling straight from
+        // here, so alt-tab-and-immediately-type does not race a response into
+        // the note under the caret — see that Timer's own comment for the race
+        // and for why this is not a polling loop.
+        if (appHasFocus && noteWindow.isTickTickTaskNote)
+            tickTickRefreshDebounce.restart()
+    }
 
     // Code mode (feature request): this note renders as code — a monospaced
     // font (resolved in NoteAppearance::fontFamily, not here) and the
@@ -458,26 +493,386 @@ Window {
     // saveNoteContent() is debounced — see NoteStore::createNote for the full
     // reasoning.
     //
-    // The position is seeded through openNoteAt() rather than moved after the
-    // window exists because a mapped Wayland toplevel can't be placed by
-    // assigning x/y at all; placement happens via the KWin rule the new
-    // delegate writes during its own Component.onCompleted, so the position
-    // must already be in Settings by then.
+    // The position must be in Settings BEFORE the new note's window delegate is
+    // constructed: a mapped Wayland toplevel can't be placed by assigning x/y
+    // at all, so placement happens via the KWin "Apply Initially" rule that
+    // delegate writes during its own Component.onCompleted.
+    //
+    // Which is why the seed comes first and openNoteAt() second, rather than
+    // openNoteAt() alone. createNote() emits noteIdsChanged synchronously, and
+    // Main.qml reconciles on it synchronously — so the note is already open,
+    // its delegate already built and its rule already evaluated, by the time
+    // createNote() returns here. openNoteAt() would then be a no-op against an
+    // already-open id, and every duplicate landed on the default cascade
+    // instead of next to its source. See OpenNotesModel::seedNextSpawnPosition
+    // for the full ordering; both calls are needed because the QML test harness
+    // has no Main.qml and so never runs that reconciliation.
     function duplicateNoteAt(screenX, screenY) {
+        openNotesModel.seedNextSpawnPosition(screenX, screenY)
         const newId = noteStore.createNote(docHandler.toMarkdown())
+        // Unconditional: a createNote() that FAILED never emitted
+        // noteIdsChanged, so nothing consumed the seed and it would otherwise
+        // stay armed to displace whatever note opened next.
+        openNotesModel.clearNextSpawnPosition()
         // Empty id means the duplicate's file could not be written (unwritable
         // folder / disk full); skip opening a window with no note behind it.
         if (newId)
             openNotesModel.openNoteAt(newId, screenX, screenY)
     }
 
-    // Duplicate at the conventional diagonal offset from this note — what the
-    // HUD's own duplicate glyph does. The context menu instead duplicates at
-    // the point the menu was opened, which is why the position is a parameter
-    // of duplicateNoteAt() above rather than baked in here.
+    // Duplicate at the conventional diagonal offset from this note. The context
+    // menu instead duplicates at the point the menu was opened, which is why
+    // the position is a parameter of duplicateNoteAt() above rather than baked
+    // in here. No longer reachable from the ribbon — the glyph that used to
+    // call this is now "new note" (see createNewNote below) — so the context
+    // menu's Duplicate Note row is the only caller left.
     function duplicateNote() {
         const origin = noteOrigin()
         duplicateNoteAt(origin.x + duplicateOffset, origin.y + duplicateOffset)
+    }
+
+    // Whether a new TickTick task can actually be created right now: the
+    // optional module has to be both compiled in (`tickTick` is null otherwise
+    // — see main.cpp, which always defines the name so a binding can test it)
+    // and connected. Gates the ribbon's new-task glyph out of existence rather
+    // than merely disabling it; see NoteHud.tickTickEnabled.
+    readonly property bool tickTickAvailable: tickTick !== null && tickTick.auth.authorized
+
+    // True only for the one aggregated TickTick task note (feature request:
+    // one checkbox-list note for every open task, instead of one note per
+    // task). The module answers this (TickTickSync::taskNoteId) rather than
+    // this file working out the id scheme itself — that's what keeps the
+    // module removable as a delete rather than an unpicking (see
+    // TickTickModule.h). A bare function call rather than a bound property is
+    // fine here: the id it returns never changes for the life of the process.
+    readonly property bool isTickTickTaskNote:
+        tickTick !== null && tickTick.sync.taskNoteId() === noteWindow.noteId
+
+    // The ticked line currently fading out, as its checkbox glyph's document
+    // position — or -1 for none. Derived from docHandler.listMarkerRanges
+    // rather than remembered from the click that ticked it: the ranges are
+    // already live and already reactive, so a line that shifts (an edit above
+    // it, a pull rewriting the note) simply re-derives instead of leaving a
+    // stale position behind.
+    //
+    // In THIS note a checked box always means "on its way out" — the pull only
+    // ever asks for open tasks, so nothing is ever rendered ticked (see
+    // TickTickTaskList::render). That is what makes "the first checked box" a
+    // complete queue: as each one is removed, the next takes its place, with no
+    // queue state of our own to keep in sync.
+    readonly property int tickTickFadingPosition: {
+        if (!noteWindow.isTickTickTaskNote)
+            return -1
+        const ranges = docHandler.listMarkerRanges
+        for (let i = 0; i < ranges.length; i++) {
+            if (ranges[i].kind === "checkbox" && ranges[i].checked)
+                return ranges[i].start
+        }
+        return -1
+    }
+    // 1 = fully visible. Animated to 0 by tickTickCompletionFade below, and
+    // read by the checkbox glyph delegate so the drawn box fades with its text.
+    property real tickTickFadeOpacity: 1
+
+    // The label text of the last line tickTickCompletionFade actually removed
+    // — "" once nothing has been faded yet, or after a reload/pull (cleared in
+    // loadFromDisk below). Set only when the ScriptAction's
+    // removeCheckedCheckboxLineAt call succeeds, so a refused removal (the line
+    // stopped being ticked during the hold) leaves this untouched.
+    //
+    // What it exists to stop: a ticked line the fade already removed can come
+    // back — Ctrl+Z restoring it as `- [x] …` — which changes
+    // tickTickFadingPosition from -1 to a real position and, without this
+    // guard, would start the fade running a second time against a task that is
+    // already closed in TickTick (nothing in this class can take the earlier
+    // completion back). Comparing by label text rather than position: the
+    // position of a restored line is generally not the position it faded from.
+    property string tickTickLastFadedLabel: ""
+
+    // Started ONLY from this change handler — never from a `running:` binding
+    // on tickTickFadingPosition. If a removal is refused (the line stopped
+    // being a ticked item), the position does not change, so no signal fires
+    // and nothing retries: a bound `running:` would instead restart the fade
+    // against the same unremovable line forever, which is a polling loop by
+    // another name.
+    onTickTickFadingPositionChanged: {
+        tickTickCompletionFade.stop()
+        noteWindow.tickTickFadeOpacity = 1
+        if (noteWindow.tickTickFadingPosition < 0) {
+            docHandler.setFadedLine(-1, 1, editor.color)
+            return
+        }
+        // Refuse to re-arm for a line this window already faded out once (see
+        // tickTickLastFadedLabel above) — the line stays visible, ticked and
+        // static, rather than fading a second time over a completion that
+        // already happened.
+        if (noteWindow.tickTickLastFadedLabel !== ""
+                && docHandler.listLabelTextAt(noteWindow.tickTickFadingPosition)
+                    === noteWindow.tickTickLastFadedLabel) {
+            docHandler.setFadedLine(-1, 1, editor.color)
+            return
+        }
+        tickTickCompletionFade.start()
+    }
+    onTickTickFadeOpacityChanged: {
+        if (noteWindow.tickTickFadingPosition >= 0)
+            docHandler.setFadedLine(noteWindow.tickTickFadingPosition,
+                                    noteWindow.tickTickFadeOpacity, editor.color)
+    }
+
+    // Relative "synced N ago" text for tickTickSyncFooter above, computed
+    // against `now` (a JS Date the footer re-stamps on real events — see its
+    // own comment) rather than reading the current time directly, so the
+    // ONLY thing that makes this text change is that property being bumped.
+    function tickTickSyncLabel(now) {
+        if (tickTick === null)
+            return ""
+        const last = tickTick.sync.lastSyncTime
+        // An invalid/epoch QDateTime (never synced this install) arrives in
+        // QML as a Date whose getTime() is 0 or NaN depending on platform —
+        // both are far enough in the past that treating anything under a
+        // second as "not synced yet" is safe either way.
+        if (!last || isNaN(last.getTime()) || last.getTime() <= 0)
+            return "not synced yet"
+
+        const seconds = Math.max(0, Math.round((now.getTime() - last.getTime()) / 1000))
+        if (seconds < 60)
+            return "synced just now"
+        const minutes = Math.round(seconds / 60)
+        if (minutes < 60)
+            return "synced " + minutes + "m ago"
+        const hours = Math.round(minutes / 60)
+        if (hours < 24)
+            return "synced " + hours + "h ago"
+        const days = Math.round(hours / 24)
+        return "synced " + days + "d ago"
+    }
+
+    // New blank note (feature request), the ribbon's "＋". Deliberately the
+    // plain cascade-positioned open that the tray's own New Note uses, NOT
+    // duplicateNoteAt's seeded position: a brand-new note has no source window
+    // it should be anchored to the way a duplicate does.
+    //
+    // openNote() after createNote() is belt-and-braces in the real app — the
+    // disk reconciliation Main.qml runs on noteIdsChanged has already opened it
+    // by the time createNote() returns, and openNote() is a no-op for an
+    // already-open id. It matters in the QML test harness, which has no
+    // Main.qml and therefore no reconciliation.
+    function createNewNote() {
+        const newId = noteStore.createNote()
+        // Empty id means the file could not be written (unwritable folder, disk
+        // full); there is no note to open, so don't ask the model for a phantom.
+        if (newId)
+            openNotesModel.openNote(newId)
+    }
+
+    // New TickTick task (feature request), the ribbon's "☑" — puts the caret in
+    // the aggregated task note's compose slot (see isTickTickTaskNote above and
+    // TickTickTaskList::kComposeIndex) rather than minting a note/window: under
+    // the one-note-for-all-tasks design there is no per-task note left to open.
+    //
+    // Notably it does NOT create anything on TickTick. It used to, which meant
+    // a stray click put a blank task on the user's phone; now the button does
+    // what its glyph promises — takes you to the place you type a task — and
+    // committing it is the separate, explicit gesture (see commitComposedTask).
+    // The very first time, the note itself may not exist yet; ensureComposeSlot
+    // writes it, and reconcile turns that into a window on the same call stack.
+    function createNewTask() {
+        if (!noteWindow.tickTickAvailable)
+            return
+        if (noteWindow.isTickTickTaskNote) {
+            tickTick.sync.ensureComposeSlot()
+            noteWindow.focusComposeSlot()
+            return
+        }
+        // The slot to type into lives in a DIFFERENT window, which this one
+        // cannot reach — same one-way ask as findRequested above, joined up in
+        // Main.qml, which is the only place that can find another note's
+        // window. (In the QML test harness there is no Main.qml, so this is
+        // inert there, exactly as findRequested is.)
+        noteWindow.newTaskRequested()
+    }
+
+    // Puts the caret at the start of the compose slot's text and gives the note
+    // OS focus, so the ribbon button and the tray entry both land the user
+    // somewhere they can immediately type. listLabelPositionAt(0) rather than a
+    // literal 6: the marker's length is the marker's business, not this file's.
+    function focusComposeSlot() {
+        noteWindow.show()
+        noteWindow.raise()
+        noteWindow.requestActivate()
+        editor.forceActiveFocus()
+        editor.cursorPosition = docHandler.listLabelStartAt(0)
+    }
+
+    // Turns what is typed in the compose slot into a real task, and leaves the
+    // caret in the fresh slot that replaces it so a second task can be typed
+    // straight away. Both commit gestures — Enter, and tapping the check button
+    // the slot's checkbox becomes — route through here.
+    //
+    // The sync module rewrites the note (moving the typed line down under a new
+    // empty slot), which comes back as an external content change and reloads
+    // the editor; the caret is placed AFTERWARDS, because that reload would
+    // otherwise leave it wherever the old text happened to end.
+    function commitComposedTask() {
+        if (!noteWindow.isTickTickTaskNote || !noteWindow.tickTickAvailable)
+            return false
+        if (!tickTick.sync.commitComposedTask())
+            return false
+        editor.cursorPosition = docHandler.listLabelStartAt(0)
+        noteWindow.refreshComposeSlotFilled()
+        return true
+    }
+
+    // Whether the compose slot currently holds text the user could commit —
+    // what turns its checkbox into a check button (see the marker overlay's
+    // showsAsCommitButton) and what makes Enter mean something.
+    //
+    // Recomputed on real events (every edit, every load) rather than bound to a
+    // live expression: it reads the document through docHandler, which has no
+    // change notification of its own to bind to, and a binding would silently
+    // never re-evaluate.
+    property bool composeSlotFilled: false
+
+    // The compose slot's typing area, in editor coordinates: the band its text
+    // actually occupies, which is MORE THAN ONE visual line once that text
+    // wraps. The underline below is drawn along this rect's bottom edge, and the
+    // pointer has to be within its vertical band for it to light up. Empty (zero
+    // height) on any note that isn't the task note, which is what hides the
+    // underline everywhere else.
+    //
+    // ASSIGNED, never bound, and only from recomputeComposeSlotRect() through a
+    // settle debounce — positionToRectangle() reflects a text layout that
+    // settles a frame or more after the edit that changed it, exactly as
+    // listMarkerOverlay's delegates document at length. A live binding here drew
+    // the rule at the previous line height for a frame on every font change.
+    property rect composeSlotRect: Qt.rect(0, 0, 0, 0)
+    function recomputeComposeSlotRect() {
+        if (!editor.ready || !noteWindow.isTickTickTaskNote) {
+            noteWindow.composeSlotRect = Qt.rect(0, 0, 0, 0)
+            return
+        }
+        const labelStart = noteWindow.composeSlotLabelStart
+        // Two probes, because a wrapped slot's first and last visual lines are
+        // different rows. The label START gives the left edge and the top of the
+        // band; the label END — the caret position after the last character —
+        // gives the bottom, and is the whole reason this is measured rather than
+        // assumed to be one line high.
+        const startRect = editor.positionToRectangle(labelStart)
+        const endRect =
+            editor.positionToRectangle(labelStart + docHandler.listLabelTextAt(0).length)
+
+        // Starts at the label, not at x=0: the rule marks the area the user can
+        // actually type in, and running it under the checkbox would underline
+        // the commit button — a control, not a field. Its right edge is the
+        // editor's, since that is where wrapping happens.
+        noteWindow.composeSlotRect =
+            Qt.rect(startRect.x,
+                    startRect.y,
+                    Math.max(0, editor.width - startRect.x),
+                    Math.max(startRect.height, endRect.y + endRect.height - startRect.y))
+    }
+
+    // Whether the pointer is on the compose slot's row. Set from
+    // mouseDragArea's onPositionChanged/onExited, NOT a HoverHandler — that
+    // MouseArea sits on top of editor in z-order and claims hover for this whole
+    // area first, so a handler underneath it never sees an event. Same
+    // constraint, same solution as checkboxHighlight.
+    property bool composeSlotHovered: false
+    function composeSlotRowUnderPointer(xInEditor, yInEditor) {
+        const r = noteWindow.composeSlotRect
+        if (r.height <= 0)
+            return false
+        // A plain band test against a rect this file already computed, so unlike
+        // checkboxRectUnderPointer there is no positionAt() clamping to defend
+        // against: the HUD strip above the editor maps to a negative y here,
+        // which simply falls outside the band.
+        //
+        // Vertical only, deliberately, even though the rect now starts at the
+        // label rather than at x=0. The whole row is the compose slot as far as
+        // the user is concerned; adding an x test would make the rule flicker
+        // off as the pointer crossed the checkbox on its way to the text.
+        return yInEditor >= r.y && yInEditor < r.y + r.height
+    }
+
+    // Where the compose slot's own text begins — the boundary that tells the
+    // slot's marker apart from every other line's. Kept beside
+    // composeSlotFilled, and refreshed with it, so the glyph delegate's
+    // showsAsCommitButton can be a real binding on two reactive properties
+    // rather than on a docHandler call that would never re-evaluate.
+    property int composeSlotLabelStart: 0
+    function refreshComposeSlotFilled() {
+        noteWindow.composeSlotLabelStart = docHandler.listLabelStartAt(0)
+        noteWindow.composeSlotFilled = noteWindow.isTickTickTaskNote
+            && docHandler.listLabelTextAt(0).trim().length > 0
+        composeSlotRectSettle.restart()
+    }
+
+    // Backspace at the very start of an EMPTIED task line deletes the whole
+    // line — which this note reads as "I'm done with this task" (see
+    // TickTickTaskList::Intent). Reported as a bug: without it,
+    // repairCheckboxList immediately put back every marker character the user
+    // backspaced into, so a line could never actually be removed ("you cannot
+    // use backspace to delete a note, it will spawn in the [ ] characters") —
+    // the marker just kept regrowing under the caret.
+    //
+    // Only fires with the caret exactly at the label start and nothing selected,
+    // so ordinary backspacing inside a task's text is untouched: anywhere else
+    // this returns false and TextArea's own default handling runs.
+    //
+    // Two lines it refuses to delete, both swallowing the key rather than
+    // falling through — because what the default handler does at the start of a
+    // line is MERGE it into the one above, and two task lines merged together is
+    // one task silently absorbing another's text:
+    //
+    //  - A line that still has a title. The gesture for finishing with a task is
+    //    to clear it first (or tick its box); backspace at the start of a line
+    //    the user can still read is not that.
+    //  - The compose slot, which is permanent furniture — there must always be
+    //    somewhere to type a new task.
+    function tryRemoveTaskLine() {
+        if (!noteWindow.isTickTickTaskNote || editor.selectedText.length > 0)
+            return false
+        const position = editor.cursorPosition
+        if (docHandler.listLabelStartAt(position) !== position)
+            return false
+        if (position === docHandler.listLabelStartAt(0))
+            return true
+        if (docHandler.listLabelTextAt(position).length > 0)
+            return true
+        return docHandler.removeLineAt(position)
+    }
+
+    // Whether the current selection is the OTHER shape a task-note selection
+    // can take: one that crosses at least one line boundary (a multi-block
+    // selection — triple-click-drag across lines, Shift+Down runs, a plain
+    // mouse drag that starts mid-word on one task and ends mid-word on
+    // another). tryRemoveTaskLine above and the two
+    // test_selecting_..._leaves_..._blank/empty tests deliberately own the
+    // OTHER shape — a selection confined to one line (or the compose slot) —
+    // and must keep working unchanged; this is what tells the two apart.
+    //
+    // The point of the distinction (see item 007's work order): a selection
+    // that starts or ends mid-line, once TextArea's own default
+    // delete/replace merges what's left on each side, produces a line that
+    // matches nothing in TickTickTaskList's last render — silently reverting
+    // on the very next pull with no visible error. Keys.onPressed below
+    // steers Backspace/Delete/Cut on such a selection to a clean whole-line
+    // removal instead (which the existing diff already reads as bulk
+    // completion), and steers typing/paste away from the merge by collapsing
+    // the selection first.
+    //
+    // editor.text is checked directly (not docHandler.toMarkdown(), which
+    // would re-read the whole document) because the editor is textFormat:
+    // TextEdit.PlainText — its `text` IS the literal markdown source, with a
+    // real '\n' at exactly every block boundary, the same guarantee
+    // paragraphStart/paragraphEnd above already rely on.
+    function selectionSpansMultipleTaskLines() {
+        if (!noteWindow.isTickTickTaskNote || editor.selectionStart === editor.selectionEnd)
+            return false
+        const start = Math.min(editor.selectionStart, editor.selectionEnd)
+        const end = Math.max(editor.selectionStart, editor.selectionEnd)
+        return editor.text.substring(start, end).indexOf("\n") !== -1
     }
 
     // Shows this note's own .md file, selected, in the user's file manager
@@ -549,6 +944,20 @@ Window {
 
     onWidthChanged: { updateBlur(); if (!restoringGeometry) persistSize() }
     onHeightChanged: { updateBlur(); if (!restoringGeometry) persistSize() }
+
+    // One of tickTickSyncFooter's re-stamp events (see its own comment): this
+    // window's own OS-level activation is exactly "the user just switched back
+    // to this note". A root-level handler rather than a Connections targeting
+    // noteWindow from inside the footer's own Text item — simpler, and matches
+    // this file's existing onWidthChanged/onHeightChanged convention of
+    // handling the root Window's own signals right here rather than at the
+    // point of use. The task note's actual REFRESH hangs off appHasFocus
+    // instead (see onAppHasFocusChanged above) — this one only re-stamps the
+    // label's clock, which is cheap and correct on any activation.
+    onActiveChanged: {
+        if (active && tickTickSyncFooterLoader.item)
+            tickTickSyncFooterLoader.item.bumpNow()
+    }
 
     // Resolves this note's effective appearance: its own override where set
     // (req. 4), else the tray Settings dialog's global default — see
@@ -738,6 +1147,24 @@ Window {
             onActivated: noteWindow.findRequested(true)
         }
 
+        // The TickTick list's name, as a fixed title over the task note —
+        // module-owned QML (see TickTickListTitle.qml for the full design
+        // rationale). Loaded by relative URL, never by type name: the file is
+        // only compiled into this QML module when the TickTick module is
+        // built, and `active` is false in exactly the builds where the URL
+        // would not resolve.
+        Loader {
+            id: tickTickListTitleLoader
+            active: noteWindow.isTickTickTaskNote
+            z: 2
+            anchors.top: parent.top
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.margins: 8
+            source: "TickTickListTitle.qml"
+            onLoaded: item.noteWindow = noteWindow
+        }
+
         Flickable {
             id: editorFlick
             anchors.top: parent.top
@@ -745,6 +1172,13 @@ Window {
             anchors.right: parent.right
             anchors.bottom: parent.bottom
             anchors.margins: 8
+            // Room for the list title above (TickTick task note only). A
+            // specific margin wins over the general `anchors.margins: 8`, and
+            // reads 0 extra on every other note, so nothing else moves. The
+            // Loader's implicit height tracks the loaded title's, and is 0
+            // while nothing is loaded.
+            anchors.topMargin: 8 + (noteWindow.isTickTickTaskNote
+                                    ? tickTickListTitleLoader.implicitHeight + 6 : 0)
             // Text fills the whole note, right up under noteHud's
             // top-right footprint (feature request) — deliberately not
             // reserving a top-margin gap for it (that just wasted screen
@@ -1202,6 +1636,18 @@ Window {
                     // still correct to disable since this control never needs it.
                     ContextMenu.menu: null
 
+                    // The caret can never sit inside a checkbox's marker text
+                    // in the task note — see MarkerCaretGuard, which owns the
+                    // whole rule. Enabled only here: an ordinary note's
+                    // "- [ ] " is markdown the user typed and may want to
+                    // select or edit, so it keeps the default behavior.
+                    MarkerCaretGuard {
+                        id: markerCaretGuard
+                        editor: editor
+                        docHandler: docHandler
+                        enabled: noteWindow.isTickTickTaskNote
+                    }
+
                     // Click-to-toggle checkboxes (feature request): a
                     // non-exclusive tap handler sitting alongside editor's
                     // own click-to-place-cursor handling (TapHandler's
@@ -1214,6 +1660,25 @@ Window {
                         acceptedButtons: Qt.LeftButton
                         onTapped: (eventPoint) => {
                             const position = editor.positionAt(eventPoint.position.x, eventPoint.position.y)
+                            // The compose slot's box is a commit button, not a
+                            // checkbox — ticking it would produce "- [x] " on a
+                            // line with no task behind it, which the completion
+                            // fade would then quietly delete along with the text
+                            // the user had just typed. Swallowed even when the
+                            // slot is empty (nothing to commit), for the same
+                            // reason: there is nothing there worth ticking.
+                            //
+                            // Gated on checkboxRectAt exactly as the toggle it
+                            // replaces is gated internally, so a click in the
+                            // slot's TEXT still just places the caret — only a
+                            // click on the button itself commits.
+                            if (noteWindow.isTickTickTaskNote
+                                    && docHandler.checkboxRectAt(position).width > 0
+                                    && docHandler.listLabelStartAt(position)
+                                        === docHandler.listLabelStartAt(0)) {
+                                noteWindow.commitComposedTask()
+                                return
+                            }
                             docHandler.tryToggleCheckboxAt(position)
                         }
                     }
@@ -1326,6 +1791,24 @@ Window {
                             noteWindow.currentMisspelledWord = word.text
                         }
                     }
+
+                    // NO body-click refresh TapHandler here, deliberately.
+                    // Refreshing on every tap in the body (the original shape
+                    // of "clicking anywhere within the ticktick note should
+                    // trigger a refresh" — Decision, drain 57a85c8d, option 2)
+                    // pulled again on each click while the note was ALREADY
+                    // focused, which is a request per click for a note the
+                    // user is plainly already looking at. What that gesture
+                    // was really reaching for is "the user just came back to
+                    // this note", and that is now read directly off focus —
+                    // see noteWindow.onAppHasFocusChanged. The one click that
+                    // used to matter (the one landing on an unfocused note)
+                    // still refreshes, because it is also what focuses it.
+                    //
+                    // The footer below (tickTickSyncFooter) remains the
+                    // explicit refresh, and is honored on every click whether
+                    // the note is focused or not — that is the gesture to use
+                    // when someone wants to force a pull.
 
                     // On-hover highlight over the checkbox glyph itself
                     // (feature request: "real checkboxes with on hover
@@ -1452,6 +1935,37 @@ Window {
                             // e.g. backspacing an item away or selecting one
                             // and deleting it outright (feature request).
                             docHandler.maintainListNumbering(editor.cursorPosition)
+                            // TickTick task note only (feature request): "you
+                            // cannot remove the checkboxes themselves" — every
+                            // non-empty line is re-asserted as a checkbox
+                            // BEFORE the save below, or the unrepaired text
+                            // (a marker backspaced apart mid-edit) is what
+                            // gets saved and uploaded. This is also what
+                            // keeps a marker merely disturbed from ever
+                            // reading as a whole-line delete: repair restores
+                            // it to a well-formed checkbox line, same line
+                            // count, before TickTickTaskList::diff (which
+                            // only runs against what's actually on disk) ever
+                            // sees the text — see TickTickSync::
+                            // flushPendingUploads and the Decision this
+                            // implements (drain 57a85c8d, modification 3).
+                            if (noteWindow.isTickTickTaskNote) {
+                                editor.cursorPosition = docHandler.repairCheckboxList(editor.cursorPosition)
+                                // And the compose slot specifically, which
+                                // repairCheckboxList leaves alone when it is
+                                // empty (its blank-line rule). Selecting the
+                                // whole slot and deleting it is a real gesture
+                                // — "clear what I typed" — and it must leave an
+                                // empty SLOT, not a blank line the user can
+                                // neither type a task into nor remove. Before
+                                // this, only the next pull's re-render put the
+                                // marker back, which read as the checkbox
+                                // characters respawning by themselves.
+                                editor.cursorPosition = docHandler.ensureFirstLineCheckbox(editor.cursorPosition)
+                            }
+                            // After the repair, so the slot is judged on the
+                            // text that is actually about to be saved.
+                            noteWindow.refreshComposeSlotFilled()
                             noteStore.saveNoteContent(noteWindow.noteId, docHandler.toMarkdown())
                         }
                     }
@@ -1695,6 +2209,58 @@ Window {
                     // targeted updates so delegates are never needlessly
                     // rebuilt, and one debounced imperative recompute rather
                     // than a reactive binding on positionToRectangle().
+                    // A thin rule under the compose slot (feature request), so
+                    // the top line reads as a field to type a task into rather
+                    // than as a task that has somehow lost its text — the note
+                    // is a plain-text editor, and without it that row is
+                    // indistinguishable from an empty item. Brightens on hover,
+                    // the same "this is interactable" language the checkbox
+                    // highlight and every InteractableHighlight in the app use.
+                    //
+                    // A child of `editor` (not a sibling) for the same reason
+                    // the glyph overlays below are: it inherits editor's own
+                    // coordinate space — the space positionToRectangle() answers
+                    // in — so it scrolls in lockstep with the text for free.
+                    // Declared BEFORE listMarkerOverlay so the checkbox glyph
+                    // draws over it, never under it.
+                    //
+                    // Purely decorative: a plain Rectangle has no input handling,
+                    // so it never competes for the clicks that place the caret or
+                    // press the commit button sitting on this very row.
+                    Rectangle {
+                        id: composeSlotUnderline
+                        objectName: "composeSlotUnderline"
+                        z: 1
+                        // Both taken from the rect, which starts at the label
+                        // and spans every visual line the slot's text wraps onto
+                        // — so the rule underlines only what can be typed into,
+                        // and sits under the LAST of those lines rather than the
+                        // first. See recomputeComposeSlotRect.
+                        x: noteWindow.composeSlotRect.x
+                        width: noteWindow.composeSlotRect.width
+                        // Sat on the band's bottom edge rather than below it, so
+                        // it cannot overlap the first task line underneath.
+                        y: noteWindow.composeSlotRect.y + noteWindow.composeSlotRect.height - height
+                        // Off the FONT, not off the rect's height — that height
+                        // is the whole wrapped band now, so deriving thickness
+                        // from it would fatten the rule with every line the
+                        // slot's text spilled onto.
+                        height: Math.max(1, Math.round(editor.font.pixelSize * 0.07))
+                        visible: noteWindow.isTickTickTaskNote && width > 0 && noteWindow.composeSlotRect.height > 0
+
+                        // Derived from the note's OWN text color, not a fixed
+                        // accent — the user can set both per note, and a
+                        // hardcoded grey would vanish on a dark note and shout
+                        // on a light one. Faint at rest so it reads as a hint;
+                        // hover roughly triples it, which is a clear change
+                        // without ever competing with the text itself.
+                        color: Qt.rgba(editor.color.r, editor.color.g, editor.color.b,
+                                       noteWindow.composeSlotHovered ? 0.55 : 0.18)
+                        Behavior on color {
+                            ColorAnimation { duration: 120 }
+                        }
+                    }
+
                     RangeOverlay {
                         id: listMarkerOverlay
                         anchors.fill: parent
@@ -1758,6 +2324,14 @@ Window {
 
                                 visible: width > 1 && height > 0
 
+                                // The box is drawn by this overlay, not by the
+                                // text, so the highlighter's fade cannot reach
+                                // it — it has to be faded here, off the same
+                                // value, or a completing line's text would
+                                // dissolve while its checkbox stayed solid.
+                                opacity: markerGlyph.start === noteWindow.tickTickFadingPosition
+                                    ? noteWindow.tickTickFadeOpacity : 1
+
                                 // Sized off the LINE HEIGHT rather than the
                                 // reserved slot's width, so both controls scale
                                 // with the note's font instead of with whatever
@@ -1803,6 +2377,29 @@ Window {
                                 readonly property real checkboxSize:
                                     Math.max(4, Math.min(markerGlyph.height * 0.62, markerGlyph.width))
 
+                                // The compose slot's box, once something has
+                                // been typed into it, is drawn as a filled
+                                // check BUTTON rather than an empty checkbox
+                                // (feature request: "when typing begins, let's
+                                // change the checkbox icon to a check button")
+                                // — the affordance that says this line isn't a
+                                // task yet and pressing this is what makes it
+                                // one. Tapping it commits, exactly as Enter
+                                // does; see the toggle TapHandler above.
+                                //
+                                // "Starts before line 0's text does" IS "this is
+                                // the compose slot": the slot is always line 0
+                                // (TickTickTaskList::kComposeIndex), and a
+                                // marker range starts at the drawn glyph — the
+                                // "[", not the line's first character — so
+                                // comparing against the line-0 label boundary is
+                                // what identifies it. Every later line's marker
+                                // begins past that boundary by construction.
+                                readonly property bool showsAsCommitButton:
+                                    noteWindow.composeSlotFilled
+                                    && markerGlyph.kind === "checkbox"
+                                    && markerGlyph.start < noteWindow.composeSlotLabelStart
+
                                 // A real bullet: a filled dot in the text's own
                                 // color, where the literal "-" would have been.
                                 Rectangle {
@@ -1828,9 +2425,14 @@ Window {
                                     height: width
                                     radius: Math.max(2, width * 0.22)
                                     anchors.centerIn: parent
-                                    color: markerGlyph.checked ? editor.color : "transparent"
+                                    // Filled — the same "acted on" look a
+                                    // ticked box has — for both states that
+                                    // mean it: a completed task, and a compose
+                                    // slot whose text is ready to commit.
+                                    color: markerGlyph.checked || markerGlyph.showsAsCommitButton
+                                        ? editor.color : "transparent"
                                     border.width: Math.max(1, width * 0.1)
-                                    border.color: markerGlyph.checked
+                                    border.color: markerGlyph.checked || markerGlyph.showsAsCommitButton
                                         ? editor.color
                                         : Qt.rgba(editor.color.r, editor.color.g, editor.color.b, 0.55)
 
@@ -1842,7 +2444,7 @@ Window {
                                         anchors.centerIn: parent
                                         width: checkboxBox.width * 0.62
                                         height: checkboxBox.height * 0.62
-                                        visible: markerGlyph.checked
+                                        visible: markerGlyph.checked || markerGlyph.showsAsCommitButton
                                         opacity: 0.95
 
                                         Rectangle {
@@ -2278,13 +2880,25 @@ Window {
                     // Connections on noteStore below).
                     function loadFromDisk(resetCursorToTop) {
                         const previousPosition = cursorPosition
-                        docHandler.setMarkdown(noteStore.loadNoteContent(noteWindow.noteId))
-                        // setMarkdown() rebuilds the whole document through a
-                        // cursor that starts at position 0; since Qt cursors
-                        // aren't anchored against insertions at their own
-                        // position by default, this editor's own cursor rides
-                        // along to the very end of the newly-inserted text.
-                        // That drags the view down with it via
+                        // First open must still start with an empty undo
+                        // stack (see DocumentHandler::setMarkdown's doc
+                        // comment) so the note's very first Ctrl+Z is a
+                        // no-op. A reload is different: it's the app
+                        // rewriting an already-open note out from under the
+                        // user (a sync commit or pull, another editor), not
+                        // a fresh open, so it must not wipe undo history the
+                        // user already built up this session — see
+                        // DocumentHandler::replaceAllTextPreservingUndo.
+                        if (resetCursorToTop)
+                            docHandler.setMarkdown(noteStore.loadNoteContent(noteWindow.noteId))
+                        else
+                            docHandler.replaceAllTextPreservingUndo(noteStore.loadNoteContent(noteWindow.noteId))
+                        // Both calls above rebuild the whole document through
+                        // a cursor that starts at position 0; since Qt
+                        // cursors aren't anchored against insertions at their
+                        // own position by default, this editor's own cursor
+                        // rides along to the very end of the newly-inserted
+                        // text. That drags the view down with it via
                         // onCursorRectangleChanged below — so a note would open
                         // (or, on reload, jump) to the bottom instead of staying
                         // put. Snapping the cursor back here (before the view has
@@ -2293,12 +2907,36 @@ Window {
                         // an external reload.
                         cursorPosition = resetCursorToTop ? 0 : Math.min(previousPosition, length)
                         noteWindow.refreshFormatState()
+                        // A reload replaces the whole document, compose slot
+                        // included — a pull that carried the in-progress text
+                        // through keeps the check button lit, one that found the
+                        // slot empty puts a plain checkbox back.
+                        noteWindow.refreshComposeSlotFilled()
+                        // A fresh open or an external reload (a pull among
+                        // them) starts the "already faded this one" memory
+                        // over — see tickTickLastFadedLabel's own comment. A
+                        // pull only ever asks for open tasks, so a task the
+                        // fade removed staying gone is the server's own
+                        // account of things now, not just this window's.
+                        noteWindow.tickTickLastFadedLabel = ""
                     }
 
                     Component.onCompleted: {
                         loadFromDisk(true)
                         ready = true
+                        // loadFromDisk ran while ready was still false, so the
+                        // rect it settled came out empty — ask again now that
+                        // there is a layout to measure.
+                        composeSlotRectSettle.restart()
                     }
+
+                    // The compose slot's row moves whenever the editor is
+                    // resized or the text reflows (a font change, a wrapped
+                    // line above it). Same set of triggers, and the same
+                    // debounce, the glyph overlays inside this editor use.
+                    onWidthChanged: composeSlotRectSettle.restart()
+                    onContentWidthChanged: composeSlotRectSettle.restart()
+                    onContentHeightChanged: composeSlotRectSettle.restart()
 
                     // Covers the other half: the cursor/selection itself
                     // moving into (or out of) differently-formatted text,
@@ -2346,7 +2984,10 @@ Window {
                         docHandler.setCursorPosition(
                             hasBeenEdited && noteWindow.appHasFocus ? cursorPosition : -1)
                     }
-                    onCursorPositionChanged: syncMarkerReveal()
+                    onCursorPositionChanged: {
+                        markerCaretGuard.snapCaretOutOfMarker()
+                        syncMarkerReveal()
+                    }
                     onActiveFocusChanged: {
                         if (activeFocus)
                             hasBeenEdited = true
@@ -2364,22 +3005,31 @@ Window {
                     // DocumentHandler::tryContinueList. Falls through to
                     // TextArea's own default Return handling (a plain
                     // paragraph break) whenever neither applies.
-                    Keys.onReturnPressed: (event) => {
-                        if (docHandler.tryResetHeadingOnReturn(cursorPosition))
+                    // In the TickTick task note, Enter never inserts a newline
+                    // (feature request: "enter should be disabled, we shouldn't
+                    // be able to make newlines"). The note's line count IS its
+                    // task list, so a stray blank line is not a formatting
+                    // nuisance there, it is a line with no task behind it that
+                    // repairCheckboxList then turns into a ghost checkbox.
+                    //
+                    // Instead Enter is the commit gesture: it turns whatever is
+                    // in the compose slot into a real task. On an empty slot
+                    // commitComposedTask does nothing and the key is still
+                    // swallowed, so Enter is inert rather than destructive.
+                    function handleReturn(event) {
+                        if (noteWindow.isTickTickTaskNote) {
+                            noteWindow.commitComposedTask()
                             event.accepted = true
-                        else if (docHandler.tryContinueList(cursorPosition))
+                        } else if (docHandler.tryResetHeadingOnReturn(cursorPosition)) {
                             event.accepted = true
-                        else
+                        } else if (docHandler.tryContinueList(cursorPosition)) {
+                            event.accepted = true
+                        } else {
                             event.accepted = false
+                        }
                     }
-                    Keys.onEnterPressed: (event) => {
-                        if (docHandler.tryResetHeadingOnReturn(cursorPosition))
-                            event.accepted = true
-                        else if (docHandler.tryContinueList(cursorPosition))
-                            event.accepted = true
-                        else
-                            event.accepted = false
-                    }
+                    Keys.onReturnPressed: (event) => editor.handleReturn(event)
+                    Keys.onEnterPressed: (event) => editor.handleReturn(event)
 
                     // Tab inserts four spaces (feature request) instead of
                     // TextArea's own default of a literal tab character —
@@ -2407,7 +3057,47 @@ Window {
                     // is what stops the built-in handling from ALSO firing
                     // afterward (same convention as Tab above).
                     Keys.onPressed: (event) => {
-                        if (event.matches(StandardKey.Copy)) {
+                        if (noteWindow.selectionSpansMultipleTaskLines()
+                                && (event.key === Qt.Key_Backspace || event.key === Qt.Key_Delete
+                                    || event.matches(StandardKey.Cut))) {
+                            // Snap the destructive edit to whole task lines
+                            // (item 007's decision) instead of letting
+                            // TextArea merge the partial line at each end —
+                            // see selectionSpansMultipleTaskLines above for
+                            // why that merge is a problem. Cut copies first,
+                            // exactly like a single-line Ctrl+X would.
+                            if (event.matches(StandardKey.Cut))
+                                noteWindow.performCopy()
+                            docHandler.removeLinesInRange(editor.selectionStart, editor.selectionEnd)
+                            event.accepted = true
+                        } else if (noteWindow.selectionSpansMultipleTaskLines()
+                                && (event.matches(StandardKey.Paste)
+                                    || (event.text.length > 0
+                                        && event.key !== Qt.Key_Return && event.key !== Qt.Key_Enter
+                                        && event.key !== Qt.Key_Tab && event.key !== Qt.Key_Backtab
+                                        && event.key !== Qt.Key_Escape
+                                        && !(event.modifiers & (Qt.ControlModifier | Qt.MetaModifier))))) {
+                            // Typing or pasting over such a selection would
+                            // merge the same way (see above) — collapse to
+                            // the selection's start and leave the event
+                            // unaccepted, so the key/paste applies there
+                            // instead of across the whole span.
+                            const collapseTo = Math.min(editor.selectionStart, editor.selectionEnd)
+                            editor.select(collapseTo, collapseTo)
+                        } else if (event.key === Qt.Key_Backspace && noteWindow.tryRemoveTaskLine()) {
+                            // Backspace at the start of a task's text removes
+                            // the whole line, which completes the task — see
+                            // noteWindow.tryRemoveTaskLine for why the default
+                            // handling cannot be allowed to run here.
+                            event.accepted = true
+                        } else if (markerCaretGuard.handleKeyPress(event)) {
+                            // Left / Home in the task note, where the caret
+                            // must skip the checkbox rather than walk into it
+                            // — see MarkerCaretGuard. Returns false (and this
+                            // falls through) for every other key and on every
+                            // other note.
+                            event.accepted = true
+                        } else if (event.matches(StandardKey.Copy)) {
                             noteWindow.performCopy()
                             event.accepted = true
                         } else if ((event.key === Qt.Key_Up || event.key === Qt.Key_Down)
@@ -3084,6 +3774,8 @@ Window {
                     noteWindow.linkUrlUnderPointer(posInEditor.x, posInEditor.y)
                 noteWindow.hoveredImagePlaceholderStart =
                     noteWindow.imagePlaceholderStartUnderPointer(posInEditor.x, posInEditor.y)
+                noteWindow.composeSlotHovered =
+                    noteWindow.composeSlotRowUnderPointer(posInEditor.x, posInEditor.y)
 
                 if (middleButtonHeld && !middleScrollDraggedWhileHeld
                         && Math.abs(middleScrollCurrentY - middleScrollOriginY) > dragThreshold) {
@@ -3105,6 +3797,7 @@ Window {
                 checkboxHighlight.glyphRect = Qt.rect(0, 0, 0, 0)
                 noteWindow.hoveredLinkUrl = ""
                 noteWindow.hoveredImagePlaceholderStart = -1
+                noteWindow.composeSlotHovered = false
             }
             // ~60fps: smooth enough for a scroll animation, cheap enough to
             // not matter. Armed only between an explicit middle-click and
@@ -3235,11 +3928,165 @@ Window {
             glassSheenOpacity: noteAppearance.glassSheenOpacity
             glassSheenStrength: noteAppearance.glassSheenStrength
             glassSheenSize: noteAppearance.glassSheenSize
+            tickTickEnabled: noteWindow.tickTickAvailable
             onPinToggleRequested: noteWindow.setPinned(!noteWindow.alwaysOnTop)
             onSettingsRequested: perNoteSettingsPopup.show()
-            onDuplicateRequested: noteWindow.duplicateNote()
+            onNewNoteRequested: noteWindow.createNewNote()
+            onNewTaskRequested: noteWindow.createNewTask()
             onSearchRequested: noteWindow.findRequested(false)
             onCloseRequested: noteWindow.deleteNote()
+        }
+
+        // One-shot debounce for the implicit refresh — the user returning to
+        // the task note (noteWindow.onAppHasFocusChanged). Restarted on that
+        // event, never repeating on its own, so it costs nothing while nobody
+        // is switching windows. NOT the CLAUDE.md-forbidden kind of timer: it
+        // fires once per restart and then goes back to being inert, the same
+        // shape as copyToastHideTimer/positionSaveDebounce elsewhere in this
+        // file.
+        //
+        // RESEARCH FINDING on the danger an implicit refresh carries (drain
+        // 57a85c8d's own modification 4 asked this be checked before
+        // shipping): the real risk is not "a pull reverts text the user is
+        // mid-typing" — the instant ANY character is typed, TickTickNotes::
+        // saveNoteContent fires noteEditedLocally synchronously, which marks
+        // the note pending in TickTickSync BEFORE any network response can
+        // return, and TickTickSync::onTasksFetched refuses to rewrite (or even
+        // re-baseline) a pending note — so an in-progress edit is never
+        // clobbered, exactly like the scheduled pull already couldn't clobber
+        // one. The real, narrower risk is arriving at a CLEAN note (nothing
+        // typed yet) and placing the caret just before typing: if the pull's
+        // response reorders/adds/removes lines before that first keystroke
+        // lands, the caret's raw numeric position can end up inside a
+        // DIFFERENT task's line — not lost text, but a rename that lands on
+        // the wrong task.
+        //
+        // This debounce exists specifically to shrink that window: the pull is
+        // only sent once the return has sat quiet for a beat, and is skipped
+        // outright if a real edit (which marks pendingUploadCount() > 0 — a
+        // real, queryable state, unlike NoteStore::hasUnsavedChanges, which is
+        // always false for this note; see its own comment) shows up in that
+        // beat, which is exactly what a genuine "focus the note and
+        // immediately type" gesture does. It does not fully eliminate the race
+        // — nothing client-side can, short of tracking which task the caret's
+        // line belongs to across a pull, which is out of scope here — but it
+        // closes the realistic case (a person reacting to their own click)
+        // rather than only the already-covered one.
+        // Settles the compose slot's row rect after a layout-changing event —
+        // the same 32ms one-shot, for the same reason, as every glyph overlay
+        // inside the editor: positionToRectangle() answers from a text layout
+        // that has not been redone yet at the moment the edit lands. Restarted
+        // by real events only (an edit, a load, a resize), never on a schedule.
+        Timer {
+            id: composeSlotRectSettle
+            interval: 32
+            onTriggered: noteWindow.recomputeComposeSlotRect()
+        }
+
+        Timer {
+            id: tickTickRefreshDebounce
+            interval: 250
+            onTriggered: {
+                if (!noteWindow.isTickTickTaskNote || tickTick === null)
+                    return
+                // Both checks are real, queryable state — not a focus/
+                // "recently edited" heuristic: busy means a pull is already
+                // in flight (nothing to gain by starting a second one), and
+                // pendingUploadCount() > 0 means an edit typed in the beat
+                // since the return is still queued for upload, so pulling now
+                // would either be redundant or (per TickTickSync::
+                // onTasksFetched's own pending guard) get silently ignored
+                // anyway. Skipping here just avoids the wasted request.
+                if (tickTick.sync.busy || tickTick.sync.pendingUploadCount() > 0)
+                    return
+                tickTick.sync.pullNow()
+            }
+        }
+
+        // Ticking a task makes it disappear (feature request: "when an item in
+        // the ticktick note is checked off, it should disappear after a short
+        // delay (with an animation)").
+        //
+        // A finite, event-started animation, NOT a schedule: it runs only from
+        // the onTickTickFadingPositionChanged handler below and stops on its
+        // own, so nothing wakes up while the app is idle. Read CLAUDE.md's
+        // no-polling rule before replacing any of this with a Timer.
+        //
+        // The hold before the fade is deliberate: without it the tick the user
+        // just made is painted and erased in the same breath, and the click
+        // reads as "the line vanished" rather than "I completed that". Held for
+        // a full three seconds (feature request), so a mis-tick is visible long
+        // enough to be seen and undone before the line goes.
+        //
+        // For that undo window to mean anything, nothing may reach TickTick
+        // until the line has actually gone: a completion request that already
+        // left cannot be taken back (see TickTickClient.h — there is no
+        // reopen), so Ctrl+Z during the hold has to still be undoing something
+        // that is only local. That is the invariant kUploadDebounceMs in
+        // TickTickSync.cpp is built to preserve — it is kept strictly LONGER
+        // than this animation's total, on purpose, so the tick and the fade's
+        // eventual removal are still on screen together, as one uncommitted
+        // edit, for the flush that finally fires. See kUploadDebounceMs's own
+        // comment for the other half of this coupling, and
+        // TickTickSync::flushPendingUploads for what that single flush does
+        // with a line that arrives both ticked and gone.
+        //
+        // An undo that lands AFTER the fade already removed the line is a
+        // separate hazard — restoring a `- [x]` line the fade already acted on
+        // would otherwise start this animation again over a task that is
+        // already closed. tickTickLastFadedLabel (above) guards that case.
+        SequentialAnimation {
+            id: tickTickCompletionFade
+            // 2680 + 320 = the three seconds the request asks for, measured
+            // from the tick to the line actually going.
+            PauseAnimation { duration: 2680 }
+            NumberAnimation {
+                target: noteWindow
+                property: "tickTickFadeOpacity"
+                from: 1
+                to: 0
+                duration: 320
+                easing.type: Easing.InQuad
+            }
+            ScriptAction {
+                script: {
+                    const position = noteWindow.tickTickFadingPosition
+                    // Read BEFORE the edit, for tickTickLastFadedLabel below —
+                    // once the line is gone there is no position left to ask.
+                    const label = docHandler.listLabelTextAt(position)
+                    // Clear the paint effect BEFORE the edit: the position is
+                    // about to stop meaning anything.
+                    docHandler.setFadedLine(-1, 1, editor.color)
+                    noteWindow.tickTickFadeOpacity = 1
+                    // Self-guarding (see DocumentHandler.removeCheckedCheckbox-
+                    // LineAt): if the line stopped being a ticked item during
+                    // the three seconds this took, nothing is removed. Nothing
+                    // restarts the animation in that case either — see the
+                    // change handler below for why that must stay true. Only
+                    // record the label on an actual removal, for the same
+                    // reason: a refused removal faded nothing, so there is
+                    // nothing yet to refuse to re-arm for.
+                    if (docHandler.removeCheckedCheckboxLineAt(position))
+                        noteWindow.tickTickLastFadedLabel = label
+                }
+            }
+        }
+
+        // TickTick "synced N ago" footer — module-owned QML (see
+        // TickTickSyncFooter.qml for the full design rationale, including why
+        // its clock re-stamps only on events, never on a timer). Loaded by
+        // relative URL, never by type name: the file is only compiled into
+        // this QML module when the TickTick module is built, and `active` is
+        // false in exactly the builds where the URL would not resolve.
+        Loader {
+            id: tickTickSyncFooterLoader
+            active: noteWindow.isTickTickTaskNote
+            z: 4
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            anchors.margins: 8
+            source: "TickTickSyncFooter.qml"
+            onLoaded: item.noteWindow = noteWindow
         }
 
         // Small glass-styled "Copied" confirmation (feature request): shown

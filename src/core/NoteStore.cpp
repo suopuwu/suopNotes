@@ -1,4 +1,5 @@
 #include "NoteStore.h"
+#include "NoteContentProvider.h"
 #include "NoteFilename.h"
 
 #include <QDir>
@@ -79,13 +80,52 @@ void NoteStore::setNotesFolder(const QString &path)
     refreshNoteIds(true);
 }
 
+void NoteStore::registerProvider(NoteContentProvider *provider)
+{
+    if (!provider || m_providers.contains(provider))
+        return;
+
+    m_providers.append(provider);
+
+    // Re-broadcast as our own, so reconcile and the note windows keep listening
+    // to exactly one object and never need to know a provider exists.
+    connect(provider, &NoteContentProvider::noteIdsChanged,
+            this, &NoteStore::noteIdsChanged);
+    connect(provider, &NoteContentProvider::noteContentChangedExternally,
+            this, &NoteStore::noteContentChangedExternally);
+
+    // Its notes are part of the world the moment it registers; without this the
+    // first reconcile would run against a list that omits them and close them.
+    emit noteIdsChanged();
+}
+
+NoteContentProvider *NoteStore::providerForId(const QString &id) const
+{
+    for (NoteContentProvider *provider : m_providers) {
+        if (provider->ownsNoteId(id))
+            return provider;
+    }
+    return nullptr;
+}
+
 QStringList NoteStore::noteIds() const
 {
-    return m_noteIds;
+    if (m_providers.isEmpty())
+        return m_noteIds;
+
+    // Local notes first, so the ordering users already see is undisturbed and
+    // provider notes simply appear after them.
+    QStringList ids = m_noteIds;
+    for (NoteContentProvider *provider : m_providers)
+        ids.append(provider->noteIds());
+    return ids;
 }
 
 QString NoteStore::loadNoteContent(const QString &id) const
 {
+    if (NoteContentProvider *provider = providerForId(id))
+        return provider->loadNoteContent(id);
+
     QFile file(filePathForId(id));
     if (!file.exists() || !file.open(QIODevice::ReadOnly))
         return QString();
@@ -94,6 +134,13 @@ QString NoteStore::loadNoteContent(const QString &id) const
 
 QString NoteStore::noteFilePath(const QString &id) const
 {
+    // A provider note has no file in the notes folder — any cache it keeps is
+    // an implementation detail and not something to point a file manager at.
+    // Callers already handle the empty answer: it is what disables "Reveal in
+    // File Manager".
+    if (providerForId(id))
+        return QString();
+
     // The existence check is not belt-and-braces: filePathForId() answers from
     // m_idToFileName alone, which is an in-memory map that can outlive the file
     // it names (an external delete is only noticed when the watcher fires).
@@ -153,6 +200,14 @@ QString NoteStore::createNote(const QString &content)
 
 void NoteStore::deleteNote(const QString &id)
 {
+    if (NoteContentProvider *provider = providerForId(id)) {
+        // Whether it declines or not, this must not fall through: the local
+        // path below would remove a file named after a note that has none, and
+        // sweep images on the strength of content it never owned.
+        provider->deleteNote(id);
+        return;
+    }
+
     const QString path = filePathForId(id);
 
     // Captured before the file is removed, so its images can be garbage-
@@ -181,6 +236,15 @@ void NoteStore::deleteNote(const QString &id)
 
 void NoteStore::saveNoteContent(const QString &id, const QString &markdownText)
 {
+    if (NoteContentProvider *provider = providerForId(id)) {
+        // A provider that declines simply does not persist this edit. It must
+        // NOT reach the debounce below: that path writes a .md into the notes
+        // folder named after the note, which for a provider-owned id would
+        // fabricate a local note that then shows up as a duplicate.
+        provider->saveNoteContent(id, markdownText);
+        return;
+    }
+
     m_pendingContent[id] = markdownText;
 
     QTimer *timer = m_pendingTimers.value(id, nullptr);

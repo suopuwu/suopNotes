@@ -450,9 +450,11 @@ ChromeWindow {
         // Every action operates on the hovered note directly, except search
         // (see findRequested above). Guarded on noteWindow — a signal can still
         // arrive in the instant after the pointer left and it went null.
+        tickTickEnabled: hudWindow.noteWindow ? hudWindow.noteWindow.tickTickAvailable : false
         onPinToggleRequested: if (hudWindow.noteWindow) hudWindow.noteWindow.setPinned(!hudWindow.noteWindow.alwaysOnTop)
         onSettingsRequested: if (hudWindow.noteWindow) hudWindow.noteWindow.openSettings()
-        onDuplicateRequested: if (hudWindow.noteWindow) hudWindow.noteWindow.duplicateNote()
+        onNewNoteRequested: if (hudWindow.noteWindow) hudWindow.noteWindow.createNewNote()
+        onNewTaskRequested: if (hudWindow.noteWindow) hudWindow.noteWindow.createNewTask()
         onSearchRequested: if (hudWindow.noteWindow) hudWindow.findRequested(hudWindow.noteWindow)
         onCloseRequested: if (hudWindow.noteWindow) hudWindow.noteWindow.deleteNote()
     }

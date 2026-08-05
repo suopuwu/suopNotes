@@ -25,6 +25,30 @@ The app must use minimal resources when idle/not actively being interacted with.
 - Before adding any timer, ask: does this fire *because something happened*, or does it fire
   *unconditionally, on a schedule*? Only the former is acceptable.
 
+### The one sanctioned exception: the TickTick pull
+
+`TickTickSync`'s `m_scheduleTimer` is a genuine repeating timer, granted explicitly and
+deliberately. It is the *only* one in the app. Do not "fix" it, and do not treat it as
+precedent for a second one.
+
+Why it earns the exception: the TickTick API has no webhooks, no server-sent events and no
+changed-since query, so there is **no event that can exist** to tell the app a task changed
+elsewhere. Asking is the only mechanism the API offers. Without a schedule, the only way to see
+a task added on a phone is to remember to press Sync — which makes the integration feel broken
+rather than idle.
+
+What keeps it within the spirit of the rule, and what any change to it must preserve:
+
+- One HTTPS request per tick, nothing else. Between ticks it is a single armed `QTimer`.
+- Defaults to once an hour (`TickTickPrefs::kDefaultSyncIntervalMinutes`).
+- Floored at 5 minutes (`kMinSyncIntervalMinutes`), enforced in `TickTickPrefs` on both read and
+  write so a hand-edited INI cannot turn it into a busy loop.
+- Stopped outright — not merely short-circuited in its handler — whenever the module is
+  unauthorized or the user sets the interval to 0.
+
+Every other TickTick trigger is still an event: a login completing, a stored token finishing its
+async load at startup, a tray click, the Settings button, and an edit's one-shot upload debounce.
+
 ## Tests as living documentation
 
 Tests should serve as living documentation of how the code is meant to behave, not just as

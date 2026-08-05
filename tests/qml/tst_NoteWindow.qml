@@ -86,6 +86,24 @@ Item {
         alwaysOnTop: false
     }
 
+    // The one aggregated TickTick task note — the only note in the app that
+    // refreshes itself. Its id comes from the module rather than being typed
+    // out here, exactly as NoteWindow's own isTickTickTaskNote asks for it, so
+    // this stays a real task note even if the id scheme changes. Falls back to
+    // an id that is deliberately NOT a task note when the module is not built,
+    // which the tests below skip on anyway.
+    NoteWindow {
+        id: taskNoteTestWindow
+        noteId: tickTick !== null ? tickTick.sync.taskNoteId() : "ticktick-module-not-built"
+        index: 54
+        noteX: 0
+        noteY: 0
+        noteWidth: 260
+        noteHeight: 260
+        screenName: ""
+        alwaysOnTop: false
+    }
+
     SignalSpy {
         id: blurSpy
         target: blurEffect
@@ -417,6 +435,76 @@ Item {
             win.editor.loadFromDisk(false)
             compare(win.docHandler.toMarkdown(), "changed on disk",
                     "reloading pulls the new on-disk content into the editor")
+
+            noteStore.deleteNote(id)
+            win.destroy()
+        }
+
+        // The bug this guards: the TickTick task note reloads itself after
+        // nearly every user action (a commit, the hourly pull, a pull fired
+        // by window activation or a click in the note body), and that reload
+        // used to go through docHandler.setMarkdown() — which clears Qt's
+        // native undo stack by design (see DocumentHandler.h's doc comment
+        // on setMarkdown). That made Ctrl+Z do nothing in that note almost
+        // all the time. loadFromDisk(false) — what
+        // onNoteContentChangedExternally's handler calls — now routes
+        // through replaceAllTextPreservingUndo() instead, which records the
+        // reload as one undo step rather than wiping history.
+        function test_reloading_the_task_note_after_a_commit_leaves_the_users_undo_history_intact() {
+            const id = noteStore.createNote("original text")
+            const win = restoreOrderTestComponent.createObject(root, {
+                noteId: id,
+                index: 92,
+                noteX: 0,
+                noteY: 0,
+                noteWidth: 260,
+                noteHeight: 260,
+                screenName: "",
+                alwaysOnTop: false,
+            })
+            verify(win !== null)
+            tryCompare(win.editor, "ready", true)
+
+            // An edit the user makes before the reload — the thing that must
+            // survive it.
+            win.requestActivate()
+            tryCompare(win, "active", true)
+            win.editor.forceActiveFocus()
+            tryCompare(win.editor, "activeFocus", true)
+            win.editor.cursorPosition = win.editor.length
+            typeText(" committed task")
+            verify(win.editor.canUndo, "precondition: typing should leave undo history")
+            const afterTyping = win.docHandler.toMarkdown()
+
+            // The file changes on disk underneath the open note — a commit or
+            // a pull, simulated here the same way
+            // test_an_external_file_change_can_be_reloaded_into_the_open_note
+            // above does — and the note reloads without resetting its
+            // cursor, exactly what onNoteContentChangedExternally's handler
+            // does.
+            noteStore.saveNoteContent(id, "synced from elsewhere")
+            wait(500) // past NoteStore's 300ms save debounce, so the write lands
+            verify(!noteStore.hasUnsavedChanges(id))
+
+            win.editor.loadFromDisk(false)
+            compare(win.docHandler.toMarkdown(), "synced from elsewhere",
+                    "reload still pulls in the new on-disk content")
+
+            verify(win.editor.canUndo,
+                   "the pre-reload edit must still be undoable, not wiped by the reload")
+
+            // First undo steps back through the reload itself, landing on
+            // exactly what was in the editor right before it fired — undo
+            // doing SOMETHING, not nothing.
+            win.editor.undo()
+            compare(win.docHandler.toMarkdown(), afterTyping,
+                    "undo should step back through the reload rather than doing nothing")
+
+            // Second undo reaches back through the user's own pre-reload
+            // edit — the history this bug used to wipe out entirely.
+            win.editor.undo()
+            compare(win.docHandler.toMarkdown(), "original text",
+                    "undo should keep walking back through the committed edit made before the reload")
 
             noteStore.deleteNote(id)
             win.destroy()
@@ -4408,6 +4496,851 @@ Item {
                 win.noteAppearance.clearCodeModeEnabledOverride()
                 wait(50)
             }
+        }
+
+        // --- When the TickTick task note refreshes itself -------------------
+        //
+        // The task note is the one note in the app whose content lives
+        // elsewhere, so it refreshes on its own — but only when the user
+        // actually comes BACK to it. These specs pin which events count,
+        // because the tempting looser triggers all misfire: refreshing on
+        // every click in the body pulls again on a note the user is already
+        // reading, and refreshing on raw window activation pulls every time
+        // focus returns from the selection toolbar or the find panel, in the
+        // middle of editing.
+        //
+        // They assert on the refresh debounce being armed rather than on a
+        // request going out: the module is unauthorized in this harness, so a
+        // pull would be a silent no-op and prove nothing either way.
+
+        function skipUnlessTickTickBuilt() {
+            if (tickTick === null)
+                skip("built without the TickTick module")
+        }
+
+        // Leaves the debounce disarmed and the note un-focused, so each test
+        // below starts from "nothing is scheduled" and its own trigger is the
+        // only thing that could have armed it.
+        function resetTaskNoteRefreshState() {
+            taskNoteTestWindow.appHasFocus = false
+            taskNoteTestWindow.tickTickRefreshDebounce.stop()
+            verify(!taskNoteTestWindow.tickTickRefreshDebounce.running,
+                   "precondition: no refresh is scheduled")
+        }
+
+        function test_the_task_note_is_recognised_as_the_ticktick_note() {
+            skipUnlessTickTickBuilt()
+            verify(taskNoteTestWindow.isTickTickTaskNote,
+                   "precondition for every test below: this window really is the task note")
+            verify(!soloWindow.isTickTickTaskNote,
+                   "an ordinary note is not")
+        }
+
+        function test_returning_to_the_task_note_schedules_a_refresh() {
+            skipUnlessTickTickBuilt()
+            resetTaskNoteRefreshState()
+
+            taskNoteTestWindow.appHasFocus = true
+
+            verify(taskNoteTestWindow.tickTickRefreshDebounce.running,
+                   "coming back to the note is the moment its content might be stale, since the " +
+                   "scheduled pull is hourly")
+        }
+
+        function test_leaving_the_task_note_schedules_nothing() {
+            skipUnlessTickTickBuilt()
+            taskNoteTestWindow.appHasFocus = true
+            taskNoteTestWindow.tickTickRefreshDebounce.stop()
+
+            taskNoteTestWindow.appHasFocus = false
+
+            verify(!taskNoteTestWindow.tickTickRefreshDebounce.running,
+                   "there is nobody looking at the note to refresh it for")
+        }
+
+        function test_clicking_the_body_of_an_already_focused_task_note_schedules_nothing() {
+            skipUnlessTickTickBuilt()
+            taskNoteTestWindow.appHasFocus = true
+            taskNoteTestWindow.tickTickRefreshDebounce.stop()
+
+            mouseClick(taskNoteTestWindow.editor,
+                       taskNoteTestWindow.editor.width / 2,
+                       taskNoteTestWindow.editor.height / 2)
+
+            verify(!taskNoteTestWindow.tickTickRefreshDebounce.running,
+                   "a click inside a note the user is already working in is a caret placement, " +
+                   "not a request for fresh data — refreshing here meant one network request " +
+                   "per click")
+        }
+
+        function test_an_ordinary_note_never_schedules_a_ticktick_refresh() {
+            skipUnlessTickTickBuilt()
+            soloWindow.tickTickRefreshDebounce.stop()
+
+            soloWindow.appHasFocus = true
+
+            verify(!soloWindow.tickTickRefreshDebounce.running,
+                   "a normal note's content is a local file — there is nothing to pull")
+
+            soloWindow.appHasFocus = false
+        }
+
+        // The explicit gesture, and the reason the implicit one above is
+        // allowed to be conservative: whatever the debounce declines to do,
+        // clicking the footer always does.
+        function test_the_synced_footer_is_always_clickable_on_the_task_note() {
+            skipUnlessTickTickBuilt()
+            const footer = findChild(taskNoteTestWindow, "tickTickSyncFooter")
+            verify(footer !== null, "the task note has a synced-N-ago footer")
+            verify(footer.visible)
+        }
+
+        function test_an_ordinary_note_has_no_synced_footer() {
+            skipUnlessTickTickBuilt()
+            const footer = findChild(soloWindow, "tickTickSyncFooter")
+            verify(footer === null || !footer.visible,
+                   "only the task note has a sync state to report")
+        }
+
+        function test_the_task_note_is_titled_with_the_ticktick_list_it_shows() {
+            skipUnlessTickTickBuilt()
+            const title = findChild(taskNoteTestWindow, "tickTickListTitle")
+            verify(title !== null, "the task note has a list-title header")
+            verify(title.visible)
+        }
+
+        function test_an_ordinary_note_has_no_list_title() {
+            skipUnlessTickTickBuilt()
+            const title = findChild(soloWindow, "tickTickListTitle")
+            verify(title === null || !title.visible,
+                   "only the task note is showing tasks from a TickTick list")
+        }
+
+        function test_the_title_follows_the_selected_ticktick_list() {
+            skipUnlessTickTickBuilt()
+            const title = findChild(taskNoteTestWindow, "tickTickListTitle")
+
+            tickTick.sync.selectProject("test-project-id", "Groceries")
+
+            tryCompare(title, "text", "Groceries")
+
+            // selectProject's side effect of blanking the cached note must
+            // not leak into a later spec — every task-note spec reseeds its
+            // own text via seedTaskNote(), but restore the selected project
+            // itself so later specs asserting on the title text start clean.
+            tickTick.sync.selectProject("", "")
+        }
+
+        function test_the_task_note_reserves_room_above_its_text_for_the_title() {
+            skipUnlessTickTickBuilt()
+            verify(taskNoteTestWindow.editorFlick.anchors.topMargin > 8,
+                   "the list title sits above the text, not on top of it")
+            compare(soloWindow.editorFlick.anchors.topMargin, 8,
+                    "an ordinary note has no title to make room for")
+        }
+
+        // --- The task note's editing rules ---------------------------------
+        //
+        // The task note's line count IS its task list, so the two keystrokes
+        // that change it — Enter and Backspace — do not mean in this note what
+        // they mean anywhere else. Both were reported as bugs in their default
+        // form: Enter made blank lines that repairCheckboxList then turned into
+        // ghost checkboxes, and Backspace could never actually remove a line
+        // because that same repair regrew the marker under the caret ("you
+        // cannot use backspace to delete a note, it will spawn in the [ ]
+        // characters").
+        //
+        // The module is unauthorized in this harness, so nothing here reaches
+        // TickTick; what these pin is the note's own text after the keystroke,
+        // which is what the sync layer then diffs.
+
+        // Gives `win`'s editor real keyboard focus. keyClick() always targets
+        // QGuiApplication::focusWindow() rather than a specific item, and
+        // activation is not synchronous with several note windows in play —
+        // see the identical dance the arrow-key specs above do.
+        function focusEditorOf(win) {
+            win.requestActivate()
+            tryCompare(win, "active", true)
+            win.editor.forceActiveFocus()
+            tryCompare(win.editor, "activeFocus", true)
+        }
+
+        // Puts the note in a known state: a compose slot on top (see
+        // TickTickTaskList::kComposeIndex) and two task lines under it.
+        function seedTaskNote(composeText) {
+            taskNoteTestWindow.docHandler.setMarkdown(
+                "- [ ] " + composeText + "\n- [ ] Walk dog\n- [ ] Buy milk")
+            taskNoteTestWindow.refreshComposeSlotFilled()
+            focusEditorOf(taskNoteTestWindow)
+            // Let the text layout settle and the compose-slot rect debounce
+            // fire, then measure once more explicitly. Without this a spec
+            // asserting on the rule's geometry can read the PREVIOUS spec's
+            // layout — the debounce is 32ms and positionToRectangle needs a
+            // frame — which is how a one-line slot was measured against a
+            // still-wrapped rect and the rule looked like it had spilled onto
+            // the task line below.
+            wait(80)
+            taskNoteTestWindow.recomputeComposeSlotRect()
+        }
+
+        function test_enter_never_adds_a_line_to_the_task_note() {
+            skipUnlessTickTickBuilt()
+            seedTaskNote("")
+            // On a task line, well away from the compose slot.
+            taskNoteTestWindow.editor.cursorPosition =
+                taskNoteTestWindow.docHandler.toMarkdown().indexOf("Walk dog") + 4
+
+            keyClick(Qt.Key_Return)
+
+            compare(taskNoteTestWindow.docHandler.toMarkdown(),
+                    "- [ ] \n- [ ] Walk dog\n- [ ] Buy milk",
+                    "a newline here would be a line with no task behind it, which the checkbox " +
+                    "repair then turns into a ghost item the user cannot remove")
+        }
+
+        function test_enter_still_continues_a_list_in_an_ordinary_note() {
+            skipUnlessTickTickBuilt()
+            soloWindow.docHandler.setMarkdown("- [ ] Walk dog")
+            focusEditorOf(soloWindow)
+            soloWindow.editor.cursorPosition = soloWindow.docHandler.toMarkdown().length
+
+            keyClick(Qt.Key_Return)
+
+            verify(soloWindow.docHandler.toMarkdown().indexOf("\n") >= 0,
+                   "the Enter rule is scoped to the task note — a normal note still continues " +
+                   "its list")
+            soloWindow.docHandler.setMarkdown("")
+        }
+
+        function test_backspace_at_the_start_of_an_emptied_task_removes_its_line() {
+            skipUnlessTickTickBuilt()
+            taskNoteTestWindow.docHandler.setMarkdown("- [ ] \n- [ ] \n- [ ] Buy milk")
+            taskNoteTestWindow.refreshComposeSlotFilled()
+            focusEditorOf(taskNoteTestWindow)
+            // The caret at the start of the SECOND line's text — the emptied
+            // task the user has just backspaced the title out of.
+            taskNoteTestWindow.editor.cursorPosition = 13
+
+            keyClick(Qt.Key_Backspace)
+
+            compare(taskNoteTestWindow.docHandler.toMarkdown(), "- [ ] \n- [ ] Buy milk",
+                    "the whole line goes, which is how the sync layer hears 'I'm done with this " +
+                    "task' — the default backspace instead ate into the marker, which the repair " +
+                    "pass immediately put back")
+        }
+
+        function test_backspace_cannot_delete_the_compose_slot() {
+            skipUnlessTickTickBuilt()
+            seedTaskNote("")
+            taskNoteTestWindow.editor.cursorPosition =
+                taskNoteTestWindow.docHandler.listLabelStartAt(0)
+
+            keyClick(Qt.Key_Backspace)
+
+            compare(taskNoteTestWindow.docHandler.toMarkdown(),
+                    "- [ ] \n- [ ] Walk dog\n- [ ] Buy milk",
+                    "the slot is permanent furniture — there is always somewhere to type a new " +
+                    "task, and letting the default handler eat its marker is the same defect in " +
+                    "a place no re-render would fix")
+        }
+
+        // Reported: "triple clicking to select the whole task then deleting
+        // works on most tasks, but not the task creator — we run into the
+        // infinitely regenerating checkbox markdown characters". Selecting the
+        // slot and deleting is a real gesture (clear what I typed), and it must
+        // leave an empty SLOT: a bare blank line has no glyph, no underline and
+        // no commit button, Backspace refuses to remove it, and only the next
+        // pull's re-render put the marker back — which is what "regenerating"
+        // meant.
+        //
+        // The selection is made with editor.select() rather than by synthesizing
+        // three clicks: what matters is the state a triple-click produces (the
+        // whole block selected, marker included), and a real triple-click
+        // depends on the platform double-click interval.
+        function test_selecting_the_whole_compose_slot_and_deleting_leaves_an_empty_slot() {
+            skipUnlessTickTickBuilt()
+            seedTaskNote("Call dentist")
+            const editor = taskNoteTestWindow.editor
+            editor.select(0, taskNoteTestWindow.docHandler.toMarkdown().indexOf("\n"))
+
+            keyClick(Qt.Key_Backspace)
+
+            compare(taskNoteTestWindow.docHandler.toMarkdown(),
+                    "- [ ] \n- [ ] Walk dog\n- [ ] Buy milk",
+                    "the slot is permanent furniture — clearing its text leaves an empty slot, " +
+                    "not a blank line only a pull could repair")
+            compare(editor.cursorPosition, taskNoteTestWindow.docHandler.listLabelStartAt(0),
+                    "and the caret is where the next task gets typed, not inside the marker")
+        }
+
+        // The other half of the same gesture, pinned unchanged: on a REAL task
+        // line, deleting the selection leaves the line blank, which is step one
+        // of "I'm done with this" — the second Backspace then removes it (see
+        // test_backspace_at_the_start_of_an_emptied_task_removes_its_line). Only
+        // line 0 is furniture.
+        function test_selecting_a_whole_task_line_and_deleting_leaves_it_blank() {
+            skipUnlessTickTickBuilt()
+            seedTaskNote("")
+            const editor = taskNoteTestWindow.editor
+            const md = taskNoteTestWindow.docHandler.toMarkdown()
+            const lineStart = md.indexOf("- [ ] Walk dog")
+            editor.select(lineStart, md.indexOf("\n", lineStart))
+
+            keyClick(Qt.Key_Backspace)
+
+            compare(taskNoteTestWindow.docHandler.toMarkdown(),
+                    "- [ ] \n\n- [ ] Buy milk",
+                    "a task line is not furniture — it goes blank and a second Backspace removes it")
+        }
+
+        // --- Multi-line selections in the task note --------------------------
+        //
+        // Every test above stays within ONE task line (or the whole compose
+        // slot, itself one block). A selection that instead SPANS lines — and
+        // whose endpoints don't sit exactly on line boundaries — used to be
+        // decided entirely by TickTickTaskList::diff comparing the merged
+        // result against its last render: a merge matching nothing there
+        // uploaded nothing and silently reverted on the very next pull, with
+        // no visible error (see item 007's work order for the full trace).
+        // Backspace/Delete/Cut here snap the removal to whole task lines
+        // instead — see NoteWindow.qml's selectionSpansMultipleTaskLines and
+        // Keys.onPressed — which the diff already reads as bulk completion,
+        // same as a clean triple-click-drag-and-delete always has. Typing or
+        // pasting over such a selection instead collapses it to its start,
+        // so the merge never happens at all.
+
+        function test_backspace_over_a_multiline_partial_selection_removes_whole_lines_without_merging() {
+            skipUnlessTickTickBuilt()
+            taskNoteTestWindow.docHandler.setMarkdown(
+                "- [ ] \n- [ ] Walk dog\n- [ ] Buy milk\n- [ ] Water plants")
+            taskNoteTestWindow.refreshComposeSlotFilled()
+            focusEditorOf(taskNoteTestWindow)
+            const editor = taskNoteTestWindow.editor
+            const md = taskNoteTestWindow.docHandler.toMarkdown()
+            // Mid "Walk dog" to mid "Buy milk" — neither endpoint sits on a
+            // line boundary.
+            editor.select(md.indexOf("Walk dog") + 2, md.indexOf("Buy milk") + 2)
+
+            keyClick(Qt.Key_Backspace)
+
+            compare(taskNoteTestWindow.docHandler.toMarkdown(),
+                    "- [ ] \n- [ ] Water plants",
+                    "both touched task lines are gone whole, and the untouched fourth line " +
+                    "survives — never merged with anything")
+        }
+
+        function test_delete_over_a_multiline_selection_including_the_compose_slot_leaves_it_present() {
+            skipUnlessTickTickBuilt()
+            seedTaskNote("Call dentist")
+            const editor = taskNoteTestWindow.editor
+            const md = taskNoteTestWindow.docHandler.toMarkdown()
+            // Mid the compose slot's own text to mid "Walk dog" — spans line
+            // 0 (the slot) and line 1.
+            editor.select(md.indexOf("dentist") + 2, md.indexOf("Walk dog") + 2)
+
+            keyClick(Qt.Key_Delete)
+
+            compare(taskNoteTestWindow.docHandler.toMarkdown(),
+                    "- [ ] Call dentist\n- [ ] Buy milk",
+                    "the compose slot's own text is untouched — it is permanent furniture — " +
+                    "only the fully-contained task line beneath it is removed")
+        }
+
+        function test_ctrl_x_over_a_multiline_selection_copies_the_text_before_removing_the_lines() {
+            skipUnlessTickTickBuilt()
+            seedTaskNote("")
+            const editor = taskNoteTestWindow.editor
+            const md = taskNoteTestWindow.docHandler.toMarkdown()
+            const selectionStart = md.indexOf("Walk dog") + 2
+            const selectionEnd = md.indexOf("Buy milk") + 4
+            editor.select(selectionStart, selectionEnd)
+            const cutText = md.substring(selectionStart, selectionEnd)
+
+            keyClick(Qt.Key_X, Qt.ControlModifier)
+
+            compare(taskNoteTestWindow.docHandler.toMarkdown(), "- [ ] ",
+                    "both task lines the selection touched are removed, same as Backspace/Delete")
+
+            // Same clipboard-via-paste verification as
+            // test_ctrl_c_copies_the_selection_and_shows_the_copy_toast.
+            editor.cursorPosition = editor.length
+            editor.paste()
+            verify(editor.text.indexOf(cutText) !== -1,
+                   "Ctrl+X copied the exact selected text — including its mid-line boundaries " +
+                   "— before removing the lines")
+        }
+
+        function test_typing_over_a_multiline_selection_inserts_at_its_start_without_deleting_lines() {
+            skipUnlessTickTickBuilt()
+            seedTaskNote("")
+            const editor = taskNoteTestWindow.editor
+            const md = taskNoteTestWindow.docHandler.toMarkdown()
+            const selectionStart = md.indexOf("Walk dog") + 2   // between "Wa" and "lk dog"
+            const selectionEnd = md.indexOf("Buy milk") + 2
+            editor.select(selectionStart, selectionEnd)
+
+            keyClick(Qt.Key_Z)
+
+            compare(editor.cursorPosition, selectionStart + 1,
+                    "the selection collapsed to its start and the typed character landed there")
+            compare(taskNoteTestWindow.docHandler.toMarkdown(),
+                    "- [ ] \n- [ ] Wazlk dog\n- [ ] Buy milk",
+                    "both original lines survive whole and unmerged — only the one character " +
+                    "was inserted, at the selection's start")
+        }
+
+        function test_backspace_at_the_start_of_a_task_that_still_has_a_title_does_nothing() {
+            skipUnlessTickTickBuilt()
+            seedTaskNote("")
+            taskNoteTestWindow.editor.cursorPosition =
+                taskNoteTestWindow.docHandler.toMarkdown().indexOf("Walk dog")
+
+            keyClick(Qt.Key_Backspace)
+
+            compare(taskNoteTestWindow.docHandler.toMarkdown(),
+                    "- [ ] \n- [ ] Walk dog\n- [ ] Buy milk",
+                    "the default handling here MERGES this line into the one above, which in " +
+                    "this note is one task silently absorbing another's text — clearing the " +
+                    "title first is the gesture for finishing with a task")
+        }
+
+        function test_backspace_inside_a_task_title_still_deletes_a_character() {
+            skipUnlessTickTickBuilt()
+            seedTaskNote("")
+            taskNoteTestWindow.editor.cursorPosition =
+                taskNoteTestWindow.docHandler.toMarkdown().indexOf("Walk dog") + 4
+
+            keyClick(Qt.Key_Backspace)
+
+            compare(taskNoteTestWindow.docHandler.toMarkdown(),
+                    "- [ ] \n- [ ] Wal dog\n- [ ] Buy milk",
+                    "only a caret sitting exactly at the start of an item's text means 'remove " +
+                    "this line'; ordinary editing is untouched")
+        }
+
+        // --- The task note's caret never enters a checkbox ------------------
+        //
+        // A checkbox's "- [ ] " is six real characters drawn as one glyph, so
+        // a caret inside it renders at the box's own edge and does not appear
+        // to move at all (reported: "the user can use the arrow keys to move
+        // into the checkboxes, but the display doesn't change"). In this note
+        // the marker is furniture the sync layer owns, so the caret skips it
+        // wholesale. See MarkerCaretGuard.
+
+        function test_left_arrow_at_a_tasks_text_skips_its_checkbox_to_the_line_above() {
+            skipUnlessTickTickBuilt()
+            seedTaskNote("")
+            taskNoteTestWindow.editor.cursorPosition = 13   // start of "Walk dog"
+
+            keyClick(Qt.Key_Left)
+
+            compare(taskNoteTestWindow.editor.cursorPosition, 6,
+                    "one press leaves the line, instead of six presses inching through a marker " +
+                    "whose characters all draw at the same two x positions")
+        }
+
+        function test_left_arrow_on_the_first_line_keeps_the_caret_on_its_text() {
+            skipUnlessTickTickBuilt()
+            seedTaskNote("")
+            taskNoteTestWindow.editor.cursorPosition = 6    // the compose slot's label
+
+            keyClick(Qt.Key_Left)
+
+            compare(taskNoteTestWindow.editor.cursorPosition, 6,
+                    "there is no line above to skip to, so the key does nothing rather than " +
+                    "parking the caret inside the slot's marker")
+        }
+
+        function test_home_lands_on_the_tasks_text_not_inside_its_checkbox() {
+            skipUnlessTickTickBuilt()
+            seedTaskNote("")
+            taskNoteTestWindow.editor.cursorPosition = 17   // mid-"Walk dog"
+
+            keyClick(Qt.Key_Home)
+
+            compare(taskNoteTestWindow.editor.cursorPosition, 13,
+                    "the start of the line is marker text; the start of what the user can read " +
+                    "and type is the label")
+        }
+
+        function test_right_arrow_off_the_end_of_a_line_skips_the_next_checkbox() {
+            skipUnlessTickTickBuilt()
+            seedTaskNote("")
+            taskNoteTestWindow.editor.cursorPosition = 6    // end of line 0
+
+            keyClick(Qt.Key_Right)
+
+            compare(taskNoteTestWindow.editor.cursorPosition, 13,
+                    "entering a line puts the caret on its text, not on the first of six " +
+                    "invisible marker characters")
+        }
+
+        function test_typing_after_skipping_a_checkbox_leaves_the_marker_intact() {
+            skipUnlessTickTickBuilt()
+            seedTaskNote("")
+            taskNoteTestWindow.editor.cursorPosition = 13
+
+            keyClick(Qt.Key_Home)
+            keyClick(Qt.Key_X)
+
+            compare(taskNoteTestWindow.docHandler.toMarkdown(),
+                    "- [ ] \n- [ ] xWalk dog\n- [ ] Buy milk",
+                    "this is the point of the rule: a caret inside the marker used to split it " +
+                    "into '- [ x] ', which stops parsing as a checkbox")
+        }
+
+        function test_an_ordinary_note_still_lets_the_caret_into_a_checkbox_marker() {
+            skipUnlessTickTickBuilt()
+            soloWindow.docHandler.setMarkdown("- [ ] Walk dog")
+            focusEditorOf(soloWindow)
+            soloWindow.editor.cursorPosition = 6
+
+            keyClick(Qt.Key_Left)
+
+            compare(soloWindow.editor.cursorPosition, 5,
+                    "an ordinary note's '- [ ] ' is markdown the user typed and may want to " +
+                    "select or edit — the skip is scoped to the task note")
+            soloWindow.docHandler.setMarkdown("")
+        }
+
+        function test_an_ordinary_notes_home_key_still_goes_to_the_line_start() {
+            skipUnlessTickTickBuilt()
+            soloWindow.docHandler.setMarkdown("- [ ] Walk dog")
+            focusEditorOf(soloWindow)
+            soloWindow.editor.cursorPosition = 10
+
+            keyClick(Qt.Key_Home)
+
+            compare(soloWindow.editor.cursorPosition, 0,
+                    "same scoping, for the other key the guard owns")
+            soloWindow.docHandler.setMarkdown("")
+        }
+
+        // --- The compose slot's check button --------------------------------
+        //
+        // Typing into the slot turns its checkbox into a filled check button
+        // (feature request: "when typing begins, let's change the checkbox icon
+        // to a check button") — the affordance that says this line is not a
+        // task yet and pressing this is what makes it one.
+
+        // The glyph drawn over the compose slot's (invisible) marker text. The
+        // overlay's delegates are created off a model synced from C++ ranges,
+        // so a freshly-seeded note needs a moment before they exist.
+        function composeSlotGlyph() {
+            for (let i = 0; i < taskNoteTestWindow.listMarkerRepeater.count; ++i) {
+                const glyph = taskNoteTestWindow.listMarkerRepeater.itemAt(i)
+                // A marker range starts at the drawn glyph (the "["), not the
+                // line's first character — so the slot's glyph is the one
+                // beginning before line 0's own text does.
+                if (glyph && glyph.start < taskNoteTestWindow.composeSlotLabelStart)
+                    return glyph
+            }
+            return null
+        }
+
+        function test_an_empty_compose_slot_draws_a_plain_checkbox() {
+            skipUnlessTickTickBuilt()
+            seedTaskNote("")
+
+            verify(!taskNoteTestWindow.composeSlotFilled,
+                   "there is nothing to commit yet")
+            tryVerify(() => composeSlotGlyph() !== null, 2000,
+                      "the slot has a checkbox glyph")
+            verify(!composeSlotGlyph().showsAsCommitButton,
+                   "an empty slot looks like every other unticked box")
+        }
+
+        function test_typing_into_the_compose_slot_turns_its_box_into_a_check_button() {
+            skipUnlessTickTickBuilt()
+            seedTaskNote("Call dentist")
+
+            verify(taskNoteTestWindow.composeSlotFilled,
+                   "there is now something worth committing")
+            tryVerify(() => composeSlotGlyph() !== null, 2000,
+                      "the slot has a checkbox glyph")
+            verify(composeSlotGlyph().showsAsCommitButton,
+                   "the box reads as a button to press, not a box to tick")
+        }
+
+        function test_a_filled_task_line_is_never_a_check_button() {
+            skipUnlessTickTickBuilt()
+            seedTaskNote("Call dentist")
+            tryVerify(() => composeSlotGlyph() !== null, 2000)
+
+            for (let i = 0; i < taskNoteTestWindow.listMarkerRepeater.count; ++i) {
+                const glyph = taskNoteTestWindow.listMarkerRepeater.itemAt(i)
+                if (glyph && glyph.start >= taskNoteTestWindow.composeSlotLabelStart)
+                    verify(!glyph.showsAsCommitButton,
+                           "only the compose slot commits — a real task's box still ticks")
+            }
+        }
+
+        // --- The compose slot's underline ----------------------------------
+        //
+        // A thin rule along the slot's row, so the note's top line reads as a
+        // field to type a task into rather than as a task that has lost its
+        // text — in a plain-text editor there is nothing else to tell the two
+        // apart. It brightens on hover, the same language every other
+        // interactable in the app speaks.
+
+        function composeSlotUnderlineOf(win) {
+            return findChild(win, "composeSlotUnderline")
+        }
+
+        function test_the_compose_slot_is_underlined() {
+            skipUnlessTickTickBuilt()
+            seedTaskNote("")
+            const rule = composeSlotUnderlineOf(taskNoteTestWindow)
+            verify(rule !== null, "the underline exists")
+            tryVerify(() => rule.visible && rule.width > 0, 2000,
+                      "it spans the slot's row once the text layout has settled")
+        }
+
+        function test_the_underline_sits_on_the_slots_own_row() {
+            skipUnlessTickTickBuilt()
+            seedTaskNote("")
+            const rule = composeSlotUnderlineOf(taskNoteTestWindow)
+            tryVerify(() => rule.visible && rule.height > 0, 2000)
+
+            // Within the first line's band, and above wherever the SECOND line
+            // starts — a rule that drifted onto the next row would underline a
+            // real task instead of the slot.
+            const firstRow = taskNoteTestWindow.editor.positionToRectangle(0)
+            const secondRow = taskNoteTestWindow.editor.positionToRectangle(
+                taskNoteTestWindow.docHandler.toMarkdown().indexOf("Walk dog"))
+            verify(rule.y >= firstRow.y, "not above the slot's own row")
+            verify(rule.y + rule.height <= secondRow.y + 1,
+                   "not spilling onto the first real task's row")
+        }
+
+        function test_the_underline_starts_where_typing_starts_not_under_the_checkbox() {
+            skipUnlessTickTickBuilt()
+            seedTaskNote("")
+            const rule = composeSlotUnderlineOf(taskNoteTestWindow)
+            tryVerify(() => rule.visible && rule.width > 0, 2000)
+
+            // The rule marks the area that can be typed into. Running it under
+            // the checkbox would underline the commit button — a control, not a
+            // field.
+            const labelRect = taskNoteTestWindow.editor.positionToRectangle(
+                taskNoteTestWindow.composeSlotLabelStart)
+            verify(rule.x > 0, "it does not start at the editor's left edge")
+            fuzzyCompare(rule.x, labelRect.x, 1,
+                         "it starts exactly where the slot's own text does")
+            fuzzyCompare(rule.x + rule.width, taskNoteTestWindow.editor.width, 1,
+                         "and runs to the editor's edge, which is where wrapping happens")
+        }
+
+        function test_the_underline_follows_the_slot_down_when_its_text_wraps() {
+            skipUnlessTickTickBuilt()
+            seedTaskNote("")
+            const rule = composeSlotUnderlineOf(taskNoteTestWindow)
+            tryVerify(() => rule.visible && rule.height > 0, 2000)
+            const oneLineY = rule.y
+
+            // Long enough to certainly wrap in a 260px-wide note.
+            seedTaskNote("buy oat milk and eggs and bread and coffee beans before the shop closes")
+
+            tryVerify(() => rule.y > oneLineY, 2000,
+                      "the rule tracks the LAST visual line the slot's text occupies — left on " +
+                      "the first, it would strike through the wrapped text instead of " +
+                      "underlining the field")
+
+            const firstVisualLine = taskNoteTestWindow.editor.positionToRectangle(
+                taskNoteTestWindow.composeSlotLabelStart)
+            verify(rule.y >= firstVisualLine.y + firstVisualLine.height,
+                   "it is genuinely below the first visual line, not merely nudged")
+        }
+
+        function test_a_wrapped_slot_does_not_thicken_its_underline() {
+            skipUnlessTickTickBuilt()
+            seedTaskNote("")
+            const rule = composeSlotUnderlineOf(taskNoteTestWindow)
+            tryVerify(() => rule.visible && rule.height > 0, 2000)
+            const thickness = rule.height
+
+            seedTaskNote("buy oat milk and eggs and bread and coffee beans before the shop closes")
+            tryVerify(() => taskNoteTestWindow.composeSlotRect.height > thickness * 4, 2000,
+                      "precondition: the slot's band really did grow by wrapping")
+
+            compare(rule.height, thickness,
+                    "thickness comes from the font, not from the band — deriving it from the " +
+                    "rect would fatten the rule with every wrapped line")
+        }
+
+        function test_the_underline_brightens_on_hover_and_dims_again() {
+            skipUnlessTickTickBuilt()
+            seedTaskNote("")
+            const rule = composeSlotUnderlineOf(taskNoteTestWindow)
+            tryVerify(() => rule.visible && rule.height > 0, 2000)
+
+            const resting = rule.color.a
+            taskNoteTestWindow.composeSlotHovered = true
+            tryVerify(() => rule.color.a > resting, 2000,
+                      "hovering the row makes the rule more intense")
+
+            taskNoteTestWindow.composeSlotHovered = false
+            tryVerify(() => rule.color.a <= resting + 0.001, 2000,
+                      "and it settles back once the pointer leaves")
+        }
+
+        function test_only_the_slots_own_row_counts_as_hovering_the_underline() {
+            skipUnlessTickTickBuilt()
+            seedTaskNote("")
+            tryVerify(() => taskNoteTestWindow.composeSlotRect.height > 0, 2000)
+            const row = taskNoteTestWindow.composeSlotRect
+
+            verify(taskNoteTestWindow.composeSlotRowUnderPointer(4, row.y + row.height / 2),
+                   "a pointer on the row lights it up")
+            verify(!taskNoteTestWindow.composeSlotRowUnderPointer(4, row.y + row.height + 2),
+                   "a pointer on the task line below does not")
+            verify(!taskNoteTestWindow.composeSlotRowUnderPointer(4, -20),
+                   "neither does one in the HUD strip above the editor, which maps to a " +
+                   "negative y here")
+        }
+
+        function test_moving_the_pointer_onto_the_slots_row_lights_the_underline() {
+            skipUnlessTickTickBuilt()
+            seedTaskNote("")
+            tryVerify(() => taskNoteTestWindow.composeSlotRect.height > 0, 2000)
+            const row = taskNoteTestWindow.composeSlotRect
+            const editor = taskNoteTestWindow.editor
+
+            // Joins up the two halves the specs above cover separately: the
+            // pointer really does reach this through mouseDragArea, which sits
+            // ON TOP of the editor and claims hover for the whole area — a
+            // HoverHandler declared on the underline itself would never see a
+            // single event.
+            mouseMove(editor, 8, row.y + row.height / 2)
+            tryCompare(taskNoteTestWindow, "composeSlotHovered", true)
+
+            mouseMove(editor, 8, row.y + row.height * 2)
+            tryCompare(taskNoteTestWindow, "composeSlotHovered", false)
+        }
+
+        function test_an_ordinary_note_has_no_compose_slot_underline() {
+            skipUnlessTickTickBuilt()
+            soloWindow.docHandler.setMarkdown("- [ ] Walk dog")
+            soloWindow.refreshComposeSlotFilled()
+
+            const rule = composeSlotUnderlineOf(soloWindow)
+            tryVerify(() => rule === null || !rule.visible, 2000,
+                      "the rule is an affordance for the one note that has a compose slot")
+            soloWindow.docHandler.setMarkdown("")
+        }
+
+        function test_an_ordinary_notes_first_checkbox_is_never_a_check_button() {
+            skipUnlessTickTickBuilt()
+            soloWindow.docHandler.setMarkdown("- [ ] Walk dog")
+            soloWindow.refreshComposeSlotFilled()
+
+            verify(!soloWindow.composeSlotFilled,
+                   "an ordinary note has no compose slot at all — its first line is just a task")
+            soloWindow.docHandler.setMarkdown("")
+        }
+
+        // --- The completion fade's undo-window guard ------------------------
+        //
+        // TickTickSync::kUploadDebounceMs is kept longer than
+        // tickTickCompletionFade's three-second hold specifically so a tick and
+        // the fade's eventual removal of it land together as one edit — see
+        // that constant's own comment in TickTickSync.cpp. But an undo landing
+        // AFTER the fade has already removed the line is a separate hazard: a
+        // restored `- [x] …` line would otherwise start the fade running a
+        // second time over a task that is already closed in TickTick (nothing
+        // can take that completion back — see TickTickClient.h).
+        // tickTickLastFadedLabel (NoteWindow.qml) is the guard against that,
+        // set by the fade's own ScriptAction on every real removal. These pin
+        // it directly, setting it by hand rather than waiting out a real
+        // three-second fade to arm it.
+
+        function resetFadeGuardState() {
+            taskNoteTestWindow.tickTickCompletionFade.stop()
+            taskNoteTestWindow.tickTickFadeOpacity = 1
+            taskNoteTestWindow.tickTickLastFadedLabel = ""
+            taskNoteTestWindow.docHandler.setMarkdown("- [ ] ")
+            wait(50)
+        }
+
+        function test_the_fade_does_not_rearm_for_a_line_restored_after_it_already_faded() {
+            skipUnlessTickTickBuilt()
+            resetFadeGuardState()
+
+            // Stands in for the fade having already removed this exact task
+            // once this session — the same bookkeeping its own ScriptAction
+            // does on a real removal.
+            taskNoteTestWindow.tickTickLastFadedLabel = "Buy milk"
+
+            // An undo (or a paste) brings a ticked line with that same label
+            // back into the note.
+            taskNoteTestWindow.docHandler.setMarkdown("- [ ] \n- [x] Buy milk")
+            wait(50)
+
+            verify(!taskNoteTestWindow.tickTickCompletionFade.running,
+                   "a line this window already faded out once must not fade a second time over a " +
+                   "task that is already closed in TickTick")
+            verify(taskNoteTestWindow.docHandler.toMarkdown().indexOf("- [x] Buy milk") !== -1,
+                   "since the fade never started, the restored line is left exactly as it came " +
+                   "back rather than being silently removed again")
+
+            resetFadeGuardState()
+        }
+
+        function test_the_fade_still_arms_for_a_different_ticked_line() {
+            skipUnlessTickTickBuilt()
+            resetFadeGuardState()
+
+            taskNoteTestWindow.tickTickLastFadedLabel = "Buy milk"
+
+            // A DIFFERENT task ticked — the guard is keyed on the label that
+            // was actually faded, not a blanket "never fade again" switch.
+            taskNoteTestWindow.docHandler.setMarkdown("- [ ] \n- [x] Walk dog")
+            wait(50)
+
+            verify(taskNoteTestWindow.tickTickCompletionFade.running,
+                   "only a line matching the one already faded is guarded — every other tick " +
+                   "still gets its undo window")
+
+            resetFadeGuardState()
+        }
+
+        // A reload — a pull among them — starts the "already faded this one"
+        // memory over: a pull only ever asks TickTick for open tasks, so by
+        // then the server's own account of things has moved on regardless of
+        // what this window remembers fading. Exercised on a plain note rather
+        // than taskNoteTestWindow, the same way
+        // test_an_external_file_change_can_be_reloaded_into_the_open_note
+        // above does — tickTickLastFadedLabel is cleared unconditionally by
+        // loadFromDisk, with no dependency on the TickTick module being built.
+        function test_reloading_a_note_clears_the_fade_guard() {
+            const id = noteStore.createNote("original text")
+            const win = restoreOrderTestComponent.createObject(root, {
+                noteId: id,
+                index: 93,
+                noteX: 0,
+                noteY: 0,
+                noteWidth: 260,
+                noteHeight: 260,
+                screenName: "",
+                alwaysOnTop: false,
+            })
+            verify(win !== null)
+            tryCompare(win.editor, "ready", true)
+
+            win.tickTickLastFadedLabel = "Buy milk"
+
+            noteStore.saveNoteContent(id, "changed on disk")
+            wait(500) // past NoteStore's 300ms save debounce, so the write lands
+            verify(!noteStore.hasUnsavedChanges(id))
+
+            win.editor.loadFromDisk(false)
+
+            compare(win.tickTickLastFadedLabel, "",
+                    "loadFromDisk must clear the memory of the last line faded, or a task " +
+                    "restored under the SAME label after a later tick would be wrongly guarded")
+
+            noteStore.deleteNote(id)
+            win.destroy()
         }
     }
 }

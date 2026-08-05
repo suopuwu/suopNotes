@@ -18,7 +18,7 @@ SCENARIO("Module config round-trips through its own file", "[ticktick][store]")
         REQUIRE(tempDir.isValid());
         const QString path = tempDir.filePath("ticktick.ini");
 
-        TickTickTokenStore store(path);
+        TickTickTokenStore store(path, TickTickTokenStore::SecretBackend::ConfigFileOnly);
 
         WHEN("a client id is set")
         {
@@ -33,7 +33,7 @@ SCENARIO("Module config round-trips through its own file", "[ticktick][store]")
             {
                 // The client id is not a secret, so it stays in the INI where a
                 // user can see and correct it.
-                TickTickTokenStore reopened(path);
+                TickTickTokenStore reopened(path, TickTickTokenStore::SecretBackend::ConfigFileOnly);
                 CHECK(reopened.clientId() == "my-client-id");
             }
         }
@@ -62,7 +62,7 @@ SCENARIO("The callback port defaults to the one most TickTick apps register",
     {
         QTemporaryDir tempDir;
         REQUIRE(tempDir.isValid());
-        TickTickTokenStore store(tempDir.filePath("ticktick.ini"));
+        TickTickTokenStore store(tempDir.filePath("ticktick.ini"), TickTickTokenStore::SecretBackend::ConfigFileOnly);
 
         THEN("it reports 8080")
         {
@@ -95,7 +95,7 @@ SCENARIO("The callback port defaults to the one most TickTick apps register",
         {
             // A hand-edited or corrupted file must not make the login fail with
             // an unbindable-socket error instead of just working.
-            TickTickTokenStore store(path);
+            TickTickTokenStore store(path, TickTickTokenStore::SecretBackend::ConfigFileOnly);
             CHECK(store.callbackPort() == 8080);
         }
     }
@@ -107,7 +107,7 @@ SCENARIO("Secret loading always answers, including on first run", "[ticktick][st
     {
         QTemporaryDir tempDir;
         REQUIRE(tempDir.isValid());
-        TickTickTokenStore store(tempDir.filePath("ticktick.ini"));
+        TickTickTokenStore store(tempDir.filePath("ticktick.ini"), TickTickTokenStore::SecretBackend::ConfigFileOnly);
 
         QSignalSpy loadedSpy(&store, &TickTickTokenStore::secretsLoaded);
 
@@ -149,7 +149,7 @@ SCENARIO("Storing a token records when it will expire", "[ticktick][store]")
     {
         QTemporaryDir tempDir;
         REQUIRE(tempDir.isValid());
-        TickTickTokenStore store(tempDir.filePath("ticktick.ini"));
+        TickTickTokenStore store(tempDir.filePath("ticktick.ini"), TickTickTokenStore::SecretBackend::ConfigFileOnly);
 
         WHEN("a token with TickTick's real lifetime is stored")
         {

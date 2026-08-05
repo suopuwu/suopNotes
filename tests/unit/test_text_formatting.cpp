@@ -1839,3 +1839,657 @@ SCENARIO("A reactive maintenance pass leaves nothing on the undo stack when noth
         }
     }
 }
+
+SCENARIO("A protected checkbox list puts back boxes an edit destroyed", "[textformatting][checkbox]")
+{
+    GIVEN("a document of intact checkbox items")
+    {
+        QTextDocument doc;
+        doc.setPlainText("- [ ] milk\n- [x] eggs");
+        QTextCursor cursor(&doc);
+
+        WHEN("the repair pass runs")
+        {
+            const TextFormatting::CheckboxRepair repair = TextFormatting::repairCheckboxList(cursor, 0);
+
+            THEN("it reports no change, and the lines are byte-identical")
+            {
+                // If this fails, every keystroke rewrites the note — repair
+                // must be a true no-op over text that's already correct.
+                CHECK_FALSE(repair.changed);
+                CHECK(plainLines(doc) == QStringList{
+                    QStringLiteral("- [ ] milk"),
+                    QStringLiteral("- [x] eggs"),
+                });
+            }
+        }
+    }
+
+    GIVEN("a checked item, '- [x] done'")
+    {
+        QTextDocument doc;
+        doc.setPlainText("- [x] done");
+        QTextCursor cursor(&doc);
+
+        WHEN("the repair pass runs")
+        {
+            TextFormatting::repairCheckboxList(cursor, 0);
+
+            THEN("the tick survives repair")
+            {
+                // Catches a naive implementation that re-marks every line
+                // unchecked instead of leaving an already-valid marker alone.
+                CHECK(doc.begin().text() == QStringLiteral("- [x] done"));
+            }
+        }
+    }
+
+    GIVEN("a half-backspaced marker, '- [milk'")
+    {
+        // MarkdownList::parse's bullet pattern is "^[-*+]\\s" — it only looks
+        // at the dash and the single space after it, not at what follows. So
+        // "- [milk" still matches as an ordinary BULLET (marker length 2,
+        // covering just "- "); the checkbox pattern requires a closing "]"
+        // that "- [milk" never supplies, so it never matches as a checkbox.
+        // Confirmed by reading MarkdownList::parse directly, not guessed: this
+        // is the deliberately-left-open case the plan asked to pin down.
+        QTextDocument doc;
+        doc.setPlainText("- [milk");
+        QTextCursor cursor(&doc);
+
+        WHEN("the repair pass runs")
+        {
+            TextFormatting::repairCheckboxList(cursor, 0);
+
+            THEN("the bullet's own \"- \" is upgraded to a checkbox marker, "
+                 "leaving the stray \"[milk\" as the item's own (unparsed) label text")
+            {
+                CHECK(doc.begin().text() == QStringLiteral("- [ ] [milk"));
+            }
+        }
+    }
+
+    GIVEN("a bullet, '- milk'")
+    {
+        QTextDocument doc;
+        doc.setPlainText("- milk");
+        QTextCursor cursor(&doc);
+
+        WHEN("the repair pass runs")
+        {
+            TextFormatting::repairCheckboxList(cursor, 0);
+
+            THEN("it becomes '- [ ] milk' — upgraded, not double-marked")
+            {
+                CHECK(doc.begin().text() == QStringLiteral("- [ ] milk"));
+            }
+        }
+    }
+
+    GIVEN("a plain line, 'milk'")
+    {
+        QTextDocument doc;
+        doc.setPlainText("milk");
+        QTextCursor cursor(&doc);
+
+        WHEN("the repair pass runs")
+        {
+            TextFormatting::repairCheckboxList(cursor, 0);
+
+            THEN("it becomes '- [ ] milk'")
+            {
+                CHECK(doc.begin().text() == QStringLiteral("- [ ] milk"));
+            }
+        }
+    }
+
+    GIVEN("an empty line between two checkbox items")
+    {
+        QTextDocument doc;
+        doc.setPlainText("- [ ] milk\n\n- [ ] eggs");
+        QTextCursor cursor(&doc);
+
+        WHEN("the repair pass runs")
+        {
+            TextFormatting::repairCheckboxList(cursor, 0);
+
+            THEN("the blank line stays empty — Enter must still be usable")
+            {
+                CHECK(plainLines(doc) == QStringList{
+                    QStringLiteral("- [ ] milk"),
+                    QStringLiteral(""),
+                    QStringLiteral("- [ ] eggs"),
+                });
+            }
+        }
+    }
+
+    GIVEN("a caret sitting inside a plain line's text, about to gain a marker ahead of it")
+    {
+        QTextDocument doc;
+        doc.setPlainText("milk");
+        QTextCursor cursor(&doc);
+
+        WHEN("the repair pass runs with the caret at position 2 (inside \"mi|lk\")")
+        {
+            const TextFormatting::CheckboxRepair repair = TextFormatting::repairCheckboxList(cursor, 2);
+
+            THEN("the returned cursorPosition has moved by the marker's length, "
+                 "so the caret is still on the same character")
+            {
+                REQUIRE(repair.changed);
+                // "- [ ] " is 6 characters, inserted ahead of the caret.
+                CHECK(repair.cursorPosition == 2 + 6);
+                CHECK(doc.begin().text() == QStringLiteral("- [ ] milk"));
+                // Confirms "the same character": position 8 in the repaired
+                // line is still between 'm' and 'i'.
+                CHECK(doc.begin().text().left(repair.cursorPosition) == QStringLiteral("- [ ] mi"));
+            }
+        }
+    }
+
+    GIVEN("a caret on a later line than the one being repaired")
+    {
+        QTextDocument doc;
+        doc.setPlainText("milk\neggs");
+        QTextCursor cursor(&doc);
+        const int secondLineStart = doc.findBlockByNumber(1).position();
+
+        WHEN("the repair pass runs with the caret on the second line")
+        {
+            const TextFormatting::CheckboxRepair repair =
+                TextFormatting::repairCheckboxList(cursor, secondLineStart + 2);
+
+            THEN("it shifts too — every earlier insertion counts")
+            {
+                REQUIRE(repair.changed);
+                // Both lines gain a 6-character marker ahead of the caret's
+                // own line, so the caret moves by 6 twice over.
+                CHECK(repair.cursorPosition == secondLineStart + 2 + 2 * 6);
+                CHECK(plainLines(doc) == QStringList{
+                    QStringLiteral("- [ ] milk"),
+                    QStringLiteral("- [ ] eggs"),
+                });
+            }
+        }
+    }
+}
+
+SCENARIO("The compose slot's checkbox survives having the whole line deleted", "[textformatting][checkbox]")
+{
+    GIVEN("a task note with the compose slot cleared but its tasks intact")
+    {
+        QTextDocument doc;
+        doc.setPlainText("\n- [ ] Walk dog\n- [ ] Buy milk");
+        QTextCursor cursor(&doc);
+
+        WHEN("ensureFirstLineCheckbox runs with the caret at the start of the empty slot")
+        {
+            const TextFormatting::CheckboxRepair repair = TextFormatting::ensureFirstLineCheckbox(cursor, 0);
+
+            THEN("the slot regains its marker, and the caret lands where the user types, "
+                 "not inside the marker")
+            {
+                CHECK(repair.changed);
+                CHECK(plainLines(doc) == QStringList{
+                    QStringLiteral("- [ ] "),
+                    QStringLiteral("- [ ] Walk dog"),
+                    QStringLiteral("- [ ] Buy milk"),
+                });
+                CHECK(repair.cursorPosition == 6);
+            }
+        }
+    }
+
+    GIVEN("a compose slot that is already well-formed")
+    {
+        QTextDocument doc;
+        doc.setPlainText("- [ ] \n- [ ] Walk dog");
+        QTextCursor cursor(&doc);
+
+        WHEN("ensureFirstLineCheckbox runs")
+        {
+            const TextFormatting::CheckboxRepair repair = TextFormatting::ensureFirstLineCheckbox(cursor, 0);
+
+            THEN("it reports no change, and the text is byte-identical")
+            {
+                // If this fails, every keystroke rewrites the note — repair
+                // must be a true no-op over a slot that's already correct.
+                CHECK_FALSE(repair.changed);
+                CHECK(plainLines(doc) == QStringList{
+                    QStringLiteral("- [ ] "),
+                    QStringLiteral("- [ ] Walk dog"),
+                });
+            }
+        }
+    }
+
+    GIVEN("a compose slot with text already typed into it")
+    {
+        QTextDocument doc;
+        doc.setPlainText("- [ ] Call dentist");
+        QTextCursor cursor(&doc);
+
+        WHEN("ensureFirstLineCheckbox runs")
+        {
+            const TextFormatting::CheckboxRepair repair = TextFormatting::ensureFirstLineCheckbox(cursor, 0);
+
+            THEN("it is left untouched — that case belongs to repairCheckboxList, and "
+                 "prepending here would give \"- [ ] - [ ] Call dentist\"")
+            {
+                CHECK_FALSE(repair.changed);
+                CHECK(doc.begin().text() == QStringLiteral("- [ ] Call dentist"));
+            }
+        }
+    }
+
+    GIVEN("a well-formed compose slot followed by a blank SECOND line")
+    {
+        QTextDocument doc;
+        doc.setPlainText("- [ ] \n\n- [ ] Buy milk");
+        QTextCursor cursor(&doc);
+
+        WHEN("ensureFirstLineCheckbox runs")
+        {
+            const TextFormatting::CheckboxRepair repair = TextFormatting::ensureFirstLineCheckbox(cursor, 0);
+
+            THEN("only the first line is furniture — the blank second line stays blank, "
+                 "since a blank task line is still how tryRemoveTaskLine gets its chance "
+                 "to remove one")
+            {
+                CHECK_FALSE(repair.changed);
+                CHECK(plainLines(doc) == QStringList{
+                    QStringLiteral("- [ ] "),
+                    QStringLiteral(""),
+                    QStringLiteral("- [ ] Buy milk"),
+                });
+            }
+        }
+    }
+
+    GIVEN("an entirely empty document, as if the whole note had been selected and deleted")
+    {
+        QTextDocument doc;
+        doc.setPlainText("");
+        QTextCursor cursor(&doc);
+
+        WHEN("ensureFirstLineCheckbox runs")
+        {
+            const TextFormatting::CheckboxRepair repair = TextFormatting::ensureFirstLineCheckbox(cursor, 0);
+
+            THEN("the note always has somewhere to type")
+            {
+                CHECK(repair.changed);
+                CHECK(doc.begin().text() == QStringLiteral("- [ ] "));
+            }
+        }
+    }
+}
+
+SCENARIO("A ticked checkbox line can be removed outright", "[textformatting][checkbox]")
+{
+    GIVEN("three items with the middle one ticked")
+    {
+        QTextDocument doc;
+        doc.setPlainText("- [ ] milk\n- [x] eggs\n- [ ] bread");
+
+        WHEN("removal is requested at a position on the ticked line")
+        {
+            QTextCursor cursor = cursorAtLine(doc, 1, 2);
+            const bool removed = TextFormatting::removeCheckedCheckboxLine(cursor);
+
+            THEN("it returns true, and exactly the other two lines remain, in order, "
+                 "with no blank line left where it was")
+            {
+                CHECK(removed);
+                CHECK(plainLines(doc) == QStringList{
+                    QStringLiteral("- [ ] milk"),
+                    QStringLiteral("- [ ] bread"),
+                });
+            }
+        }
+    }
+
+    GIVEN("an unticked item, '- [ ] milk'")
+    {
+        QTextDocument doc;
+        doc.setPlainText("- [ ] milk");
+
+        WHEN("removal is requested on it")
+        {
+            QTextCursor cursor = cursorAtLine(doc, 0, 2);
+            const bool removed = TextFormatting::removeCheckedCheckboxLine(cursor);
+
+            THEN("it returns false and the document is byte-identical")
+            {
+                // This is the guard the whole completion-fade animation leans
+                // on: if it fails, a slow click could delete a task the user
+                // just un-ticked.
+                CHECK_FALSE(removed);
+                CHECK(plainLines(doc) == QStringList{
+                    QStringLiteral("- [ ] milk"),
+                });
+            }
+        }
+    }
+
+    GIVEN("a plain, non-checkbox line")
+    {
+        QTextDocument doc;
+        doc.setPlainText("just some prose");
+
+        WHEN("removal is requested on it")
+        {
+            QTextCursor cursor = cursorAtLine(doc, 0, 3);
+            const bool removed = TextFormatting::removeCheckedCheckboxLine(cursor);
+
+            THEN("it returns false and the document is unchanged")
+            {
+                CHECK_FALSE(removed);
+                CHECK(plainLines(doc) == QStringList{
+                    QStringLiteral("just some prose"),
+                });
+            }
+        }
+    }
+
+    GIVEN("two items with the LAST one ticked")
+    {
+        QTextDocument doc;
+        doc.setPlainText("- [ ] milk\n- [x] eggs");
+
+        WHEN("removal is requested on the last, ticked line")
+        {
+            QTextCursor cursor = cursorAtLine(doc, 1, 2);
+            const bool removed = TextFormatting::removeCheckedCheckboxLine(cursor);
+
+            THEN("it goes, and the line before it does not gain a trailing empty line")
+            {
+                CHECK(removed);
+                CHECK(plainLines(doc) == QStringList{
+                    QStringLiteral("- [ ] milk"),
+                });
+            }
+        }
+    }
+
+    GIVEN("the only line in the document, ticked")
+    {
+        QTextDocument doc;
+        doc.setPlainText("- [x] done");
+
+        WHEN("removal is requested on it")
+        {
+            QTextCursor cursor = cursorAtLine(doc, 0, 2);
+            const bool removed = TextFormatting::removeCheckedCheckboxLine(cursor);
+
+            THEN("the document ends up empty, not a document containing a stray blank line")
+            {
+                CHECK(removed);
+                CHECK(doc.blockCount() == 1);
+                CHECK(doc.begin().text() == QStringLiteral(""));
+                CHECK(plainLines(doc) == QStringList{ QStringLiteral("") });
+            }
+        }
+    }
+
+    GIVEN("a ticked line, '- [x] eggs'")
+    {
+        WHEN("the caret sits in the marker (position 2)")
+        {
+            QTextDocument doc;
+            doc.setPlainText("- [ ] milk\n- [x] eggs");
+            QTextCursor cursor = cursorAtLine(doc, 1, 2);
+            const bool removed = TextFormatting::removeCheckedCheckboxLine(cursor);
+
+            THEN("the line is removed just the same")
+            {
+                CHECK(removed);
+                CHECK(plainLines(doc) == QStringList{ QStringLiteral("- [ ] milk") });
+            }
+        }
+
+        WHEN("the caret sits mid-label")
+        {
+            QTextDocument doc;
+            doc.setPlainText("- [ ] milk\n- [x] eggs");
+            QTextCursor cursor = cursorAtLine(doc, 1, 8);
+            const bool removed = TextFormatting::removeCheckedCheckboxLine(cursor);
+
+            THEN("the line is removed just the same")
+            {
+                CHECK(removed);
+                CHECK(plainLines(doc) == QStringList{ QStringLiteral("- [ ] milk") });
+            }
+        }
+
+        WHEN("the caret sits at the very end of the line")
+        {
+            QTextDocument doc;
+            doc.setPlainText("- [ ] milk\n- [x] eggs");
+            QTextCursor cursor = cursorAtLine(doc, 1, 10);
+            const bool removed = TextFormatting::removeCheckedCheckboxLine(cursor);
+
+            THEN("the line is removed just the same — the caller never has to aim")
+            {
+                CHECK(removed);
+                CHECK(plainLines(doc) == QStringList{ QStringLiteral("- [ ] milk") });
+            }
+        }
+    }
+}
+
+SCENARIO("Any line can be removed outright, ticked or not", "[textformatting][checkbox]")
+{
+    // The unguarded counterpart to removeCheckedCheckboxLine above, and it has
+    // to be unguarded: its caller is Backspace on an emptied-out task line,
+    // where the line is by definition NOT ticked. Without it, the checkbox
+    // repair pass immediately regrew every marker character the user backspaced
+    // into, so a task line could never actually be deleted from the note ("you
+    // cannot use backspace to delete a note, it will spawn in the [ ]
+    // characters").
+    GIVEN("three items, none of them ticked")
+    {
+        QTextDocument doc;
+        doc.setPlainText("- [ ] milk\n- [ ] \n- [ ] bread");
+
+        WHEN("removal is requested on the emptied middle line")
+        {
+            QTextCursor cursor = cursorAtLine(doc, 1, 6);
+            const bool removed = TextFormatting::removeLine(cursor);
+
+            THEN("it goes, leaving no blank line behind")
+            {
+                CHECK(removed);
+                CHECK(plainLines(doc) == QStringList{
+                    QStringLiteral("- [ ] milk"),
+                    QStringLiteral("- [ ] bread"),
+                });
+            }
+        }
+    }
+
+    GIVEN("a single-line document")
+    {
+        QTextDocument doc;
+        doc.setPlainText("- [ ] milk");
+
+        WHEN("its only line is removed")
+        {
+            QTextCursor cursor = cursorAtLine(doc, 0, 2);
+            const bool removed = TextFormatting::removeLine(cursor);
+
+            THEN("the document ends up empty rather than holding one blank line")
+            {
+                CHECK(removed);
+                CHECK(doc.toPlainText().isEmpty());
+            }
+        }
+    }
+}
+
+SCENARIO("A range spanning several lines snaps to whole-line removal",
+         "[textformatting][checkbox]")
+{
+    // Backs NoteWindow.qml's multi-line Backspace/Delete/Cut handling in the
+    // TickTick task note (item 007's work order): a selection that starts or
+    // ends mid-line, if simply deleted, merges the leftover fragment at each
+    // end into a line matching nothing in TickTickTaskList's last render —
+    // silently reverting on the next pull with no visible error. removeLines
+    // snaps each end outward to its own whole line instead, so the result is
+    // always a clean removal of complete task lines, feeding the diff's
+    // already-tested bulk-completion path.
+    GIVEN("four checkbox items")
+    {
+        QTextDocument doc;
+        doc.setPlainText("- [ ] compose\n- [ ] Walk dog\n- [ ] Buy milk\n- [ ] Water plants");
+
+        WHEN("the range starts and ends mid-line, spanning the two middle items")
+        {
+            QTextCursor cursor(&doc);
+            const int start = doc.findBlockByNumber(1).position() + 2; // mid "Walk dog"
+            const int end = doc.findBlockByNumber(2).position() + 2;   // mid "Buy milk"
+            const bool removed = TextFormatting::removeLines(cursor, start, end);
+
+            THEN("both whole lines are gone — nothing merged, no partial fragment left behind")
+            {
+                CHECK(removed);
+                CHECK(plainLines(doc) == QStringList{
+                    QStringLiteral("- [ ] compose"),
+                    QStringLiteral("- [ ] Water plants"),
+                });
+            }
+        }
+
+        WHEN("the range reaches all the way to the document's last line")
+        {
+            QTextCursor cursor(&doc);
+            const int start = doc.findBlockByNumber(1).position() + 2;
+            const int end = doc.findBlockByNumber(3).position() + 2; // mid "Water plants"
+            const bool removed = TextFormatting::removeLines(cursor, start, end);
+
+            THEN("every line from the first touched through the last goes, with no trailing blank line")
+            {
+                CHECK(removed);
+                CHECK(plainLines(doc) == QStringList{ QStringLiteral("- [ ] compose") });
+            }
+        }
+
+        WHEN("start and end are given in reverse order")
+        {
+            QTextCursor cursor(&doc);
+            const int later = doc.findBlockByNumber(2).position() + 2;
+            const int earlier = doc.findBlockByNumber(1).position() + 2;
+            const bool removed = TextFormatting::removeLines(cursor, later, earlier);
+
+            THEN("the result is identical to passing them start-before-end")
+            {
+                CHECK(removed);
+                CHECK(plainLines(doc) == QStringList{
+                    QStringLiteral("- [ ] compose"),
+                    QStringLiteral("- [ ] Water plants"),
+                });
+            }
+        }
+
+        WHEN("the removal is undone")
+        {
+            QTextCursor cursor(&doc);
+            const int start = doc.findBlockByNumber(1).position() + 2;
+            const int end = doc.findBlockByNumber(2).position() + 2;
+            TextFormatting::removeLines(cursor, start, end);
+
+            THEN("one undo restores every line removed, not just part of it")
+            {
+                REQUIRE(doc.isUndoAvailable());
+                doc.undo();
+                CHECK(plainLines(doc) == QStringList{
+                    QStringLiteral("- [ ] compose"),
+                    QStringLiteral("- [ ] Walk dog"),
+                    QStringLiteral("- [ ] Buy milk"),
+                    QStringLiteral("- [ ] Water plants"),
+                });
+            }
+        }
+    }
+
+    GIVEN("a range that reaches back to line 0 — the compose slot")
+    {
+        QTextDocument doc;
+        doc.setPlainText("- [ ] compose\n- [ ] Walk dog\n- [ ] Buy milk");
+
+        WHEN("the range starts inside line 0 and ends inside line 1")
+        {
+            QTextCursor cursor(&doc);
+            const int start = 2; // inside "compose"
+            const int end = doc.findBlockByNumber(1).position() + 2; // mid "Walk dog"
+            const bool removed = TextFormatting::removeLines(cursor, start, end);
+
+            THEN("line 0 is left byte-for-byte alone — removal starts from line 1 instead")
+            {
+                CHECK(removed);
+                CHECK(plainLines(doc) == QStringList{
+                    QStringLiteral("- [ ] compose"),
+                    QStringLiteral("- [ ] Buy milk"),
+                });
+            }
+        }
+
+        WHEN("the whole range falls inside line 0 alone")
+        {
+            QTextCursor cursor(&doc);
+            const bool removed = TextFormatting::removeLines(cursor, 0, 6);
+
+            THEN("nothing is removed — line 0 can never be the line that goes")
+            {
+                CHECK_FALSE(removed);
+                CHECK(plainLines(doc) == QStringList{
+                    QStringLiteral("- [ ] compose"),
+                    QStringLiteral("- [ ] Walk dog"),
+                    QStringLiteral("- [ ] Buy milk"),
+                });
+            }
+        }
+    }
+}
+
+SCENARIO("A list item's label can be read, and its start located",
+         "[textformatting][list]")
+{
+    // Two different questions about the same boundary. listLabelText answers
+    // "is this item blank" (what decides whether the compose slot shows a check
+    // button); listLabelStart answers "is the caret exactly at the start of this
+    // item's text" (what decides whether Backspace removes the line). The
+    // caret-placement listLabelPosition can answer neither, because it never
+    // moves a caret backwards — it equals the caret's own position for every
+    // caret at or past the label.
+    GIVEN("a checkbox item with a title, an empty one, and a plain line")
+    {
+        QTextDocument doc;
+        doc.setPlainText("- [ ] milk\n- [ ] \njust prose");
+
+        THEN("listLabelText returns the text after the marker, or the whole line")
+        {
+            CHECK(TextFormatting::listLabelText(cursorAtLine(doc, 0, 0)) == "milk");
+            CHECK(TextFormatting::listLabelText(cursorAtLine(doc, 1, 0)).isEmpty());
+            CHECK(TextFormatting::listLabelText(cursorAtLine(doc, 2, 0)) == "just prose");
+        }
+
+        THEN("listLabelStart returns the boundary itself, wherever the caret is")
+        {
+            // Same answer from a caret inside the marker and from one past it —
+            // which is exactly what listLabelPosition cannot do.
+            const int expected = doc.findBlockByNumber(0).position() + 6;
+            CHECK(TextFormatting::listLabelStart(cursorAtLine(doc, 0, 2)) == expected);
+            CHECK(TextFormatting::listLabelStart(cursorAtLine(doc, 0, 8)) == expected);
+            CHECK(TextFormatting::listLabelPosition(cursorAtLine(doc, 0, 8))
+                  != expected);
+        }
+
+        THEN("a non-list line's label starts at the line itself")
+        {
+            CHECK(TextFormatting::listLabelStart(cursorAtLine(doc, 2, 4))
+                  == doc.findBlockByNumber(2).position());
+        }
+    }
+}

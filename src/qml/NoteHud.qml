@@ -19,12 +19,24 @@
 //                     defaults false so hover-only is the norm. Hosts bind it:
 //                     NoteWindow to settings.hudAlwaysExpanded, NoteHudWindow
 //                     forces it true.
+//   tickTickEnabled — whether the TickTick integration is built AND connected.
+//                     Gates the new-task glyph's presence entirely (not merely
+//                     its enabled state): a button that can only ever report
+//                     "not connected" is worse than no button. Defaults false,
+//                     which is also what a host that knows nothing about the
+//                     optional module gets — including this file's own tests.
 //
 // Signals (host wires these to its own actions):
 //   pinToggleRequested() — pin glyph tapped
 //   settingsRequested()  — gear glyph tapped (from collapsed placeholder
 //                          or the expanded row)
-//   duplicateRequested() — duplicate glyph tapped
+//   newNoteRequested()   — plus glyph tapped; host creates a blank .md note.
+//                          Replaces the duplicate action this glyph used to
+//                          carry — duplicating now lives only in the
+//                          right-click menu (NoteContextMenu), which never
+//                          lost it.
+//   newTaskRequested()   — checkbox glyph tapped; host creates a blank
+//                          TickTick task. Only reachable when tickTickEnabled.
 //   searchRequested()    — search glyph tapped (host opens find/replace)
 //   closeRequested()     — close glyph tapped TWICE (armed, then confirmed)
 //                          within closeArmTimeoutMs — see closeArmed below.
@@ -45,6 +57,10 @@ Rectangle {
     property color dangerColor: "#ff5555"
     property bool pinned: false
     property bool alwaysExpanded: false
+    // See the header: gates the new-task glyph's existence, not its enabled
+    // state. False by default so a host that knows nothing about the optional
+    // module — or one where it simply isn't connected — gets the plain ribbon.
+    property bool tickTickEnabled: false
     // Lays the glyphs out as a vertical column instead of a horizontal row
     // (feature request: NoteHudWindow renders the ribbon down the note's
     // right-hand side so it never conflicts with the above-note toolbar).
@@ -185,7 +201,8 @@ Rectangle {
 
     signal pinToggleRequested()
     signal settingsRequested()
-    signal duplicateRequested()
+    signal newNoteRequested()
+    signal newTaskRequested()
     signal searchRequested()
     signal closeRequested()
 
@@ -215,7 +232,8 @@ Rectangle {
     // directly instead.
     readonly property alias pinGlyphItem: pinGlyph
     readonly property alias gearGlyphItem: gearGlyph
-    readonly property alias duplicateGlyphItem: duplicateGlyph
+    readonly property alias newNoteGlyphItem: newNoteGlyph
+    readonly property alias newTaskGlyphItem: newTaskGlyph
     readonly property alias searchGlyphItem: searchGlyph
     readonly property alias closeGlyphItem: closeGlyph
 
@@ -399,8 +417,10 @@ Rectangle {
     // are the test surface; there can only be one of each). Centered in the
     // chip either way: in horizontal mode chip width is content + 12, so
     // centering leaves the same ~6px each side the old right-anchor+6 margin
-    // did. Glyph order is close, search, duplicate, gear, pin (reversed —
-    // see the first child's comment), so close leads rather than trails.
+    // did. Glyph order is close, search, new-note, new-task, gear, pin
+    // (reversed — see the first child's comment), so close leads rather than
+    // trails. The two creation glyphs sit adjacent, and new-task disappears
+    // from the row entirely when TickTick is off.
     GridLayout {
         id: hudRow
         visible: hud.expanded
@@ -429,8 +449,9 @@ Rectangle {
         // keeps its own id/objectName/color/opacity bindings unchanged, so
         // existing tests reading e.g. `pinGlyphItem.color` are unaffected.
         // Glyph order was reversed (feature request): the sequence now runs
-        // close, search, duplicate, gear, pin — so close is FIRST (topmost in
-        // the vertical column / leftmost in the horizontal row). Close leading
+        // close, search, new-note, new-task, gear, pin — so close is FIRST
+        // (topmost in the vertical column / leftmost in the horizontal row).
+        // Close leading
         // rather than trailing is safe: a stray click can't land past the start
         // of the row any more than past its end, and deletion's real safeguard
         // is the two-tap arm/confirm below regardless of where close sits.
@@ -505,26 +526,62 @@ Rectangle {
 
             InteractableHighlight {
                 anchors.fill: parent
-                active: duplicateHov.hovered
+                active: newNoteHov.hovered
             }
 
-            // "⧉" for the same reason "⚲" is used for pin below rather than
-            // an emoji: it's plain-presentation, so it actually honors the
-            // `color` binding below instead of rendering in a fixed emoji
-            // color and ignoring it.
+            // "＋" (fullwidth plus, U+FF0B) rather than the ASCII "+": at this
+            // pixel size the ASCII form renders as a thin, off-center tick next
+            // to the other glyphs, all of which are fullwidth-ish symbols. Both
+            // are plain-presentation, which is the property that actually
+            // matters here — see the pin glyph's own note on why an emoji would
+            // silently ignore the `color` binding below.
             Text {
-                id: duplicateGlyph
-                objectName: "duplicateGlyph"
-                text: "⧉"
+                id: newNoteGlyph
+                objectName: "newNoteGlyph"
+                text: "＋"
                 font.pixelSize: 16
                 color: hud.iconColor
-                opacity: duplicateHov.hovered ? 1.0 : 0.7
+                opacity: newNoteHov.hovered ? 1.0 : 0.7
                 anchors.centerIn: parent
                 Behavior on opacity { NumberAnimation { duration: 120 } }
             }
 
-            HoverHandler { id: duplicateHov; cursorShape: Qt.PointingHandCursor }
-            TapHandler { onTapped: hud.duplicateRequested() }
+            HoverHandler { id: newNoteHov; cursorShape: Qt.PointingHandCursor }
+            TapHandler { onTapped: hud.newNoteRequested() }
+        }
+
+        // Absent, not merely disabled, when TickTick is unbuilt or
+        // disconnected — see tickTickEnabled. A GridLayout omits an invisible
+        // child from its layout entirely, so the row simply closes up rather
+        // than leaving a gap where this would be.
+        Item {
+            objectName: "newTaskSlot"
+            visible: hud.tickTickEnabled
+            implicitWidth: 22
+            implicitHeight: 22
+            Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
+
+            InteractableHighlight {
+                anchors.fill: parent
+                active: newTaskHov.hovered
+            }
+
+            // "☑" — a checked box reads as "task" against the plain "＋" note
+            // beside it, and like every other glyph here it is
+            // plain-presentation so it honors `color`.
+            Text {
+                id: newTaskGlyph
+                objectName: "newTaskGlyph"
+                text: "☑"
+                font.pixelSize: 16
+                color: hud.iconColor
+                opacity: newTaskHov.hovered ? 1.0 : 0.7
+                anchors.centerIn: parent
+                Behavior on opacity { NumberAnimation { duration: 120 } }
+            }
+
+            HoverHandler { id: newTaskHov; cursorShape: Qt.PointingHandCursor }
+            TapHandler { onTapped: hud.newTaskRequested() }
         }
 
         Item {

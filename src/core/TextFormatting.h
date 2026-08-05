@@ -60,6 +60,126 @@ bool toggleCheckboxChecked(QTextCursor cursor);
 // space, which reads as label padding) — a click anywhere else in a checkbox
 // item should just place the cursor normally, not toggle it.
 bool tryToggleCheckboxAtPosition(QTextCursor cursor);
+
+// The result of a repair pass: whether anything was rewritten, and where the
+// caret ends up once markers inserted ahead of it have shifted it along.
+struct CheckboxRepair
+{
+    bool changed = false;
+    int cursorPosition = 0;
+};
+
+// Re-asserts a checkbox marker on every non-empty line of `cursor`'s WHOLE
+// document, and reports where `cursorPosition` moved to.
+//
+// This is the "you cannot delete the checkboxes" rule, and it is a repair
+// rather than a prevention on purpose. A marker is literal document text
+// ("- [ ] "), so the ways to destroy one are open-ended: backspacing into it,
+// selecting the line and typing over it, pasting plain lines, dropping text
+// in, undo. Intercepting each of those means fighting TextArea at every entry
+// point and still missing one. Re-asserting the invariant after the edit
+// covers all of them from a single call site, and is the same shape as the
+// auto-list-shorthand and auto-link repairs the editor already runs.
+//
+// Per line:
+//  - Already a checkbox item: left byte for byte alone, ticked state included.
+//    This must hold, or every keystroke would untick the user's boxes.
+//  - A bullet ("- item"): upgraded in place to "- [ ] item". Backspacing a
+//    marker apart usually lands here first, so this is the common repair.
+//  - Any other non-empty line: gets "- [ ] " prepended.
+//  - A genuinely EMPTY line: left alone, deliberately. It is how the user gets
+//    a blank line back, and forcing a marker on it would make pressing Enter
+//    mint an empty item that cannot be removed. As soon as anything is typed
+//    there the line stops being empty and the next pass marks it.
+//
+// Callers run this after real edits only, never after formatting-only changes
+// (see DocumentHandler::contentEdited): re-writing the document from a
+// highlighter pass would loop.
+CheckboxRepair repairCheckboxList(QTextCursor cursor, int cursorPosition);
+
+// Re-asserts a checkbox marker on the FIRST line specifically, even when that
+// line is empty — the one place repairCheckboxList's "a blank line stays
+// blank" rule must not apply.
+//
+// The TickTick task note's first line is its compose slot (see
+// TickTickTaskList::kComposeIndex): permanent furniture the user types new
+// tasks into, not a task of its own. Selecting the whole slot and deleting it
+// used to leave a bare blank line — no glyph, no underline, no commit button —
+// which repairCheckboxList deliberately left alone and Backspace deliberately
+// refused to remove, so the only thing that ever restored it was the next
+// pull's re-render, minutes later. That is what the reporter saw as the
+// checkbox characters coming back on their own.
+//
+// Only the empty case is handled here: a first line with any text at all is
+// already repairCheckboxList's business, and one that is already a checkbox is
+// left byte for byte alone. Runs AFTER repairCheckboxList, so by the time it
+// looks, "empty" really does mean empty.
+CheckboxRepair ensureFirstLineCheckbox(QTextCursor cursor, int cursorPosition);
+// Deletes the whole line `cursor` is on, but ONLY if that line is a CHECKED
+// checkbox item — returns false and touches nothing otherwise.
+//
+// The check is the safety property, not a convenience: the caller is an
+// animation that finished half a second after the click that started it, and in
+// between the user may have unticked the box, retyped the line, or had a pull
+// rewrite the note underneath it. Rather than making the caller re-verify what
+// it is about to delete against a stale snapshot, this refuses to delete
+// anything that is not still a ticked item.
+//
+// The line's own newline goes with it, so removing an item leaves no blank line
+// behind: the FOLLOWING newline normally, or the PRECEDING one when this is the
+// last line (there is no following one to take). Removing the only line leaves
+// an empty document rather than a document containing one empty line.
+bool removeCheckedCheckboxLine(QTextCursor cursor);
+// Deletes the whole line `cursor` is on unconditionally — no checked-state
+// check, unlike removeCheckedCheckboxLine above. Returns false only when the
+// cursor has no valid block at all.
+//
+// The two exist separately because their callers have opposite needs.
+// removeCheckedCheckboxLine serves a fade animation that decided to delete
+// something half a second ago and must re-verify; this one serves a Backspace
+// keystroke that is deciding right now, and whose whole point is to remove a
+// line that is emphatically NOT ticked (an emptied-out task the user is
+// backspacing away — see DocumentHandler::removeLineAt).
+//
+// Takes the line's own newline with it on exactly the same three-case rule
+// removeCheckedCheckboxLine documents, so no blank line is left behind.
+bool removeLine(QTextCursor cursor);
+// Removes every whole line the range [start, end) touches, snapping EACH
+// end outward to its own containing block's boundaries — a range that
+// starts or ends mid-line still removes that entire line, rather than
+// leaving the partial fragments on either side to be merged into one line
+// the way a plain removeSelectedText() over such a range would (see
+// NoteWindow.qml's Keys.onPressed, which calls this instead of letting a
+// multi-line Backspace/Delete/Cut run TextArea's own default handling on a
+// task-note selection whose endpoints don't sit on line boundaries).
+//
+// ALWAYS preserves the document's first block (block 0) — the TickTick task
+// note's compose slot, permanent furniture in exactly the sense
+// ensureFirstLineCheckbox's own comment describes. A range that reaches
+// block 0 has its removal start from block 1 instead; a range that
+// collapses entirely into block 0 removes nothing and returns false.
+//
+// `cursor` only needs to be attached to the right document — its own
+// position/anchor are not read, only cursor.document(). One
+// removeSelectedText() call, so one undo step no matter how many lines are
+// removed.
+bool removeLines(QTextCursor cursor, int start, int end);
+// The text of a list item's label — everything after its "- ", "- [ ] " or
+// "1. " marker — or the whole line verbatim when it isn't a list item at all.
+// Distinct from listLabelPosition below, which answers WHERE that text starts;
+// this answers what it says, which is what a caller asking "is this item empty"
+// actually needs.
+QString listLabelText(QTextCursor cursor);
+// The document position where the label of `cursor`'s line begins — i.e. just
+// past its "- ", "- [ ] " or "1. " marker, or the line's own start when it is
+// not a list item at all.
+//
+// Distinct from listLabelPosition below, which answers the caret-placement
+// question and therefore never moves a caret BACKWARDS (it returns the later of
+// the two). A caller asking "is the caret sitting exactly at the start of this
+// item's text" needs the raw answer, because the never-backwards one is equal
+// to the caret's own position for every caret at or past the label.
+int listLabelStart(QTextCursor cursor);
 // Where a click that resolved to `cursor` should actually leave the caret.
 //
 // A bullet's "- " and a checkbox's "- [ ] " are invisible text sitting under a

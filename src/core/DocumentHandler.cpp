@@ -1051,6 +1051,46 @@ void DocumentHandler::setMarkdown(const QString &markdown)
     emitTableRangesChangedIfNeeded();
 }
 
+void DocumentHandler::replaceAllTextPreservingUndo(const QString &text)
+{
+    if (!m_document || !m_document->textDocument())
+        return;
+
+    QTextDocument *document = m_document->textDocument();
+    // Spans the whole edit block below, for the same reason setMarkdown()
+    // holds it across its own setPlainText(): this reload is not a user
+    // edit, and must not be reported as one via contentEdited() (see
+    // m_loadingContent).
+    m_loadingContent = true;
+    QTextCursor cursor(document);
+    cursor.beginEditBlock();
+    cursor.select(QTextCursor::Document);
+    cursor.insertText(text);
+    // Inside the SAME edit block as the text replacement above, and for the
+    // same reason setMarkdown() applies it before ever re-enabling undo: list
+    // indent is a block format, i.e. undoable document state (see
+    // TextFormatting.cpp's "WHY THIS LIVES IN THE EDIT PATHS" comment for the
+    // live-lock this avoids). Landing it in a second, separate edit here
+    // would make one reload cost two undo steps instead of one — and if it
+    // ever landed outside any edit block while undo is enabled, undoing it
+    // would re-run whatever reacts to its format-only contentsChange, which
+    // reapplies the same indent, live-locking Ctrl+Z exactly as described
+    // there.
+    TextFormatting::applyListIndentToDocument(document);
+    cursor.endEditBlock();
+    m_loadingContent = false;
+    // The loaded buffer is, by definition, already maintained — same as
+    // setMarkdown().
+    m_lastMaintainedText = document->toPlainText();
+
+    // Same cache/range-signal tail as setMarkdown() — see its comments for
+    // why each of these is needed after a wholesale text replacement.
+    invalidateAllMisspelledBlockCaches();
+    emitMisspelledWordRangesChangedIfNeeded();
+    emitListMarkerRangesChangedIfNeeded();
+    emitTableRangesChangedIfNeeded();
+}
+
 QTextCursor DocumentHandler::cursorFor(int selectionStart, int selectionEnd) const
 {
     if (!m_document || !m_document->textDocument())
@@ -1481,6 +1521,136 @@ bool DocumentHandler::tryToggleCheckboxAt(int position)
     if (toggled)
         emit formattingChanged();
     return toggled;
+}
+
+int DocumentHandler::repairCheckboxList(int cursorPosition)
+{
+    // Same reentrancy guard as every other marker-mutating entry point above
+    // (see ListMutationGuard's own comment): rewriting marker text
+    // synchronously re-enters QML's TextArea.onTextChanged before this call
+    // even returns.
+    ListMutationGuard guard(m_handlingListMutation, m_document ? m_document->textDocument() : nullptr);
+    if (guard.reentrant())
+        return cursorPosition;
+
+    if (!m_document || !m_document->textDocument())
+        return cursorPosition;
+
+    const TextFormatting::CheckboxRepair repair =
+        TextFormatting::repairCheckboxList(cursorFor(cursorPosition, cursorPosition), cursorPosition);
+
+    if (repair.changed)
+        emit formattingChanged();
+
+    return repair.cursorPosition;
+}
+
+int DocumentHandler::ensureFirstLineCheckbox(int cursorPosition)
+{
+    // Same reentrancy guard as every other marker-mutating entry point above
+    // (see ListMutationGuard's own comment).
+    ListMutationGuard guard(m_handlingListMutation, m_document ? m_document->textDocument() : nullptr);
+    if (guard.reentrant())
+        return cursorPosition;
+
+    if (!m_document || !m_document->textDocument())
+        return cursorPosition;
+
+    const TextFormatting::CheckboxRepair repair =
+        TextFormatting::ensureFirstLineCheckbox(cursorFor(cursorPosition, cursorPosition), cursorPosition);
+
+    if (repair.changed)
+        emit formattingChanged();
+
+    return repair.cursorPosition;
+}
+
+bool DocumentHandler::removeCheckedCheckboxLineAt(int position)
+{
+    // Same reentrancy guard and one-undo-step batching as every other
+    // marker-mutating entry point (see ListMutationGuard).
+    ListMutationGuard guard(m_handlingListMutation, m_document ? m_document->textDocument() : nullptr);
+    if (guard.reentrant())
+        return false;
+
+    if (!m_document || !m_document->textDocument())
+        return false;
+
+    QTextDocument *document = m_document->textDocument();
+    QTextCursor cursor(document);
+    cursor.setPosition(qBound(0, position, document->characterCount() - 1));
+    const bool removed = TextFormatting::removeCheckedCheckboxLine(cursor);
+    if (removed)
+        emit formattingChanged();
+    return removed;
+}
+
+bool DocumentHandler::removeLineAt(int position)
+{
+    // Same reentrancy guard and one-undo-step batching as every other
+    // marker-mutating entry point (see ListMutationGuard).
+    ListMutationGuard guard(m_handlingListMutation, m_document ? m_document->textDocument() : nullptr);
+    if (guard.reentrant())
+        return false;
+
+    if (!m_document || !m_document->textDocument())
+        return false;
+
+    QTextDocument *document = m_document->textDocument();
+    QTextCursor cursor(document);
+    cursor.setPosition(qBound(0, position, document->characterCount() - 1));
+    const bool removed = TextFormatting::removeLine(cursor);
+    if (removed)
+        emit formattingChanged();
+    return removed;
+}
+
+bool DocumentHandler::removeLinesInRange(int start, int end)
+{
+    // Same reentrancy guard and one-undo-step batching as every other
+    // marker-mutating entry point (see ListMutationGuard).
+    ListMutationGuard guard(m_handlingListMutation, m_document ? m_document->textDocument() : nullptr);
+    if (guard.reentrant())
+        return false;
+
+    if (!m_document || !m_document->textDocument())
+        return false;
+
+    QTextCursor cursor(m_document->textDocument());
+    const bool removed = TextFormatting::removeLines(cursor, start, end);
+    if (removed)
+        emit formattingChanged();
+    return removed;
+}
+
+QString DocumentHandler::listLabelTextAt(int position) const
+{
+    if (!m_document || !m_document->textDocument())
+        return QString();
+
+    // Clamped for the same reason listLabelPositionAt below clamps: this is fed
+    // straight from QML, which can ask before the editor has any layout.
+    QTextDocument *document = m_document->textDocument();
+    QTextCursor cursor(document);
+    cursor.setPosition(qBound(0, position, document->characterCount() - 1));
+    return TextFormatting::listLabelText(cursor);
+}
+
+int DocumentHandler::listLabelStartAt(int position) const
+{
+    if (!m_document || !m_document->textDocument())
+        return position;
+
+    QTextDocument *document = m_document->textDocument();
+    QTextCursor cursor(document);
+    cursor.setPosition(qBound(0, position, document->characterCount() - 1));
+    return TextFormatting::listLabelStart(cursor);
+}
+
+void DocumentHandler::setFadedLine(int position, qreal opacity, const QColor &textColor)
+{
+    if (m_markdownHighlighter)
+        m_markdownHighlighter->setFadedLine(position, opacity, textColor);
 }
 
 int DocumentHandler::listLabelPositionAt(int position) const

@@ -10,12 +10,35 @@ TickTickModule::TickTickModule(QObject *parent)
     : QObject(parent)
     , m_tokenStore(this)
     , m_auth(m_tokenStore, this)
+    , m_notes(this)
+    , m_sync(m_auth, m_notes, m_tokenStore.configFilePath(), this)
+{
+}
+
+TickTickModule::TickTickModule(const QString &configFilePath,
+                               const QString &cacheDirPath,
+                               QObject *parent)
+    : QObject(parent)
+    , m_tokenStore(configFilePath, TickTickTokenStore::SecretBackend::ConfigFileOnly, this)
+    , m_auth(m_tokenStore, this)
+    , m_notes(cacheDirPath, this)
+    , m_sync(m_auth, m_notes, configFilePath, this)
 {
 }
 
 TickTickAuth *TickTickModule::auth()
 {
     return &m_auth;
+}
+
+TickTickSync *TickTickModule::sync()
+{
+    return &m_sync;
+}
+
+TickTickNotes *TickTickModule::notes()
+{
+    return &m_notes;
 }
 
 bool TickTickModule::secureStorageAvailable() const

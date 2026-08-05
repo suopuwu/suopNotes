@@ -39,6 +39,9 @@ set_source_files_properties(${CMAKE_SOURCE_DIR}/src/qml/PerNoteSettingsPopup.qml
 set_source_files_properties(${CMAKE_SOURCE_DIR}/src/qml/InteractableHighlight.qml
     PROPERTIES QT_RESOURCE_ALIAS "InteractableHighlight.qml"
 )
+set_source_files_properties(${CMAKE_SOURCE_DIR}/src/qml/MarkerCaretGuard.qml
+    PROPERTIES QT_RESOURCE_ALIAS "MarkerCaretGuard.qml"
+)
 set_source_files_properties(${CMAKE_SOURCE_DIR}/src/qml/RangeOverlay.qml
     PROPERTIES QT_RESOURCE_ALIAS "RangeOverlay.qml"
 )
@@ -53,6 +56,9 @@ set_source_files_properties(${CMAKE_SOURCE_DIR}/src/qml/ShortcutField.qml
 )
 set_source_files_properties(${CMAKE_SOURCE_DIR}/src/qml/SettingsDialog.qml
     PROPERTIES QT_RESOURCE_ALIAS "SettingsDialog.qml"
+)
+set_source_files_properties(${CMAKE_SOURCE_DIR}/src/qml/WheelSafeSlider.qml
+    PROPERTIES QT_RESOURCE_ALIAS "WheelSafeSlider.qml"
 )
 
 qt_add_qml_module(suopNotes_qml_tests
@@ -69,11 +75,13 @@ qt_add_qml_module(suopNotes_qml_tests
         ${CMAKE_SOURCE_DIR}/src/qml/GlassOverlay.qml
         ${CMAKE_SOURCE_DIR}/src/qml/PerNoteSettingsPopup.qml
         ${CMAKE_SOURCE_DIR}/src/qml/InteractableHighlight.qml
+        ${CMAKE_SOURCE_DIR}/src/qml/MarkerCaretGuard.qml
         ${CMAKE_SOURCE_DIR}/src/qml/RangeOverlay.qml
         ${CMAKE_SOURCE_DIR}/src/qml/ResizeHandle.qml
         ${CMAKE_SOURCE_DIR}/src/qml/SelectionToolbar.qml
         ${CMAKE_SOURCE_DIR}/src/qml/ShortcutField.qml
         ${CMAKE_SOURCE_DIR}/src/qml/SettingsDialog.qml
+        ${CMAKE_SOURCE_DIR}/src/qml/WheelSafeSlider.qml
 )
 
 target_link_libraries(suopNotes_qml_tests PRIVATE
@@ -86,6 +94,33 @@ target_link_libraries(suopNotes_qml_tests PRIVATE
 target_compile_definitions(suopNotes_qml_tests PRIVATE
     QUICK_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
 )
+
+# Give the QML tests the real TickTick module when it is built, so the settings
+# UI is exercised in the arrangement users actually get. Without this the tests
+# only ever saw `tickTick` as null and could not catch a mistake inside the
+# section itself.
+if(SUOPNOTES_ENABLE_TICKTICK)
+    target_link_libraries(suopNotes_qml_tests PRIVATE suopNotesTickTick)
+    target_compile_definitions(suopNotes_qml_tests PRIVATE SUOPNOTES_HAVE_TICKTICK)
+
+    # The module's own QML, flattened to the module root like every file
+    # above, so the relative Loader URLs in SettingsDialog.qml/NoteWindow.qml
+    # resolve here exactly as they do in the app.
+    set_source_files_properties(${CMAKE_SOURCE_DIR}/src/modules/ticktick/qml/TickTickSettingsSection.qml
+        PROPERTIES QT_RESOURCE_ALIAS "TickTickSettingsSection.qml"
+    )
+    set_source_files_properties(${CMAKE_SOURCE_DIR}/src/modules/ticktick/qml/TickTickSyncFooter.qml
+        PROPERTIES QT_RESOURCE_ALIAS "TickTickSyncFooter.qml"
+    )
+    set_source_files_properties(${CMAKE_SOURCE_DIR}/src/modules/ticktick/qml/TickTickListTitle.qml
+        PROPERTIES QT_RESOURCE_ALIAS "TickTickListTitle.qml"
+    )
+    qt_target_qml_sources(suopNotes_qml_tests QML_FILES
+        ${CMAKE_SOURCE_DIR}/src/modules/ticktick/qml/TickTickSettingsSection.qml
+        ${CMAKE_SOURCE_DIR}/src/modules/ticktick/qml/TickTickSyncFooter.qml
+        ${CMAKE_SOURCE_DIR}/src/modules/ticktick/qml/TickTickListTitle.qml
+    )
+endif()
 
 add_test(NAME qml_tests COMMAND suopNotes_qml_tests)
 set_tests_properties(qml_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")

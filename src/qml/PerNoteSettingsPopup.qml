@@ -89,7 +89,11 @@ ApplicationWindow {
                     }
                 }
                 Label { text: "Radius: " + Math.round(radiusSlider.value); enabled: radiusOverride.checked }
-                Slider {
+                // WheelSafeSlider, not Slider: the desktop style lets the
+                // wheel drag a slider's value, which in this dialog means a
+                // stray scroll silently rewrites a saved setting. See
+                // WheelSafeSlider.qml.
+                WheelSafeSlider {
                     id: radiusSlider
                     width: parent.width
                     enabled: radiusOverride.checked
@@ -111,7 +115,7 @@ ApplicationWindow {
                                        : root.noteAppearance.clearWindowOpacityOverride()
                 }
                 Label { text: "Opacity: " + opacitySlider.value.toFixed(2); enabled: opacityOverride.checked }
-                Slider {
+                WheelSafeSlider {
                     id: opacitySlider
                     width: parent.width
                     enabled: opacityOverride.checked
@@ -291,7 +295,7 @@ ApplicationWindow {
                                        : root.noteAppearance.clearGlassSheenOpacityOverride()
                 }
                 Label { text: "Sheen opacity: " + glassSheenOpacitySlider.value.toFixed(2); enabled: glassSheenOpacityOverride.checked }
-                Slider {
+                WheelSafeSlider {
                     id: glassSheenOpacitySlider
                     width: parent.width
                     enabled: glassSheenOpacityOverride.checked
@@ -313,7 +317,7 @@ ApplicationWindow {
                                        : root.noteAppearance.clearGlassSheenStrengthOverride()
                 }
                 Label { text: "Sheen strength: " + Math.round(glassSheenStrengthSlider.value); enabled: glassSheenStrengthOverride.checked }
-                Slider {
+                WheelSafeSlider {
                     id: glassSheenStrengthSlider
                     width: parent.width
                     enabled: glassSheenStrengthOverride.checked
@@ -335,7 +339,7 @@ ApplicationWindow {
                                        : root.noteAppearance.clearGlassSheenSizeOverride()
                 }
                 Label { text: "Sheen size: " + glassSheenSizeSlider.value.toFixed(2); enabled: glassSheenSizeOverride.checked }
-                Slider {
+                WheelSafeSlider {
                     id: glassSheenSizeSlider
                     width: parent.width
                     enabled: glassSheenSizeOverride.checked
@@ -377,7 +381,7 @@ ApplicationWindow {
                                        : root.noteAppearance.clearBorderWidthOverride()
                 }
                 Label { text: "Border width: " + Math.round(borderWidthSlider.value); enabled: borderWidthOverride.checked }
-                Slider {
+                WheelSafeSlider {
                     id: borderWidthSlider
                     width: parent.width
                     enabled: borderWidthOverride.checked
@@ -419,7 +423,7 @@ ApplicationWindow {
                                        : root.noteAppearance.clearScrollbarWidthOverride()
                 }
                 Label { text: "Scrollbar width: " + Math.round(scrollbarWidthSlider.value); enabled: scrollbarWidthOverride.checked }
-                Slider {
+                WheelSafeSlider {
                     id: scrollbarWidthSlider
                     width: parent.width
                     enabled: scrollbarWidthOverride.checked
@@ -441,6 +445,12 @@ ApplicationWindow {
                 }
                 SpinBox {
                     enabled: fontSizeOverride.checked
+                    // The KDE desktop style (org.kde.desktop) forces
+                    // wheelEnabled: true on every ComboBox and SpinBox, so a
+                    // wheel passing over one would silently write a per-note
+                    // override. Opting out also lets the event through to the
+                    // enclosing ScrollView, so the popup scrolls instead.
+                    wheelEnabled: false
                     from: 8
                     to: 48
                     value: root.noteAppearance.fontSize
@@ -499,7 +509,7 @@ ApplicationWindow {
                                        : root.noteAppearance.clearHighlightOpacityOverride()
                 }
                 Label { text: "Highlight opacity: " + highlightOpacitySlider.value.toFixed(2); enabled: highlightOpacityOverride.checked }
-                Slider {
+                WheelSafeSlider {
                     id: highlightOpacitySlider
                     width: parent.width
                     enabled: highlightOpacityOverride.checked
@@ -522,6 +532,8 @@ ApplicationWindow {
                 ComboBox {
                     id: fontFamilyCombo
                     enabled: fontFamilyOverride.checked
+                    // Same style opt-out as the font size spin box above.
+                    wheelEnabled: false
                     model: Qt.fontFamilies()
                     // Previews the selected family in the closed box; each
                     // dropdown entry gets its own font via the delegate below.

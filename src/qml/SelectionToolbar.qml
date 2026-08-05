@@ -392,20 +392,51 @@ ChromeWindow {
     // formatting shortcuts, read here so the toolbar and the keyboard can't
     // disagree about whether this note formats markdown.
     //
-    // The nine formatting buttons below are DISABLED (dimmed), never hidden,
-    // and that is deliberate twice over. NoteContextMenu.qml states the UX
-    // half: a surface whose controls appear and disappear never lets the user
-    // build muscle memory for where anything is. The mechanical half is local
-    // to this file — barLength is derived from the button count, so hiding
-    // buttons would resize this window live, and a resize of a mapped window
+    // The formatting buttons below are DISABLED (dimmed) for this, never
+    // hidden, and that is deliberate twice over. NoteContextMenu.qml states the
+    // UX half: a surface whose controls appear and disappear never lets the
+    // user build muscle memory for where anything is. The mechanical half is
+    // local to this file — barLength is derived from the button count, so
+    // hiding buttons resizes this window live, and a resize of a mapped window
     // here is a real client<->compositor negotiation with a whole
     // self-correcting size guard (see enforceSize) already devoted to the ways
-    // it goes wrong. Dimming costs one binding and races nothing.
+    // it goes wrong. Dimming costs one binding and races nothing. That matters
+    // most for THIS flag specifically: code mode toggles while the very same
+    // note stays tracked, so dimming/undimming can happen repeatedly under a
+    // stationary pointer. Contrast taskListNote just below, which can only
+    // change when the tracked note itself changes.
     //
     // False when no note is tracked, which changes nothing on its own: the
     // whole GridLayout is already disabled in that case (see content.enabled).
     readonly property bool formattingSuppressed: bar.noteWindow
         ? bar.noteWindow.codeModeSuppressesAutoFormatting
+        : false
+
+    // True while the tracked note is the one aggregated TickTick task note.
+    // Its text is not free-form markdown at all: it is a machine-rendered flat
+    // list of open task titles, one checkbox line each (TickTickTaskList::
+    // render), and NoteWindow.qml re-asserts every line as a checkbox after
+    // each edit (DocumentHandler::repairCheckboxList). So the block-structure
+    // buttons are hidden from it outright — headings, bullet/numbered/checkbox
+    // lists, tables and images are each either undone on the spot by that
+    // repair or flattened into checkbox lines and pushed to TickTick as
+    // literal markup in a task title. A button that can only ever no-op or
+    // corrupt is worse than no button; same call NoteHud makes for its own
+    // new-task glyph.
+    //
+    // Hidden rather than dimmed, unlike formattingSuppressed above, precisely
+    // because this cannot flip under a stationary pointer: a note either IS
+    // the task note for its whole life or never is, so the only way this
+    // changes is bar.noteWindow retargeting — which already re-anchors and
+    // repositions the whole window (see onNoteWindowChanged). The resize the
+    // comment above warns about therefore rides along with a reposition that
+    // was happening anyway, instead of being a new event of its own.
+    //
+    // False when no note is tracked, and also whenever the module isn't built
+    // — NoteWindow.isTickTickTaskNote is itself false in that case (it null-
+    // checks `tickTick`), so nothing here needs to know the module exists.
+    readonly property bool taskListNote: bar.noteWindow
+        ? bar.noteWindow.isTickTickTaskNote
         : false
 
     // Exposed for tests only (structural/behavioral verification), not used
@@ -418,6 +449,11 @@ ChromeWindow {
     readonly property alias boldButtonTip: boldButtonTip
     readonly property alias italicButtonTip: italicButtonTip
     readonly property alias strikethroughButtonTip: strikethroughButtonTip
+    readonly property alias heading1Button: heading1Button
+    readonly property alias heading2Button: heading2Button
+    readonly property alias bulletListButton: bulletListButton
+    readonly property alias numberedListButton: numberedListButton
+    readonly property alias checkboxListButton: checkboxListButton
     readonly property alias insertTableButton: insertTableButton
     readonly property alias insertImageButton: insertImageButton
     readonly property alias columnOptionsPopup: columnOptionsPopup
@@ -444,22 +480,39 @@ ChromeWindow {
     // hover/press highlight clip against the window's edge.
     readonly property int barThickness: 36
     readonly property int buttonSize: 32
+    // How many buttons content actually lays out right now. Ten normally; on
+    // the TickTick task note only Bold/Italic/Strikethrough survive — see
+    // taskListNote for which seven go and why. Stated here as a number rather
+    // than counted from content's children because barLength below has to be
+    // knowable without measuring content (see its own comment).
+    readonly property int taskListNoteButtonCount: 3
+    readonly property int fullButtonCount: 10
+    readonly property int buttonCount: bar.taskListNote ? bar.taskListNoteButtonCount
+                                                        : bar.fullButtonCount
     // gripHandle (9) + 1 divider (1, inside the drag-handle group before
-    // the formatting/table buttons) + 10 buttons * buttonSize (320) + 11
-    // gaps * spacing (22), plus a little breathing room so nothing sits
-    // flush against background's rounded corners. A window a few px
-    // narrower than its actual content silently clips the rightmost
+    // the formatting/table buttons) + buttonCount buttons * buttonSize +
+    // (buttonCount + 1) gaps * spacing (2 each), plus 22px of breathing room
+    // so nothing sits flush against background's rounded corners. A window a
+    // few px narrower than its actual content silently clips the rightmost
     // buttons' hit-test region outside the real window surface (confirmed
     // historically as the explanation for reported missing tooltips and
     // unreliable clicks on the last button(s) in the row), so this stays
-    // comfortably above content's implicit width. Bumped from 340 to 374 when
-    // the Insert Image button (the 10th) was added — one more buttonSize + gap.
-    // Kept even (374, not an odd value): reposition()'s own centering math
-    // divides this by 2, and window positioning rounds to whole pixels — an odd
-    // barLength surfaced a half-pixel mismatch against that rounding (confirmed
-    // empirically), which an even value sidesteps entirely rather than chasing
-    // down exactly where the rounding happens.
-    readonly property int barLength: 374
+    // comfortably above content's implicit width.
+    //
+    // Spelled as the arithmetic rather than the 374 constant it used to be
+    // (340 before the Insert Image button was added, then bumped by hand):
+    // the button count is no longer fixed, so a hand-maintained constant would
+    // need a second value for the task note and both would drift. The formula
+    // reproduces 374 exactly at ten buttons, and 136 at three.
+    //
+    // Stays even at every count, which is load-bearing: reposition()'s own
+    // centering math divides this by 2, and window positioning rounds to whole
+    // pixels — an odd barLength surfaced a half-pixel mismatch against that
+    // rounding (confirmed empirically), which an even value sidesteps entirely
+    // rather than chasing down exactly where the rounding happens. Every term
+    // above is even (9 + 1 + 22 = 32), so the sum is too regardless of count.
+    readonly property int barLength:
+        32 + bar.buttonCount * bar.buttonSize + (bar.buttonCount + 1) * 2
 
     // The grip + dividers always stay in the toolbar's first line/column
     // regardless of button count — only the buttons themselves wrap once
@@ -1099,8 +1152,13 @@ ChromeWindow {
             onClicked: bar.runAction(() => bar.noteWindow.applyInlineToggle(r => bar.noteWindow.docHandler.toggleStrikethrough(r.start, r.end)))
             ToolbarButtonTip { id: strikethroughButtonTip; text: "Strikethrough" }
         }
+        // Every button from here down to insertImageButton is absent on the
+        // TickTick task note — see taskListNote for why, and buttonCount,
+        // which has to agree with how many of them go.
         ToolButton {
+            id: heading1Button
             text: "H1"
+            visible: !bar.taskListNote
             implicitWidth: bar.buttonSize
             implicitHeight: bar.buttonSize
             Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
@@ -1114,7 +1172,9 @@ ChromeWindow {
             ToolbarButtonTip { text: "Heading 1" }
         }
         ToolButton {
+            id: heading2Button
             text: "H2"
+            visible: !bar.taskListNote
             implicitWidth: bar.buttonSize
             implicitHeight: bar.buttonSize
             Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
@@ -1128,6 +1188,8 @@ ChromeWindow {
             ToolbarButtonTip { text: "Heading 2" }
         }
         ToolButton {
+            id: bulletListButton
+            visible: !bar.taskListNote
             implicitWidth: bar.buttonSize
             implicitHeight: bar.buttonSize
             Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
@@ -1143,6 +1205,8 @@ ChromeWindow {
             ToolbarButtonTip { text: "Bullet List" }
         }
         ToolButton {
+            id: numberedListButton
+            visible: !bar.taskListNote
             implicitWidth: bar.buttonSize
             implicitHeight: bar.buttonSize
             Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
@@ -1158,6 +1222,8 @@ ChromeWindow {
             ToolbarButtonTip { text: "Numbered List" }
         }
         ToolButton {
+            id: checkboxListButton
+            visible: !bar.taskListNote
             implicitWidth: bar.buttonSize
             implicitHeight: bar.buttonSize
             Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
@@ -1181,6 +1247,7 @@ ChromeWindow {
         // table.
         ToolButton {
             id: insertTableButton
+            visible: !bar.taskListNote
             implicitWidth: bar.buttonSize
             implicitHeight: bar.buttonSize
             Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
@@ -1203,6 +1270,7 @@ ChromeWindow {
         // note instead — see NoteWindow.qml's DropArea). Material "image" glyph.
         ToolButton {
             id: insertImageButton
+            visible: !bar.taskListNote
             implicitWidth: bar.buttonSize
             implicitHeight: bar.buttonSize
             Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter

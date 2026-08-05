@@ -3,6 +3,7 @@
 #include <QSignalSpy>
 #include <QTemporaryDir>
 
+#include "core/NoteStore.h"
 #include "core/OpenNotesModel.h"
 #include "core/Settings.h"
 
@@ -429,6 +430,213 @@ SCENARIO("setAlwaysOnTop toggles a single note's pin state", "[open_notes_model]
                     if (state.noteId == "alpha")
                         CHECK(state.alwaysOnTop);
                 }
+            }
+        }
+    }
+}
+
+// A note created at a chosen spot — duplicating one — has to be positioned
+// before its window exists, because a mapped Wayland toplevel cannot be placed
+// by assigning x/y afterwards. openNoteAt() covers the case where the caller
+// gets to open the note itself. It cannot cover the real app, where
+// NoteStore::createNote() emits noteIdsChanged synchronously and Main.qml's
+// reconciliation opens the note — via plain openNote() — before createNote()
+// has even returned. The seed is what reaches that opener.
+
+SCENARIO("A seeded spawn position reaches a note opened by someone else",
+         "[open_notes_model]")
+{
+    GIVEN("a model with a spawn position seeded")
+    {
+        QTemporaryDir dir;
+        REQUIRE(dir.isValid());
+        Settings settings(tempConfigPath(dir));
+        OpenNotesModel model(&settings);
+        model.seedNextSpawnPosition(640, 480);
+
+        WHEN("a note is opened by a plain openNote(), as the reconciliation does")
+        {
+            model.openNote("alpha");
+
+            THEN("it lands at the seeded position, not the unpositioned default")
+            {
+                // (0, 0) is the "never positioned" sentinel that makes
+                // NoteWindow fall back to its index-based cascade. Landing
+                // there is precisely the bug: every duplicate appeared on the
+                // cascade instead of beside the note it was copied from.
+                CHECK(model.data(model.index(0), OpenNotesModel::XRole).toInt() == 640);
+                CHECK(model.data(model.index(0), OpenNotesModel::YRole).toInt() == 480);
+            }
+        }
+
+        WHEN("a second note is opened after the first consumed the seed")
+        {
+            model.openNote("alpha");
+            model.openNote("bravo");
+
+            THEN("only the first is positioned")
+            {
+                // One-shot, not a mode: leaving it armed would drag every
+                // later note — a TickTick pull's, say — to the same spot.
+                const int bravoRow =
+                    model.data(model.index(0), OpenNotesModel::NoteIdRole).toString() == "bravo" ? 0 : 1;
+                CHECK(model.data(model.index(bravoRow), OpenNotesModel::XRole).toInt() == 0);
+                CHECK(model.data(model.index(bravoRow), OpenNotesModel::YRole).toInt() == 0);
+            }
+        }
+    }
+
+    GIVEN("a model with notes already open and a seed set afterwards")
+    {
+        QTemporaryDir dir;
+        REQUIRE(dir.isValid());
+        Settings settings(tempConfigPath(dir));
+        OpenNotesModel model(&settings);
+        model.openNote("existing-one");
+        model.openNote("existing-two");
+        model.seedNextSpawnPosition(300, 200);
+
+        WHEN("the reconciliation sweeps every known note before reaching the new one")
+        {
+            // This is exactly what Main.qml does: it walks the full list of
+            // ids on disk and calls openNote() for each. The already-open ones
+            // must not eat the seed on their way past.
+            model.openNote("existing-one");
+            model.openNote("existing-two");
+            model.openNote("brand-new");
+
+            THEN("the seed survives the already-open notes and reaches the new one")
+            {
+                int newRow = -1;
+                for (int row = 0; row < model.rowCount(); ++row) {
+                    if (model.data(model.index(row), OpenNotesModel::NoteIdRole).toString()
+                        == "brand-new")
+                        newRow = row;
+                }
+                REQUIRE(newRow >= 0);
+                CHECK(model.data(model.index(newRow), OpenNotesModel::XRole).toInt() == 300);
+                CHECK(model.data(model.index(newRow), OpenNotesModel::YRole).toInt() == 200);
+            }
+
+            THEN("the already-open notes are left exactly where they were")
+            {
+                for (const auto &state : settings.openNotes()) {
+                    if (state.noteId != "brand-new") {
+                        CHECK(state.x == 0);
+                        CHECK(state.y == 0);
+                    }
+                }
+            }
+        }
+    }
+}
+
+SCENARIO("An unconsumed spawn seed can be dropped", "[open_notes_model]")
+{
+    GIVEN("a seed set for a creation that then failed")
+    {
+        QTemporaryDir dir;
+        REQUIRE(dir.isValid());
+        Settings settings(tempConfigPath(dir));
+        OpenNotesModel model(&settings);
+        model.seedNextSpawnPosition(900, 900);
+
+        WHEN("the caller clears it and an unrelated note opens later")
+        {
+            // A create that fails never emits noteIdsChanged, so no
+            // reconciliation runs and nothing consumes the seed. Without an
+            // explicit clear it would sit armed and yank the next note opened
+            // for any reason — a TickTick pull's, say — to 900,900.
+            model.clearNextSpawnPosition();
+            model.openNote("unrelated");
+
+            THEN("that note is unpositioned, as a fresh note should be")
+            {
+                CHECK(model.data(model.index(0), OpenNotesModel::XRole).toInt() == 0);
+                CHECK(model.data(model.index(0), OpenNotesModel::YRole).toInt() == 0);
+            }
+        }
+    }
+}
+
+// The bug this seed exists for, reproduced against the real NoteStore rather
+// than a stand-in: createNote() emits noteIdsChanged before it returns, and the
+// app's reconciliation opens the note on that signal — so the caller's own
+// "open it at this position" call arrives too late to have any effect.
+//
+// The lambda below IS Main.qml's reconcileNotesWithDisk(), reduced to the one
+// line that matters here. Without it this file cannot see the bug at all, which
+// is precisely why the bug survived: the QML test harness has no Main.qml, so
+// the duplicate-position test there passed while every real duplicate landed on
+// the default cascade.
+SCENARIO("A note created while the app reconciles on disk changes still lands where asked",
+         "[open_notes_model]")
+{
+    GIVEN("a NoteStore whose id changes are reconciled into the model synchronously")
+    {
+        QTemporaryDir dir;
+        REQUIRE(dir.isValid());
+        Settings settings(tempConfigPath(dir));
+        OpenNotesModel model(&settings);
+
+        NoteStore store;
+        store.setNotesFolder(dir.path() + QLatin1String("/notes"));
+
+        QObject::connect(&store, &NoteStore::noteIdsChanged, &model, [&store, &model]() {
+            const QStringList ids = store.noteIds();
+            for (const QString &id : ids) {
+                if (!model.isOpen(id))
+                    model.openNote(id);
+            }
+        });
+
+        WHEN("a note is created with its spawn position seeded first")
+        {
+            model.seedNextSpawnPosition(640, 480);
+            const QString newId = store.createNote(QStringLiteral("a duplicate"));
+            model.clearNextSpawnPosition();
+            REQUIRE_FALSE(newId.isEmpty());
+
+            THEN("the reconciliation has already opened it")
+            {
+                // This is the whole problem: by the time createNote() returns,
+                // the note is open and — in the real app — its window is built
+                // and its KWin spawn rule already evaluated. Anything the
+                // caller does now is too late.
+                CHECK(model.isOpen(newId));
+            }
+
+            THEN("it is nonetheless at the requested position")
+            {
+                int row = -1;
+                for (int i = 0; i < model.rowCount(); ++i) {
+                    if (model.data(model.index(i), OpenNotesModel::NoteIdRole).toString() == newId)
+                        row = i;
+                }
+                REQUIRE(row >= 0);
+                CHECK(model.data(model.index(row), OpenNotesModel::XRole).toInt() == 640);
+                CHECK(model.data(model.index(row), OpenNotesModel::YRole).toInt() == 480);
+            }
+        }
+
+        WHEN("a note is created with no seed, as the tray's New Note does")
+        {
+            const QString newId = store.createNote();
+            REQUIRE_FALSE(newId.isEmpty());
+
+            THEN("it is unpositioned, so NoteWindow's own cascade places it")
+            {
+                // A brand-new note has no source window to sit beside, so the
+                // (0, 0) "never positioned" sentinel is the correct answer, not
+                // a missed opportunity to place it.
+                int row = -1;
+                for (int i = 0; i < model.rowCount(); ++i) {
+                    if (model.data(model.index(i), OpenNotesModel::NoteIdRole).toString() == newId)
+                        row = i;
+                }
+                REQUIRE(row >= 0);
+                CHECK(model.data(model.index(row), OpenNotesModel::XRole).toInt() == 0);
+                CHECK(model.data(model.index(row), OpenNotesModel::YRole).toInt() == 0);
             }
         }
     }

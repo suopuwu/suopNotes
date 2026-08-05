@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QColor>
 #include <QHash>
 #include <QObject>
 #include <QPointer>
@@ -239,6 +240,14 @@ public:
 
     Q_INVOKABLE QString toMarkdown() const;
     Q_INVOKABLE void setMarkdown(const QString &markdown);
+    // Same resulting text as setMarkdown(), but recorded as ONE undoable edit
+    // instead of clearing the undo stack. For the "reload an already-open
+    // note" path only — e.g. TickTick's sync module rewriting the note's
+    // cache file out from under the user after a commit or a pull — NOT for
+    // first open, which still needs setMarkdown()'s empty-stack behavior so a
+    // freshly opened note's very first Ctrl+Z is a no-op. See NoteWindow.qml's
+    // loadFromDisk() for how the two are chosen between.
+    Q_INVOKABLE void replaceAllTextPreservingUndo(const QString &text);
 
     // Each returns the toggled content's resulting range as
     // {"start": int, "end": int}, so the caller can reselect the same TEXT.
@@ -282,6 +291,72 @@ public:
     // glyph (not elsewhere in its text, where a click should just place
     // the cursor normally). Returns true if a toggle actually happened.
     Q_INVOKABLE bool tryToggleCheckboxAt(int position);
+    // Puts back any checkbox marker the last edit destroyed, across the whole
+    // document, and returns where `cursorPosition` moved to (unchanged if
+    // nothing needed repair) so the caller can keep the caret with its text.
+    //
+    // Off by default and switched on per note, because it is an invariant the
+    // caller opts into rather than editor-wide behavior: an ordinary note must
+    // still be free to hold plain paragraphs. See TextFormatting::
+    // repairCheckboxList for the per-line rules.
+    //
+    // Re-enters contentEdited() through its own edit, and terminates for the
+    // same reason tryAutoConvertListShorthand does: the second pass finds
+    // every line already marked and rewrites nothing.
+    Q_INVOKABLE int repairCheckboxList(int cursorPosition);
+    // Puts a checkbox marker back on an EMPTY first line, and returns where
+    // `cursorPosition` moved to. The companion to repairCheckboxList above for
+    // the one line whose blankness is not something to preserve — the TickTick
+    // task note's compose slot. See TextFormatting::ensureFirstLineCheckbox.
+    //
+    // Called right after repairCheckboxList by the same (task-note-only)
+    // caller, and terminates for the same reason: the second pass finds a
+    // well-formed checkbox on line 0 and rewrites nothing.
+    Q_INVOKABLE int ensureFirstLineCheckbox(int cursorPosition);
+    // Removes the line at `position` if it is a checked checkbox item, and
+    // reports whether it did. Self-guarding by design — see TextFormatting::
+    // removeCheckedCheckboxLine for why the caller is not trusted to know the
+    // line is still what it was when it asked.
+    Q_INVOKABLE bool removeCheckedCheckboxLineAt(int position);
+    // Removes the whole line at `position`, whatever it currently says, and
+    // reports whether it did (false only for a position with no valid block).
+    //
+    // The deliberately unguarded counterpart to removeCheckedCheckboxLineAt
+    // above: this serves Backspace on an emptied-out item, where the line is
+    // by definition NOT ticked and the user is asking for the removal in the
+    // same instant. See TextFormatting::removeLine.
+    Q_INVOKABLE bool removeLineAt(int position);
+    // Removes every whole line the range [start, end) touches, snapping
+    // outward to whole lines at each end, and ALWAYS preserving the
+    // document's first line (the TickTick task note's compose slot).
+    //
+    // Serves a multi-line Backspace/Delete/Cut over a task-note selection
+    // whose endpoints don't sit on line boundaries — NoteWindow.qml's
+    // Keys.onPressed calls this instead of letting TextArea's own default
+    // handling merge the partial lines at each end into one line that
+    // matches nothing in TickTickTaskList's last render (which otherwise
+    // silently reverts on the very next pull with no visible error — see
+    // item 007's work order). Returns false if the range resolves to
+    // nothing removable (e.g. it falls entirely within line 0). See
+    // TextFormatting::removeLines.
+    Q_INVOKABLE bool removeLinesInRange(int start, int end);
+    // The label text of the list item at `position` — the part after its
+    // marker — or the whole line when it is not a list item. What a caller
+    // asking "is this item blank?" needs; listLabelPositionAt below answers
+    // the different question of where that text begins.
+    Q_INVOKABLE QString listLabelTextAt(int position) const;
+    // Where the label of the line at `position` begins. Unlike
+    // listLabelPositionAt below (a caret-placement answer that never moves the
+    // caret backwards), this is the raw boundary — what a caller comparing the
+    // caret against "the start of this item's text" needs.
+    Q_INVOKABLE int listLabelStartAt(int position) const;
+
+    // Paints the line at `position` at `opacity` (1 normal, 0 invisible), or
+    // clears the effect when position is -1. Purely visual: it changes no text,
+    // so it does NOT emit contentEdited and never reaches a save — which is
+    // what makes it safe to call on every frame of an animation. `textColor` is
+    // the editor's own color; see MarkdownHighlighter::setFadedLine.
+    Q_INVOKABLE void setFadedLine(int position, qreal opacity, const QColor &textColor);
     // Where a click resolved to `position` should actually leave the caret:
     // the item's own text start when `position` fell inside a bullet's or
     // checkbox's (invisible, glyph-covered) marker, and `position` itself

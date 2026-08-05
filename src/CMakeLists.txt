@@ -1,4 +1,6 @@
 qt_add_library(suopNotesCore STATIC
+    core/NoteContentProvider.h
+    core/NoteContentProvider.cpp
     core/NoteStore.h
     core/NoteStore.cpp
     core/NoteFilename.h
@@ -117,10 +119,12 @@ qt_add_qml_module(suopNotes
         qml/PerNoteSettingsPopup.qml
         qml/GlassOverlay.qml
         qml/InteractableHighlight.qml
+        qml/MarkerCaretGuard.qml
         qml/RangeOverlay.qml
         qml/ResizeHandle.qml
         qml/SelectionToolbar.qml
         qml/ShortcutField.qml
+        qml/WheelSafeSlider.qml
 )
 
 target_link_libraries(suopNotes PRIVATE
@@ -138,6 +142,28 @@ target_link_libraries(suopNotes PRIVATE
 if(SUOPNOTES_ENABLE_TICKTICK)
     target_link_libraries(suopNotes PRIVATE suopNotesTickTick)
     target_compile_definitions(suopNotes PRIVATE SUOPNOTES_HAVE_TICKTICK)
+
+    # The module's own QML, compiled into the app's QML module only when the
+    # module is built. Aliased into qml/ so each file sits beside the shared
+    # QML that Loader-references it (SettingsDialog.qml, NoteWindow.qml) —
+    # those Loaders use plain relative URLs, which then also resolve in the
+    # QML test harness's flattened copy of this module (tests/qml). With the
+    # module off, the files are absent and the referencing Loaders are inert
+    # (`active` is false whenever `tickTick` is null).
+    set_source_files_properties(modules/ticktick/qml/TickTickSettingsSection.qml
+        PROPERTIES QT_RESOURCE_ALIAS "qml/TickTickSettingsSection.qml"
+    )
+    set_source_files_properties(modules/ticktick/qml/TickTickSyncFooter.qml
+        PROPERTIES QT_RESOURCE_ALIAS "qml/TickTickSyncFooter.qml"
+    )
+    set_source_files_properties(modules/ticktick/qml/TickTickListTitle.qml
+        PROPERTIES QT_RESOURCE_ALIAS "qml/TickTickListTitle.qml"
+    )
+    qt_target_qml_sources(suopNotes QML_FILES
+        modules/ticktick/qml/TickTickSettingsSection.qml
+        modules/ticktick/qml/TickTickSyncFooter.qml
+        modules/ticktick/qml/TickTickListTitle.qml
+    )
 endif()
 
 install(TARGETS suopNotes RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})

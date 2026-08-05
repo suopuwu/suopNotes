@@ -194,8 +194,39 @@ SCENARIO("kwinRuleAlreadyMatches decides whether a rule write can be skipped", "
         }
     }
 
+    GIVEN("a listed group that is missing its position key entirely")
+    {
+        // The shape a partly-failed write leaves behind, and the reason
+        // writeRule verifies itself: the group is listed in [General] and holds
+        // real keys (skiptaskbar, title, titlematch…), so nothing about it looks
+        // wrong — but with no position/positionrule, KWin has no spawn position
+        // for the window and places it on whatever monitor is active. Reachable
+        // because writeKConfig discards each kwriteconfig6's success answer, so
+        // one process timing out is silent.
+        //
+        // Reporting it as "changed" is what lets writeRule's verify-and-retry
+        // repair it. If this ever returned true, such a group would stay broken
+        // for the life of the install, since every later write would skip it.
+        QMap<QString, QString> partial = keys;
+        partial.remove("position");
+        partial.remove("positionrule");
+        const QString path = writeRulesFile(dir, group, group, bodyFor(partial));
+
+        THEN("the write is NOT a no-op — a rule with no spawn position must be rewritten")
+        {
+            CHECK_FALSE(kwinRuleAlreadyMatches(path, group, keys));
+        }
+    }
+
     GIVEN("a group whose keys all match but which is absent from [General]'s rules list")
     {
+        // Not a hypothetical shape: this is exactly what concurrent
+        // kwriteconfig6 writes left behind before rulesFileMutex() existed —
+        // a note's group sitting on disk with a perfectly good
+        // skiptaskbar=true that KWin ignored, so the note appeared in the
+        // taskbar. Reporting it as "changed" here is what makes the next
+        // applyPosition() re-list the group and repair the note, rather than
+        // seeing correct-looking keys and skipping the write forever.
         const QString path = writeRulesFile(dir, /*generalRules=*/"", group, bodyFor(keys));
 
         THEN("the write is NOT a no-op — an unlisted rule is one KWin won't apply")

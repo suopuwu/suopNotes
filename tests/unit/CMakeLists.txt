@@ -24,6 +24,7 @@ qt_add_executable(suopNotes_unit_tests
     test_position_event_service.cpp
     test_position_manager.cpp
     test_note_appearance.cpp
+    test_note_content_provider.cpp
     test_single_instance_guard.cpp
     test_tray_icon_composer.cpp
 )

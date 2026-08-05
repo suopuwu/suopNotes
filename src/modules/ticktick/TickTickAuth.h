@@ -37,6 +37,10 @@ class TickTickAuth : public QObject
     Q_PROPERTY(bool configured READ isConfigured NOTIFY configuredChanged)
     Q_PROPERTY(bool authorized READ isAuthorized NOTIFY authorizedChanged)
     Q_PROPERTY(QString redirectUri READ redirectUri NOTIFY configuredChanged)
+    // Readable so the settings form can show what is already set. The secret
+    // deliberately has no such property — the UI never needs to read one back.
+    Q_PROPERTY(QString clientId READ clientId NOTIFY configuredChanged)
+    Q_PROPERTY(int callbackPort READ callbackPortValue NOTIFY configuredChanged)
 
 public:
     explicit TickTickAuth(TickTickTokenStore &tokenStore, QObject *parent = nullptr);
@@ -53,6 +57,16 @@ public:
     bool isConfigured() const;
     bool isAuthorized() const;
 
+    // For the API client. Not exposed to QML: there is no reason for the UI to
+    // hold a credential, and plenty of reasons for it not to.
+    QString accessToken() const;
+
+    QString clientId() const;
+    int callbackPortValue() const;
+
+    // An empty clientSecret leaves the stored one alone, so the settings form
+    // can show a blank secret field without wiping the secret every time the
+    // user edits something else on the same form.
     Q_INVOKABLE void setClientCredentials(const QString &clientId, const QString &clientSecret);
     Q_INVOKABLE void setCallbackPort(quint16 port);
 

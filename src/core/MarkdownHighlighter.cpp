@@ -435,6 +435,61 @@ void MarkdownHighlighter::setSearchMatches(const QList<TextSearch::Match> &match
     }
 }
 
+void MarkdownHighlighter::setFadedLine(int position, qreal opacity, const QColor &baseTextColor)
+{
+    if (position == m_fadedLinePosition && qFuzzyCompare(opacity, m_fadeOpacity)
+        && baseTextColor == m_fadeBaseColor) {
+        return;
+    }
+
+    const int previousPosition = m_fadedLinePosition;
+    m_fadedLinePosition = position;
+    m_fadeOpacity = qBound(0.0, opacity, 1.0);
+    m_fadeBaseColor = baseTextColor;
+
+    if (!document())
+        return;
+
+    // The old line has to repaint too — that is how a cleared fade puts the
+    // text back — and it is usually the same block, which the QSet collapses
+    // to a single repaint.
+    QSet<int> blockNumbers;
+    for (const int candidate : {previousPosition, position}) {
+        if (candidate < 0)
+            continue;
+        const QTextBlock block = document()->findBlock(candidate);
+        if (block.isValid())
+            blockNumbers.insert(block.blockNumber());
+    }
+    for (const int number : blockNumbers) {
+        const QTextBlock block = document()->findBlockByNumber(number);
+        if (block.isValid())
+            rehighlightBlock(block);
+    }
+}
+
+void MarkdownHighlighter::applyLineFade(const QString &text)
+{
+    if (m_fadedLinePosition < 0 || m_fadeOpacity >= 1.0)
+        return;
+
+    const int blockStart = currentBlock().position();
+    if (m_fadedLinePosition < blockStart || m_fadedLinePosition > blockStart + text.size())
+        return;
+
+    for (int offset = 0; offset < text.size(); ++offset) {
+        QTextCharFormat composed = format(offset);
+        // No explicit foreground means "whatever the TextArea paints text in",
+        // which only the caller knows — see setFadedLine's own comment.
+        QColor color = composed.foreground().style() == Qt::NoBrush
+            ? m_fadeBaseColor
+            : composed.foreground().color();
+        color.setAlphaF(color.alphaF() * m_fadeOpacity);
+        composed.setForeground(color);
+        setFormat(offset, 1, composed);
+    }
+}
+
 void MarkdownHighlighter::collectBlockNumbers(const QList<TextSearch::Match> &matches,
                                               QSet<int> &out) const
 {
@@ -574,6 +629,11 @@ void MarkdownHighlighter::highlightBlock(const QString &text)
     // highlight has to survive being merged over the markdown formatting rather
     // than the other way round, and it applies to empty and table lines too.
     applySearchHighlight(text);
+
+    // Later still: a line on its way out fades everything above, the search
+    // highlight included, so a match on a completing task doesn't stay bright
+    // amber while its text disappears.
+    applyLineFade(text);
 }
 
 void MarkdownHighlighter::setMarkdownDecorationEnabled(bool enabled)

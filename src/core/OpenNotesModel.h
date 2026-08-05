@@ -42,6 +42,39 @@ public:
     // openNote() followed by a move.
     Q_INVOKABLE void openNoteAt(const QString &noteId, int x, int y);
 
+    // Where the NEXT note opened by openNote() should spawn — a one-shot, not a
+    // setting. Exists because openNoteAt() alone cannot do the job in the real
+    // app, which is a race worth spelling out because it is invisible in tests:
+    //
+    // NoteStore::createNote() ends with refreshNoteIds(), which emits
+    // noteIdsChanged SYNCHRONOUSLY. Main.qml reconciles on that signal, also
+    // synchronously, calling openNote() for the id that just appeared — so by
+    // the time createNote() returns to its caller, the note is ALREADY open at
+    // the default position, its window delegate already constructed, and its
+    // KWin spawn-position rule already written and evaluated. A subsequent
+    // openNoteAt() is then a no-op (the id is open), and even if it weren't,
+    // "Apply Initially" has already fired: a mapped Wayland toplevel cannot be
+    // placed by assigning x/y afterwards.
+    //
+    // Seeding BEFORE createNote() is what closes that gap — the reconcile's own
+    // openNote() picks the position up, so the very first thing that opens the
+    // note opens it in the right place.
+    //
+    // The QML test harness has no Main.qml and therefore no reconciliation, so
+    // there the caller's own openNoteAt() is what positions the note. Both
+    // paths have to work, which is why callers do both.
+    //
+    // If two notes appear between the seed and the next openNote(), the first
+    // one opened takes it. That only happens when an external tool drops a .md
+    // into the folder in the same instant a note is created here.
+    Q_INVOKABLE void seedNextSpawnPosition(int x, int y);
+
+    // Drops an unconsumed seed. Callers must do this after the creation they
+    // seeded for, because a create that FAILS never emits noteIdsChanged and so
+    // never triggers the reconcile that would have consumed it — leaving it
+    // armed to displace some unrelated note opened later (a TickTick pull, say).
+    Q_INVOKABLE void clearNextSpawnPosition();
+
     Q_INVOKABLE void closeNote(const QString &noteId);
     Q_INVOKABLE bool isOpen(const QString &noteId) const;
 
@@ -75,4 +108,10 @@ private:
 
     Settings *m_settings;
     QList<Settings::NoteSessionState> m_notes;
+
+    // See seedNextSpawnPosition(). Armed by a caller about to create a note,
+    // consumed by whichever openNote() runs next.
+    bool m_hasSpawnSeed = false;
+    int m_spawnSeedX = 0;
+    int m_spawnSeedY = 0;
 };

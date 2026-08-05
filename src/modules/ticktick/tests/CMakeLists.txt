@@ -13,6 +13,12 @@ add_executable(suopNotesTickTick_unit_tests
     test_ticktick_module.cpp
     test_ticktick_auth.cpp
     test_ticktick_token_store.cpp
+    test_ticktick_notes.cpp
+    test_ticktick_prefs.cpp
+    test_ticktick_client.cpp
+    test_ticktick_task_list.cpp
+    test_ticktick_sync.cpp
+    test_ticktick_credentials.cpp
 )
 
 target_link_libraries(suopNotesTickTick_unit_tests PRIVATE

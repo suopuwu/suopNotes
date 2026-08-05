@@ -197,6 +197,15 @@ Item {
             // binds to root.activeNoteWindow, so an untracked note opening it
             // would put a menu on screen at THIS note's coordinates while
             // every action in it ran against a different note entirely.
+            // The ribbon's task glyph, pressed on a note that isn't the task
+            // note — the compose slot lives in another window, and only this
+            // file can find it. Deliberately NOT gated on being the tracked
+            // note, unlike findRequested/contextMenuRequested above: those drive
+            // shared chrome bound to activeNoteWindow and would act on the wrong
+            // note, whereas this always addresses the one task note regardless
+            // of who asked.
+            onNewTaskRequested: root.createNewTask()
+
             onContextMenuRequested: (screenX, screenY) => {
                 if (root.activeNoteWindow !== thisNoteWindow)
                     return
@@ -356,6 +365,47 @@ Item {
             openNotesModel.openNote(id)
     }
 
+    // Whether a TickTick task can be created/synced right now: the optional
+    // module has to be both compiled in (`tickTick` is null otherwise) and
+    // connected. Every TickTick entry below gates on this, so a menu item that
+    // could only report "not connected" never appears.
+    readonly property bool tickTickAvailable: tickTick !== null && tickTick.auth.authorized
+
+    // New TickTick task. Under the one-note-for-all-tasks design there is no
+    // per-task note left to open: this makes sure the single aggregated task
+    // note exists with an empty compose slot on top, then reveals it so the
+    // user can type into that slot. The very first time is the one case that
+    // creates anything — the module writes the cached note synchronously, which
+    // announces a brand new note id, and reconcileNotesWithDisk() above turns
+    // that into a window on the same call stack, same as before.
+    //
+    // The reveal is this file's job rather than the note's because the tray
+    // entry can fire when no note window has focus at all; a note reached this
+    // way still puts its own caret in the slot (NoteWindow.focusComposeSlot).
+    // See TickTickSync::ensureComposeSlot.
+    function createNewTask() {
+        if (!root.tickTickAvailable)
+            return
+        const noteId = tickTick.sync.ensureComposeSlot()
+        if (!noteId)
+            return
+        for (let i = 0; i < noteInstantiator.count; ++i) {
+            const note = noteInstantiator.objectAt(i)
+            if (note && note.noteId === noteId) {
+                note.focusComposeSlot()
+                return
+            }
+        }
+    }
+
+    // No-op unless TickTick is connected. Used by the tray's left-click as well
+    // as its explicit sync entry: pullNow() itself already declines when busy or
+    // unauthorized, so a burst of clicks costs one pull, not one per click.
+    function refreshTickTick() {
+        if (root.tickTickAvailable)
+            tickTick.sync.pullNow()
+    }
+
     Platform.SystemTrayIcon {
         visible: true
         // icon.source (not icon.name) once there's at least one open note,
@@ -384,6 +434,15 @@ Item {
                 text: "New Note"
                 onTriggered: root.createNewNote()
             }
+            // Qt.labs.platform.Menu has no Repeater/model support, so an
+            // optional module's entry has to be declared statically and gated
+            // on visibility — same shape as the sync entry further down.
+            Platform.MenuItem {
+                objectName: "tickTickNewTaskMenuItem"
+                text: "New TickTick Task"
+                visible: root.tickTickAvailable
+                onTriggered: root.createNewTask()
+            }
             Platform.MenuItem {
                 text: "Settings…"
                 onTriggered: settingsWindow.show()
@@ -392,6 +451,18 @@ Item {
             Platform.MenuItem {
                 text: "Open Notes Folder"
                 onTriggered: Qt.openUrlExternally("file://" + settings.notesFolder)
+            }
+            // Hidden entirely unless the module is both built and connected — a
+            // "Sync now" that can only report "not connected" is worse than no
+            // entry. Kept alongside the left-click sync below rather than
+            // replaced by it: the click is the fast path, this is the
+            // discoverable one that says what it does.
+            Platform.MenuItem {
+                objectName: "tickTickSyncMenuItem"
+                text: "Sync TickTick Now"
+                visible: root.tickTickAvailable
+                enabled: visible && !tickTick.sync.busy
+                onTriggered: root.refreshTickTick()
             }
             Platform.MenuSeparator {}
             Platform.MenuItem {
@@ -410,10 +481,17 @@ Item {
             // sends SecondaryActivate on middle-click, which Qt's DBus tray
             // backend surfaces here as MiddleClick. Right-click reaches the
             // full menu via the platform's own default handling.
-            if (reason === Platform.SystemTrayIcon.Trigger)
+            if (reason === Platform.SystemTrayIcon.Trigger) {
                 root.revealAllNotes()
-            else if (reason === Platform.SystemTrayIcon.MiddleClick)
+                // A left-click is the user turning their attention back to
+                // their notes, which is exactly the moment a stale one is worth
+                // noticing (feature request). No-op when TickTick is off or
+                // already syncing, and the reveal above never waits on it —
+                // pullNow() returns immediately and finishes over the network.
+                root.refreshTickTick()
+            } else if (reason === Platform.SystemTrayIcon.MiddleClick) {
                 root.createNewNote()
+            }
         }
     }
 }

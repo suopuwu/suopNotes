@@ -63,6 +63,21 @@ void OpenNotesModel::openNote(const QString &noteId)
 
     Settings::NoteSessionState state;
     state.noteId = noteId;
+
+    // A seeded position applies to the first note actually opened after it was
+    // set, whoever opens it — which in the real app is the disk reconciliation,
+    // not the caller that seeded. See seedNextSpawnPosition().
+    //
+    // Consumed here rather than in isOpen()'s early return above: an
+    // already-open id is not a new note, and consuming on one would let the
+    // reconcile's sweep over every existing note eat the seed before reaching
+    // the new one.
+    if (m_hasSpawnSeed) {
+        state.x = m_spawnSeedX;
+        state.y = m_spawnSeedY;
+        m_hasSpawnSeed = false;
+    }
+
     m_settings->upsertNoteState(state);
 }
 
@@ -76,6 +91,18 @@ void OpenNotesModel::openNoteAt(const QString &noteId, int x, int y)
     state.x = x;
     state.y = y;
     m_settings->upsertNoteState(state);
+}
+
+void OpenNotesModel::seedNextSpawnPosition(int x, int y)
+{
+    m_hasSpawnSeed = true;
+    m_spawnSeedX = x;
+    m_spawnSeedY = y;
+}
+
+void OpenNotesModel::clearNextSpawnPosition()
+{
+    m_hasSpawnSeed = false;
 }
 
 void OpenNotesModel::closeNote(const QString &noteId)

@@ -30,14 +30,22 @@ QString defaultConfigPath()
 }
 
 TickTickTokenStore::TickTickTokenStore(QObject *parent)
-    : TickTickTokenStore(defaultConfigPath(), parent)
+    : TickTickTokenStore(defaultConfigPath(), SecretBackend::SystemKeychain, parent)
 {
 }
 
-TickTickTokenStore::TickTickTokenStore(const QString &configFilePath, QObject *parent)
+TickTickTokenStore::TickTickTokenStore(const QString &configFilePath,
+                                       SecretBackend backend,
+                                       QObject *parent)
     : QObject(parent)
     , m_configFilePath(configFilePath)
+    , m_backend(backend)
 {
+}
+
+bool TickTickTokenStore::useSystemKeychain() const
+{
+    return m_backend == SecretBackend::SystemKeychain && secureBackendAvailable();
 }
 
 bool TickTickTokenStore::secureBackendAvailable()
@@ -97,6 +105,15 @@ QDateTime TickTickTokenStore::expiresAt() const
 
 void TickTickTokenStore::loadSecrets()
 {
+    if (!useSystemKeychain()) {
+        // Emitted through the event loop rather than inline, so this path has
+        // the same "never completes before the caller has returned" shape as
+        // the keychain one. A caller that connected after calling would
+        // otherwise miss the result on one backend and not the other.
+        QTimer::singleShot(0, this, [this]() { readSecretsFromPlaintext(); });
+        return;
+    }
+
 #ifdef SUOPNOTES_HAVE_QTKEYCHAIN
     // Two reads, chained: the secret first, then the token, so both are in hand
     // before a single result is reported. Chaining rather than firing both at
@@ -130,12 +147,6 @@ void TickTickTokenStore::loadSecrets()
     });
 
     secretJob->start();
-#else
-    // Emitted through the event loop rather than inline, so this path has the
-    // same "never completes before the caller has returned" shape as the
-    // keychain one. A caller that connected after calling would otherwise miss
-    // the result on one backend and not the other.
-    QTimer::singleShot(0, this, [this]() { readSecretsFromPlaintext(); });
 #endif
 }
 
@@ -155,6 +166,12 @@ void TickTickTokenStore::storeSecrets(const QString &clientSecret,
             settings.remove(kIniExpiresAt);
         }
         settings.sync();
+    }
+
+    if (!useSystemKeychain()) {
+        writeSecretsToPlaintext(clientSecret, accessToken);
+        QTimer::singleShot(0, this, [this]() { emit secretsStored(); });
+        return;
     }
 
 #ifdef SUOPNOTES_HAVE_QTKEYCHAIN
@@ -183,9 +200,6 @@ void TickTickTokenStore::storeSecrets(const QString &clientSecret,
     });
 
     secretJob->start();
-#else
-    writeSecretsToPlaintext(clientSecret, accessToken);
-    QTimer::singleShot(0, this, [this]() { emit secretsStored(); });
 #endif
 }
 
@@ -202,11 +216,13 @@ void TickTickTokenStore::clearSecrets()
     }
 
 #ifdef SUOPNOTES_HAVE_QTKEYCHAIN
-    for (const QString &key : {kKeyClientSecret, kKeyAccessToken}) {
-        auto *job = new QKeychain::DeletePasswordJob(kServiceName, this);
-        job->setAutoDelete(true);
-        job->setKey(key);
-        job->start();
+    if (useSystemKeychain()) {
+        for (const QString &key : {kKeyClientSecret, kKeyAccessToken}) {
+            auto *job = new QKeychain::DeletePasswordJob(kServiceName, this);
+            job->setAutoDelete(true);
+            job->setKey(key);
+            job->start();
+        }
     }
 #endif
 

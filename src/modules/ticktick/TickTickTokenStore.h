@@ -26,12 +26,27 @@ class TickTickTokenStore : public QObject
     Q_OBJECT
 
 public:
+    enum class SecretBackend {
+        // Use the platform secret store when one is available.
+        SystemKeychain,
+        // Never contact the platform secret store, whatever the build supports.
+        //
+        // This exists for tests, and it is not optional politeness: the secret
+        // store is a real, shared, system-wide resource keyed by service name,
+        // so a spec that used it would write into the developer's own keyring —
+        // and, because the service name is the same one the app uses, would
+        // overwrite their real TickTick credentials every time the suite ran.
+        ConfigFileOnly,
+    };
+
     explicit TickTickTokenStore(QObject *parent = nullptr);
 
     // Test seam, mirroring Settings' and AutostartManager's own explicit-path
     // constructors: lets specs point at a temporary file instead of the real
-    // user config.
-    explicit TickTickTokenStore(const QString &configFilePath, QObject *parent = nullptr);
+    // user config. Specs should pass ConfigFileOnly — see the enum.
+    explicit TickTickTokenStore(const QString &configFilePath,
+                                SecretBackend backend = SecretBackend::SystemKeychain,
+                                QObject *parent = nullptr);
 
     // True when this build can use the platform secret store. Reported so the
     // UI can warn before a 180-day credential lands in a plaintext file.
@@ -76,6 +91,8 @@ signals:
 private:
     void writeSecretsToPlaintext(const QString &clientSecret, const QString &accessToken);
     void readSecretsFromPlaintext();
+    bool useSystemKeychain() const;
 
     QString m_configFilePath;
+    SecretBackend m_backend = SecretBackend::SystemKeychain;
 };
