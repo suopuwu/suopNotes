@@ -4595,6 +4595,36 @@ Item {
             verify(footer.visible)
         }
 
+        // The footer's "synced N ago" text is computed against a clock
+        // (footer._now) that only moves on real events — never a repeating
+        // timer (see CLAUDE.md). The event that keeps it honest in practice
+        // is the pointer entering the note: without it, the label could read
+        // "synced just now" forever, because the only idle-time event (the
+        // scheduled pull) resets lastSyncTime at the same instant it bumps
+        // the clock.
+        function test_hovering_the_note_restamps_the_synced_footer_clock() {
+            skipUnlessTickTickBuilt()
+            const footer = findChild(taskNoteTestWindow, "tickTickSyncFooter")
+            verify(footer !== null, "the task note has a synced-N-ago footer")
+
+            // Park the pointer outside the note, then age the footer's clock
+            // to a sentinel far in the past.
+            mouseMove(taskNoteTestWindow.contentItem, -50, -50)
+            tryCompare(taskNoteTestWindow, "hovered", false)
+            footer._now = new Date(12345)
+
+            mouseMove(taskNoteTestWindow.contentItem,
+                      taskNoteTestWindow.width / 2,
+                      taskNoteTestWindow.height / 2)
+            tryCompare(taskNoteTestWindow, "hovered", true)
+
+            tryVerify(() => footer._now.getTime() > 12345,
+                      5000,
+                      "the pointer entering the note re-stamps the clock, so the label " +
+                      "reflects how long ago the sync actually was by the time anyone " +
+                      "is close enough to read it")
+        }
+
         function test_an_ordinary_note_has_no_synced_footer() {
             skipUnlessTickTickBuilt()
             const footer = findChild(soloWindow, "tickTickSyncFooter")

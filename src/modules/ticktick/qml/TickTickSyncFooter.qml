@@ -58,6 +58,21 @@ Text {
         ? noteWindow.tickTickSyncLabel(footer._now)
         : ""
 
+    // The "note being hovered" re-stamp event from the header comment:
+    // noteWindow.hovered is the whole-note mouse-presence alias the HUD
+    // reveal already runs on, so glancing at the note — not just at this
+    // tiny label — is enough to bring the text up to date. Without this the
+    // label could sit on "synced just now" indefinitely: the hourly pull
+    // both re-stamps _now and resets lastSyncTime, so the only readings it
+    // ever produced while idle were fresh ones.
+    Connections {
+        target: footer.noteWindow
+        function onHoveredChanged() {
+            if (footer.noteWindow.hovered)
+                footer.bumpNow()
+        }
+    }
+
     Connections {
         target: tickTick !== null ? tickTick.sync : null
         function onPullFinished() { footer.bumpNow() }
