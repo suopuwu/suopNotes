@@ -460,6 +460,22 @@ void renumberRunAt(QTextDocument *document, int blockNumber)
     edit.endEditBlock();
 }
 
+// Whether every block the selection touches already has `kind`'s marker —
+// the single source of truth for both "what will toggling do" (toggleListKind's
+// allAlready) and "does the button show as active" (isBulletList/isNumberedList/
+// isCheckboxList below), so the two can never disagree on a multi-line selection.
+bool allSelectedBlocksAreKind(const QTextCursor &cursor, MarkdownList::Kind kind)
+{
+    const QList<QTextBlock> blocks = selectedBlocks(cursor);
+    if (blocks.isEmpty())
+        return false;
+    for (const QTextBlock &block : blocks) {
+        if (MarkdownList::parse(block.text()).kind != kind)
+            return false;
+    }
+    return true;
+}
+
 // Applies `kind` across the selection, or strips it if the selection is
 // already entirely that kind — the toggle semantics every list button wants.
 void toggleListKind(QTextCursor cursor, MarkdownList::Kind kind, int startNumber)
@@ -472,13 +488,7 @@ void toggleListKind(QTextCursor cursor, MarkdownList::Kind kind, int startNumber
     if (blocks.isEmpty())
         return;
 
-    bool allAlready = true;
-    for (const QTextBlock &block : blocks) {
-        if (MarkdownList::parse(block.text()).kind != kind) {
-            allAlready = false;
-            break;
-        }
-    }
+    bool allAlready = allSelectedBlocksAreKind(cursor, kind);
 
     const int firstBlockNumber = blocks.first().blockNumber();
     const int lastBlockNumber = blocks.last().blockNumber();
@@ -506,9 +516,15 @@ void toggleListKind(QTextCursor cursor, MarkdownList::Kind kind, int startNumber
                 // below then reconciles this against any adjacent run.
                 marker = MarkdownList::numberedMarker(startNumber + i);
                 break;
-            case MarkdownList::Kind::Checkbox:
-                marker = MarkdownList::checkboxMarker(false);
+            case MarkdownList::Kind::Checkbox: {
+                // A mixed selection (some lines already checkboxes, some
+                // not) must not silently uncheck the ones that already
+                // were — only genuinely new lines start unchecked.
+                const MarkdownList::Marker existing = MarkdownList::parse(block.text());
+                marker = MarkdownList::checkboxMarker(
+                    existing.kind == MarkdownList::Kind::Checkbox && existing.checked);
                 break;
+            }
             case MarkdownList::Kind::None:
                 break;
             }
@@ -1209,17 +1225,17 @@ int headingLevel(QTextCursor cursor)
 
 bool isBulletList(QTextCursor cursor)
 {
-    return MarkdownList::parse(cursor.block().text()).kind == MarkdownList::Kind::Bullet;
+    return allSelectedBlocksAreKind(cursor, MarkdownList::Kind::Bullet);
 }
 
 bool isNumberedList(QTextCursor cursor)
 {
-    return MarkdownList::parse(cursor.block().text()).kind == MarkdownList::Kind::Numbered;
+    return allSelectedBlocksAreKind(cursor, MarkdownList::Kind::Numbered);
 }
 
 bool isCheckboxList(QTextCursor cursor)
 {
-    return MarkdownList::parse(cursor.block().text()).kind == MarkdownList::Kind::Checkbox;
+    return allSelectedBlocksAreKind(cursor, MarkdownList::Kind::Checkbox);
 }
 
 bool isCheckboxChecked(QTextCursor cursor)

@@ -202,6 +202,67 @@ SCENARIO("Ticking a box is read back as a completion", "[ticktick][tasklist]")
     }
 }
 
+SCENARIO("Ticking two boxes before either has faded away completes both", "[ticktick][tasklist]")
+{
+    // The completion fade removes one line at a time (see NoteWindow.qml's
+    // tickTickCompletionFade), so a second box ticked while the first is
+    // still mid-fade reaches diff() with BOTH lines still present, checked,
+    // same line count as the previous render — the bug this fixes: before,
+    // two real lines differing here was read as an unresolvable edit, and
+    // the next pull silently reverted both ticks.
+    GIVEN("a compose slot and three rendered tasks")
+    {
+        const QStringList previousLines = {
+            "- [ ] ", "- [ ] Buy milk", "- [ ] Walk dog", "- [ ] File taxes"};
+        const QStringList previousTaskIds = {"", "t1", "t2", "t3"};
+
+        WHEN("the first and second task lines are both ticked, neither removed yet")
+        {
+            const QString edited =
+                "- [ ] \n- [x] Buy milk\n- [x] Walk dog\n- [ ] File taxes";
+            const auto intent = TickTickTaskList::diff(previousLines, previousTaskIds, edited);
+
+            THEN("both tasks are reported completed, and no line is reported removed")
+            {
+                CHECK(intent.completedTaskIds == QStringList{"t1", "t2"});
+                CHECK(intent.renamedTasks.isEmpty());
+                CHECK(intent.removedIndices.isEmpty());
+                CHECK(intent.understood);
+            }
+        }
+    }
+}
+
+SCENARIO("A tick alongside an unrelated rename in the same edit is too ambiguous to act on",
+         "[ticktick][tasklist]")
+{
+    // A tick is trusted in a burst only when EVERY changed real line is
+    // purely a tick — mixing in a rename keeps the existing "more than one
+    // real line differing" refusal, so a coincidental simultaneous edit still
+    // waits for the next pull rather than risk a wrong guess.
+    GIVEN("a compose slot and three rendered tasks")
+    {
+        const QStringList previousLines = {
+            "- [ ] ", "- [ ] Buy milk", "- [ ] Walk dog", "- [ ] File taxes"};
+        const QStringList previousTaskIds = {"", "t1", "t2", "t3"};
+
+        WHEN("one line is ticked and a different line is renamed in the same edit")
+        {
+            const QString edited =
+                "- [ ] \n- [x] Buy milk\n- [ ] Walk the dog\n- [ ] File taxes";
+            const auto intent = TickTickTaskList::diff(previousLines, previousTaskIds, edited);
+
+            THEN("nothing is reported at all")
+            {
+                CHECK(intent.completedTaskIds.isEmpty());
+                CHECK(intent.renamedTasks.isEmpty());
+                CHECK(intent.removedIndices.isEmpty());
+                CHECK_FALSE(intent.understood);
+            }
+        }
+    }
+}
+
 SCENARIO("Editing a line's label is read back as a rename", "[ticktick][tasklist]")
 {
     GIVEN("a compose slot and two rendered tasks")
@@ -403,6 +464,40 @@ SCENARIO("Ticking several boxes in one burst removes and completes all of them",
             {
                 CHECK(intent.completedTaskIds == QStringList{"t1", "t3", "t4"});
                 CHECK(intent.removedIndices == QList<int>{1, 3, 4});
+                CHECK(intent.renamedTasks.isEmpty());
+                CHECK(intent.understood);
+            }
+        }
+    }
+}
+
+SCENARIO("One ticked task already faded away while a second is still ticked but present "
+         "completes both",
+         "[ticktick][tasklist]")
+{
+    // The completion fade removes one line at a time, so a flush can land
+    // with an EARLIER tick's line already gone while a LATER tick's line is
+    // still sitting there, checked — one line fewer than before, but the
+    // survivors don't embed into the previous render by plain text equality
+    // (the still-present line's own text changed too). Before this, that
+    // mismatch made the whole edit unreadable — nothing was sent for either
+    // task, and the next pull reverted both back to open and unchecked,
+    // including the one whose line had already visibly disappeared locally.
+    GIVEN("a compose slot and three rendered tasks")
+    {
+        const QStringList previousLines = {
+            "- [ ] ", "- [ ] Buy milk", "- [ ] Walk dog", "- [ ] File taxes"};
+        const QStringList previousTaskIds = {"", "t1", "t2", "t3"};
+
+        WHEN("the first task's line is gone and the second is still present, now checked")
+        {
+            const QString edited = "- [ ] \n- [x] Walk dog\n- [ ] File taxes";
+            const auto intent = TickTickTaskList::diff(previousLines, previousTaskIds, edited);
+
+            THEN("both tasks are completed, and only the actually-gone one is removed")
+            {
+                CHECK(intent.completedTaskIds == QStringList{"t1", "t2"});
+                CHECK(intent.removedIndices == QList<int>{1});
                 CHECK(intent.renamedTasks.isEmpty());
                 CHECK(intent.understood);
             }

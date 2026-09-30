@@ -711,6 +711,51 @@ SCENARIO("Toggling a checkbox list on the current block", "[text_formatting]")
     }
 }
 
+SCENARIO("Toggling checkbox format across a mixed multi-line selection preserves checked state",
+         "[text_formatting]")
+{
+    GIVEN("an already-checked item next to a plain line")
+    {
+        QTextDocument doc;
+        doc.setPlainText("- [x] wash car\nbuy milk");
+
+        WHEN("checkbox format is toggled across both lines")
+        {
+            QTextCursor cursor(&doc);
+            cursor.setPosition(0);
+            cursor.movePosition(QTextCursor::End, QTextCursor::KeepAnchor);
+            TextFormatting::toggleCheckboxList(cursor);
+
+            THEN("the already-checked line stays checked")
+            {
+                CHECK(doc.findBlockByNumber(0).text() == QStringLiteral("- [x] wash car"));
+            }
+            THEN("the plain line becomes an unchecked checkbox item")
+            {
+                CHECK(doc.findBlockByNumber(1).text() == QStringLiteral("- [ ] buy milk"));
+            }
+        }
+
+        WHEN("the toolbar's active-state query is asked about this exact mixed selection")
+        {
+            QTextCursor cursor(&doc);
+            cursor.setPosition(0);
+            cursor.movePosition(QTextCursor::End, QTextCursor::KeepAnchor);
+
+            THEN("it reports false, agreeing that toggling ADDS checkbox formatting rather than "
+                 "stripping it")
+            {
+                // Before Fix B this only inspected the selection's last block
+                // (a plain line), or worse, could disagree with allAlready's
+                // whole-selection answer depending on which line the cursor
+                // landed on — either way it could show "active" for a
+                // selection where toggling actually adds formatting.
+                CHECK_FALSE(TextFormatting::isCheckboxList(cursor));
+            }
+        }
+    }
+}
+
 SCENARIO("Toggling a checkbox item's checked state", "[text_formatting]")
 {
     GIVEN("an unchecked checkbox item")

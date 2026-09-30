@@ -131,24 +131,35 @@ struct Intent
 //
 // The index-based rule this implements, in order of how much it trusts the
 // edit:
-//  - Line count unchanged, and exactly one line WITH A TASK BEHIND IT differs
-//    from its previous counterpart at the same index → that line is inspected
-//    alone: gained an "x" → a completion; otherwise, if its label text
-//    changed → a rename. A differing line whose previous id is empty (the
-//    compose slot) never counts toward that "exactly one": typing there is
-//    already defined as unsendable, so it must not be able to make a clean
-//    rename alongside it look ambiguous. More than one REAL line differing
-//    (e.g. two lines swapped) is NOT trusted as a same-count edit — seeing it
-//    as "line 1 renamed AND line 2 renamed" would be a guess, and a wrong one
-//    for a reorder — so it falls through to "no intent" below instead.
+//  - Line count unchanged, and every line WITH A TASK BEHIND IT that differs
+//    from its previous counterpart at the same index gained an "x" (nothing
+//    else about it changed) → each such line is a completion. Trusted for any
+//    number of lines at once: each is read against itself at its own index,
+//    never against another line, so there is nothing to guess even when
+//    several gained an "x" in the same edit — the routine case being a
+//    second box ticked before the completion fade has removed the first (see
+//    NoteWindow.qml's tickTickCompletionFade). A single differing line that
+//    ISN'T a pure tick (a rename, an uncheck) is trusted only when it is the
+//    ONLY real line that differs; more than one real line differing that
+//    isn't explained purely by ticks (e.g. two lines swapped, or a tick
+//    alongside an unrelated rename) is indistinguishable from a guess and
+//    falls through to "no intent" below instead. A differing line whose
+//    previous id is empty (the compose slot) never counts toward any of
+//    this: typing there is already defined as unsendable, so it must not be
+//    able to make a clean single-line rename alongside it look ambiguous.
 //  - Any number of lines removed, provided the remaining lines embed into the
 //    previous ones UNAMBIGUOUSLY (the same leftmost/rightmost-match agreement
-//    a whole burst of ticks needs — see removedIndices) → every removed
-//    line's task is a completion (see Intent's own comment on
-//    completedTaskIds), EXCEPT a removed line that was already ticked in the
-//    previous render, which reports no completion (it was already
-//    dispatched by the flush that ticked it) but still lands in
-//    removedIndices so the caller's id array stays index-aligned.
+//    a whole burst of ticks needs — see alignRemoval) → every removed line's
+//    task is a completion (see Intent's own comment on completedTaskIds),
+//    EXCEPT a removed line that was already ticked in the previous render,
+//    which reports no completion (it was already dispatched by the flush
+//    that ticked it) but still lands in removedIndices so the caller's id
+//    array stays index-aligned. A surviving line counts as "embedding" even
+//    when it has gained an "x" since the previous render — reported as a
+//    completion too, but NOT in removedIndices, since it is still there: the
+//    completion fade removes one line at a time, so a later tick's line can
+//    still be sitting on screen, checked, while an earlier tick's line in the
+//    same edit has already faded away.
 //  - Anything else (a reorder, an ambiguous removal, any line inserted, a
 //    removal mixed with an edit elsewhere, a merge from backspacing two lines
 //    together) → no intent at all, and the next pull is what straightens the

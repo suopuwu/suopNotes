@@ -350,7 +350,11 @@ ChromeWindow {
         const tracking = (noteWindow !== null)
         ribbon.visible = tracking
         if (tracking) {
-            repositionDebounce.restart()
+            // A switched note is one discrete event, not a burst of geometry
+            // churn — reposition now instead of routing through the
+            // drag/resize-coalescing debounce below, so the window lands in
+            // its new spot the same tick the button set changes.
+            reposition()
         } else {
             repositionDebounce.stop()
             park()
@@ -419,6 +423,11 @@ ChromeWindow {
         // it clear of the above-note toolbar (vertical).
         vertical: true
         alwaysExpanded: true
+        // A note switch should snap the column to its new size in the same
+        // tick as the button swap, not ease into it — the 180ms Behavior is
+        // for the inline ribbon's hover expand/collapse, which never applies
+        // here (expanded is always true in windowed mode).
+        animateSize: false
 
         // Starts hidden; toggled from onNoteWindowChanged above. Its own
         // visibility IS this window's "showing content" flag — the input

@@ -39,42 +39,97 @@ ParsedLine parseLine(const QString &line)
     return result;
 }
 
-// Which indices of `previousLines` are missing from `currentLines`, on the
-// assumption that current is previous with only deletions applied — or an
-// empty result if that assumption does not hold, or holds in more than one way.
-//
+// Whether `currentLine` can be read as `previousLine` surviving this edit —
+// either unchanged, or ticked in place (still there, only its box gaining an
+// "x", label untouched). The second case is what lets alignRemoval below
+// treat a line the completion fade hasn't gotten to yet as "still present,
+// now checked" rather than folding it into the ambiguous case: the fade
+// removes one line at a time (NoteWindow.qml's tickTickCompletionFade), so an
+// earlier-ticked line can already be gone while a later-ticked line is still
+// sitting there, checked, in the very same edit.
+struct LineMatch
+{
+    bool matches = false;
+    bool ticked = false;
+};
+
+LineMatch matchLine(const QString &previousLine, const QString &currentLine)
+{
+    if (currentLine == previousLine)
+        return {true, false};
+
+    const ParsedLine before = parseLine(previousLine);
+    const ParsedLine after = parseLine(currentLine);
+    if (!before.checked && after.checked && before.label == after.label)
+        return {true, true};
+
+    return {false, false};
+}
+
+// The result of reading `currentLines` as `previousLines` with zero or more
+// lines removed and zero or more SURVIVING lines ticked in place — or `ok ==
+// false` if that assumption does not hold, or holds in more than one way.
+struct Alignment
+{
+    bool ok = false;
+    QList<int> removed;       // previous indices with no line left in currentLines
+    QList<int> tickedInPlace; // previous indices still present, now checked
+};
+
 // Ambiguity is the case worth spelling out. Two open tasks can share a title,
 // so ["milk", "milk", "eggs"] -> ["milk", "eggs"] genuinely does not say WHICH
 // "milk" was removed, and the two answers complete different tasks. The test
 // for it is exact rather than heuristic: match greedily from the left and
 // greedily from the right, and accept only when the two agree — an embedding is
-// unique precisely when its leftmost and rightmost forms are the same.
-QList<int> removedIndices(const QStringList &previousLines, const QStringList &currentLines)
+// unique precisely when its leftmost and rightmost forms are the same. Same
+// idea extended to matchLine's relaxed predicate: a survivor ticked in place
+// still has to agree on WHICH previous line it was, same as an exact survivor.
+Alignment alignRemoval(const QStringList &previousLines, const QStringList &currentLines)
 {
-    QList<int> fromLeft;
+    Alignment result;
+
+    QList<int> removedFromLeft;
+    QList<int> tickedFromLeft;
     int j = 0;
     for (int i = 0; i < previousLines.size(); ++i) {
-        if (j < currentLines.size() && currentLines.at(j) == previousLines.at(i))
+        const LineMatch match = j < currentLines.size()
+            ? matchLine(previousLines.at(i), currentLines.at(j))
+            : LineMatch{};
+        if (match.matches) {
+            if (match.ticked)
+                tickedFromLeft.append(i);
             ++j;
-        else
-            fromLeft.append(i);
+        } else {
+            removedFromLeft.append(i);
+        }
     }
-    // Not a pure deletion at all (something was also edited, or reordered).
+    // Not a pure remove/tick-in-place edit at all (something else was also
+    // edited, or reordered).
     if (j != currentLines.size())
-        return {};
+        return result;
 
-    QList<int> fromRight;
+    QList<int> removedFromRight;
+    QList<int> tickedFromRight;
     j = currentLines.size() - 1;
     for (int i = previousLines.size() - 1; i >= 0; --i) {
-        if (j >= 0 && currentLines.at(j) == previousLines.at(i))
+        const LineMatch match = j >= 0
+            ? matchLine(previousLines.at(i), currentLines.at(j))
+            : LineMatch{};
+        if (match.matches) {
+            if (match.ticked)
+                tickedFromRight.prepend(i);
             --j;
-        else
-            fromRight.prepend(i);
+        } else {
+            removedFromRight.prepend(i);
+        }
     }
-    if (fromLeft != fromRight)
-        return {};
+    if (removedFromLeft != removedFromRight || tickedFromLeft != tickedFromRight)
+        return result;
 
-    return fromLeft;
+    result.ok = true;
+    result.removed = removedFromLeft;
+    result.tickedInPlace = tickedFromLeft;
+    return result;
 }
 
 }
@@ -155,11 +210,24 @@ Intent diff(const QStringList &previousLines, const QStringList &previousTaskIds
     const QStringList currentLines = linesOf(currentText);
 
     if (currentLines.size() == previousLines.size()) {
-        // Trusted only when EXACTLY one line with a task behind it differs —
-        // see the header. Two or more such lines differing (a reorder, a
-        // multi-line paste over the same line count) is indistinguishable from
-        // a guess here, so it is left as "no intent" for the next pull to
-        // resolve.
+        // A rename is trusted only when EXACTLY one line with a task behind it
+        // differs — see the header. Two or more such lines differing in a way
+        // that ISN'T explained purely by ticks (a reorder, a multi-line paste
+        // over the same line count) is indistinguishable from a guess here, so
+        // it is left as "no intent" for the next pull to resolve.
+        //
+        // A burst of ticks is different, and trusted for any number of lines
+        // at once: the completion fade removes one line at a time
+        // (NoteWindow.qml's tickTickCompletionFade), so a second box ticked
+        // before the first one's fade has finished reaches here with BOTH
+        // lines still present and checked — same line count, two lines
+        // differing. That is not a guess the way a same-count rename is: each
+        // line is read against itself at its own index, never against
+        // another line, so there is nothing to misattribute even when several
+        // gained an "x" in the same edit — see the burst-REMOVAL branch below,
+        // which already trusts exactly this once the lines are gone. Before
+        // this, a second tick landing during the first tick's hold made the
+        // whole edit unreadable, and the next pull silently reverted both.
         //
         // A differing line whose previous task id is empty — the compose slot
         // (kComposeIndex), or every line while the baseline ids are the
@@ -170,18 +238,16 @@ Intent diff(const QStringList &previousLines, const QStringList &previousTaskIds
         // rule, renaming a task while the slot held half-typed text read as
         // two changed lines, was refused, and the reconciling pull quietly
         // reverted the rename.
-        int changedIndex = -1;
-        int changedCount = 0;
+        QList<int> changedIndices;
         for (int i = 0; i < currentLines.size(); ++i) {
             if (currentLines.at(i) == previousLines.at(i))
                 continue;
             if (i < previousTaskIds.size() && previousTaskIds.at(i).isEmpty())
                 continue;
-            ++changedCount;
-            changedIndex = i;
+            changedIndices.append(i);
         }
 
-        if (changedCount == 0) {
+        if (changedIndices.isEmpty()) {
             // Nothing changed that could be sent: every line is identical, or
             // the only differences sit on lines with no task behind them (the
             // routine case being text in the compose slot). Either way this is
@@ -190,29 +256,47 @@ Intent diff(const QStringList &previousLines, const QStringList &previousTaskIds
             return intent;
         }
 
-        if (changedCount != 1)
+        // Trusted only when EVERY changed real line is a pure tick — nothing
+        // else about it differs. One non-tick change in the mix (a rename, an
+        // uncheck) falls through to the single-line path below, same as
+        // today.
+        bool allTicks = true;
+        for (const int index : changedIndices) {
+            if (index >= previousTaskIds.size()) {
+                allTicks = false;
+                break;
+            }
+            const ParsedLine before = parseLine(previousLines.at(index));
+            const ParsedLine after = parseLine(currentLines.at(index));
+            if (before.checked || !after.checked) {
+                allTicks = false;
+                break;
+            }
+        }
+
+        if (allTicks) {
+            intent.understood = true;
+            for (const int index : changedIndices)
+                intent.completedTaskIds.append(previousTaskIds.at(index));
             return intent;
-        if (changedIndex < 0 || changedIndex >= previousTaskIds.size())
+        }
+
+        if (changedIndices.size() != 1)
+            return intent;
+
+        const int changedIndex = changedIndices.first();
+        if (changedIndex >= previousTaskIds.size())
             return intent;
 
         // From here on, whatever this branch returns is a full reading of the
         // edit. The changed line is known to have a real task id — empty-id
-        // lines were excluded from the count above.
+        // lines were excluded above, and allTicks already ruled out this
+        // being a tick.
         intent.understood = true;
 
         const QString &taskId = previousTaskIds.at(changedIndex);
-
         const ParsedLine before = parseLine(previousLines.at(changedIndex));
         const ParsedLine after = parseLine(currentLines.at(changedIndex));
-
-        // A newly-ticked box wins over a simultaneous label edit — the tick
-        // is the stronger signal, and the task is going away anyway (see
-        // Intent's own comment), so there is no point also reporting a
-        // rename for a task about to be marked done.
-        if (!before.checked && after.checked) {
-            intent.completedTaskIds.append(taskId);
-            return intent;
-        }
 
         if (before.label != after.label)
             intent.renamedTasks.append({taskId, after.label});
@@ -227,16 +311,23 @@ Intent diff(const QStringList &previousLines, const QStringList &previousTaskIds
         // BEFORE this text ever reaches diff(), so a disturbed marker is
         // already back to a well-formed checkbox line — same text, same line
         // count — by the time this runs.
-        const QList<int> removed = removedIndices(previousLines, currentLines);
-        if (removed.isEmpty())
-            return intent;   // ambiguous, or not a pure deletion — the next pull resolves it
+        //
+        // A survivor can ALSO be ticked-but-not-yet-removed in the very same
+        // edit: the fade removes one line at a time, so an earlier tick's line
+        // can already be gone while a later tick's line is still sitting
+        // there, checked. alignRemoval reads that as "kept, ticked in place"
+        // rather than folding the whole edit into "ambiguous" the way a plain
+        // text-equality embedding would (the surviving line's text no longer
+        // matches its previous counterpart at all).
+        const Alignment alignment = alignRemoval(previousLines, currentLines);
+        if (!alignment.ok)
+            return intent;   // ambiguous, or not a pure remove/tick-in-place edit — the next pull resolves it
 
-        // An unambiguous embedding is a full reading of the removal, whether
-        // or not any of it turns into a completion below — see
-        // Intent::understood.
+        // An unambiguous alignment is a full reading of the edit, whether or
+        // not any of it turns into a completion below — see Intent::understood.
         intent.understood = true;
-        intent.removedIndices = removed;
-        for (const int index : removed) {
+        intent.removedIndices = alignment.removed;
+        for (const int index : alignment.removed) {
             if (index >= previousTaskIds.size())
                 continue;
             // The compose slot, gone. Nothing to complete — it never had a task
@@ -255,6 +346,16 @@ Intent diff(const QStringList &previousLines, const QStringList &previousTaskIds
             // is already closed.
             const ParsedLine before = parseLine(previousLines.at(index));
             if (before.checked)
+                continue;
+            intent.completedTaskIds.append(previousTaskIds.at(index));
+        }
+        for (const int index : alignment.tickedInPlace) {
+            // Same compose-slot exemption as above — matchLine's tick branch
+            // can never actually fire against the slot (it starts unchecked
+            // and stays that way; see diff()'s own compose-slot rule in the
+            // same-count branch above), but the guard costs nothing and keeps
+            // this loop's invariant identical to the removed one's.
+            if (index >= previousTaskIds.size() || previousTaskIds.at(index).isEmpty())
                 continue;
             intent.completedTaskIds.append(previousTaskIds.at(index));
         }

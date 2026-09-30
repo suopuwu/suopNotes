@@ -1063,6 +1063,71 @@ Item {
             compare(editor.cursorPosition, editor.length)
         }
 
+        // Double-clicking below the last line should select the word
+        // nearest the click horizontally, same as double-clicking directly
+        // on that line's real text would — not just place a single-point
+        // caret. The fix tracks clicks manually (no native onDoubleClicked
+        // involvement), so two mouseClick() calls back-to-back with no
+        // intervening wait() are enough: their synchronous Date.now() deltas
+        // are trivially under Qt.application.styleHints.mouseDoubleClickInterval.
+        function test_double_click_below_last_line_selects_word_on_last_line() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+            const flick = win.editorFlick
+
+            win.docHandler.setMarkdown("line one\n\nline two")
+            wait(50)
+
+            const lastLineStart = editor.text.lastIndexOf("line two")
+
+            mouseClick(flick, 2, flick.height - 5, Qt.LeftButton)
+            mouseClick(flick, 2, flick.height - 5, Qt.LeftButton)
+
+            compare(editor.selectionStart, lastLineStart,
+                    "double-click near the left edge below the last line should select the word starting there")
+            compare(editor.text.substring(editor.selectionStart, editor.selectionEnd), "line",
+                    "double-click should select the whole nearest word (\"line\"), not just a point")
+
+            // belowContentArea's click-count state (pendingClickCount,
+            // lastPressTime/X/Y) lives on the shared live window instance
+            // used by every test function in this file. Without letting it
+            // go stale here, a later, unrelated test that happens to press
+            // at this same point below the last line within the OS
+            // double-click interval would inherit this test's click count
+            // instead of starting a fresh single click.
+            wait(Qt.application.styleHints.mouseDoubleClickInterval + 100)
+        }
+
+        // Triple-clicking below the last line should select the whole line
+        // (its full paragraph), same as triple-clicking directly on that
+        // line's real text would.
+        function test_triple_click_below_last_line_selects_whole_last_line() {
+            const win = instantiator.objectAt(0)
+            const editor = win.editor
+            const flick = win.editorFlick
+
+            win.docHandler.setMarkdown("line one\n\nline two")
+            wait(50)
+
+            const lastLineStart = editor.text.lastIndexOf("line two")
+
+            mouseClick(flick, 2, flick.height - 5, Qt.LeftButton)
+            mouseClick(flick, 2, flick.height - 5, Qt.LeftButton)
+            mouseClick(flick, 2, flick.height - 5, Qt.LeftButton)
+
+            compare(editor.selectionStart, lastLineStart,
+                    "triple-click below the last line should select from that line's start")
+            compare(editor.selectionEnd, editor.length,
+                    "triple-click below the last line should select through the document's end")
+            compare(editor.text.substring(editor.selectionStart, editor.selectionEnd), "line two",
+                    "triple-click should select the whole last line's text")
+
+            // See the matching comment in the double-click test above: let
+            // belowContentArea's click-count state go stale so it doesn't
+            // leak into a later, unrelated test pressing at this same point.
+            wait(Qt.application.styleHints.mouseDoubleClickInterval + 100)
+        }
+
         // Pressing Up has nowhere to go once the cursor is already on the
         // editor's topmost line — rather than leaving it stuck mid-line, it
         // should jump to that line's start, the same place Home would land.
@@ -1637,6 +1702,66 @@ Item {
             wait(50)
 
             compare(editor.height, flick.height)
+        }
+
+        // Cheap regression guard: editorFlick must not re-clip its own
+        // content at its 8px-inset bounds. mainFrame already renders its
+        // whole subtree into one layer and masks it to its own rounded-rect
+        // bounds at the real window edge (NoteWindow.qml:1025-1047), so
+        // editorFlick's own clip was a second, tighter, redundant clip that
+        // cut a partially-scrolled line off 8px before it needed to be — see
+        // the comment above editorFlick's anchors for the full explanation.
+        function test_editor_flick_does_not_clip_its_own_content() {
+            const win = soloWindow
+            compare(win.editorFlick.clip, false,
+                    "editorFlick must not clip its own content — mainFrame's rounded-rect mask is the real boundary")
+        }
+
+        // The fix itself: a line that's only partially scrolled into view —
+        // its bottom sitting a few pixels past editorFlick's own (inset)
+        // bottom edge, but still within the 8px margin — must have geometry
+        // that fits inside mainFrame's real bounds. mainFrame is the
+        // boundary that actually matters (its rounded-rect mask already
+        // clips everything rendered inside it at the true window edge), so
+        // this confirms the extra 8px of margin space a partially-cut line
+        // now renders into is still safely contained by mainFrame rather
+        // than spilling past the window.
+        function test_a_partially_scrolled_line_renders_past_editor_flicks_inset() {
+            const win = soloWindow
+            const editor = win.editor
+            const flick = win.editorFlick
+            const mainFrame = win.mainFrame
+
+            let many = ""
+            for (let i = 0; i < 40; ++i)
+                many += "line " + i + "\n\n"
+            win.docHandler.setMarkdown(many)
+            wait(50)
+
+            verify(editor.height > flick.height, "precondition: content must overflow to scroll at all")
+
+            const lastLineRect = editor.positionToRectangle(editor.length)
+
+            // Scroll so the last line's bottom sits only a few pixels past
+            // editorFlick's own bottom edge — well within the 8px margin —
+            // rather than fully in view or fully scrolled past.
+            const overflowPastFlick = 3
+            flick.contentY = lastLineRect.y + lastLineRect.height - flick.height - overflowPastFlick
+            wait(50)
+
+            verify(flick.contentY >= 0, "precondition: the scroll target must be a valid contentY")
+
+            const lineBottomInMainFrame = editor.mapToItem(
+                mainFrame, lastLineRect.x, lastLineRect.y + lastLineRect.height)
+            const flickBottomInMainFrame = flick.mapToItem(mainFrame, 0, flick.height)
+
+            verify(lineBottomInMainFrame.y > flickBottomInMainFrame.y,
+                   "precondition: the line's bottom must actually extend past editorFlick's own (inset) bottom edge")
+            verify(lineBottomInMainFrame.y <= mainFrame.height,
+                   "a partially-scrolled line should still lie within mainFrame's real bounds, not just editorFlick's inset bounds")
+
+            win.docHandler.setMarkdown("hi")
+            wait(50)
         }
 
         // Feature request: a subtle scrollbar should only show up once the
@@ -5330,6 +5455,45 @@ Item {
             verify(taskNoteTestWindow.tickTickCompletionFade.running,
                    "only a line matching the one already faded is guarded — every other tick " +
                    "still gets its undo window")
+
+            resetFadeGuardState()
+        }
+
+        // Bug found live: two ADJACENT ticked lines both fading in the same
+        // burst. Removing the first shifts the second's checkbox glyph up by
+        // exactly the first line's own length — which, for two lines sitting
+        // directly next to each other, lands the second glyph at the EXACT
+        // SAME character offset the first one's used to occupy.
+        // tickTickFadingPosition's computed VALUE therefore does not change
+        // even though what it refers to completely has, so the change
+        // handler the fade is normally started from never fires, and the
+        // second line sat there checked forever with no undo window and no
+        // path to TickTick until the next pull silently swept it away.
+        function test_two_adjacent_ticked_lines_both_eventually_fade() {
+            skipUnlessTickTickBuilt()
+            resetFadeGuardState()
+
+            taskNoteTestWindow.docHandler.setMarkdown(
+                "- [ ] \n- [x] Buy milk\n- [x] Walk dog")
+            wait(50)
+
+            verify(taskNoteTestWindow.tickTickCompletionFade.running,
+                   "the fade arms for the first checked line the moment both are ticked")
+
+            wait(3200)
+
+            compare(taskNoteTestWindow.docHandler.toMarkdown(), "- [ ] \n- [x] Walk dog",
+                    "the first line is gone after its own fade completes")
+            verify(taskNoteTestWindow.tickTickCompletionFade.running,
+                   "the second still-checked line's fade must start too, even though its " +
+                   "glyph now sits at the exact position the first line's glyph just vacated")
+
+            wait(3200)
+
+            compare(taskNoteTestWindow.docHandler.toMarkdown(), "- [ ] ",
+                    "the second line is gone too — nothing is left checked and stuck")
+            verify(!taskNoteTestWindow.tickTickCompletionFade.running,
+                   "the queue has nothing left to fade")
 
             resetFadeGuardState()
         }

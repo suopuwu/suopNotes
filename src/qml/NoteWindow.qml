@@ -589,13 +589,14 @@ Window {
     // position of a restored line is generally not the position it faded from.
     property string tickTickLastFadedLabel: ""
 
-    // Started ONLY from this change handler — never from a `running:` binding
-    // on tickTickFadingPosition. If a removal is refused (the line stopped
-    // being a ticked item), the position does not change, so no signal fires
-    // and nothing retries: a bound `running:` would instead restart the fade
-    // against the same unremovable line forever, which is a polling loop by
-    // another name.
-    onTickTickFadingPositionChanged: {
+    // Arms (or declines to arm) the fade for whatever is now the earliest
+    // still-checked line. Driven from TWO places: the change handler below,
+    // for the common case where tickTickFadingPosition's VALUE actually
+    // moves, and directly from tickTickCompletionFade's own ScriptAction
+    // after a real removal (see its own comment for why that second call is
+    // necessary — the position's value does not always change even when
+    // what it refers to completely has).
+    function armNextTickTickFade() {
         tickTickCompletionFade.stop()
         noteWindow.tickTickFadeOpacity = 1
         if (noteWindow.tickTickFadingPosition < 0) {
@@ -614,6 +615,14 @@ Window {
         }
         tickTickCompletionFade.start()
     }
+
+    // Started ONLY from armNextTickTickFade() above — never from a `running:`
+    // binding on tickTickFadingPosition. If a removal is refused (the line
+    // stopped being a ticked item), the position does not change, so no
+    // signal fires and nothing retries: a bound `running:` would instead
+    // restart the fade against the same unremovable line forever, which is a
+    // polling loop by another name.
+    onTickTickFadingPositionChanged: armNextTickTickFade()
     onTickTickFadeOpacityChanged: {
         if (noteWindow.tickTickFadingPosition >= 0)
             docHandler.setFadedLine(noteWindow.tickTickFadingPosition,
@@ -1189,7 +1198,19 @@ Window {
             // — including the scrollbar handle, if it happens to be
             // scrolled near the top. Accepted tradeoff: an occasionally
             // obscured scrollbar corner beats permanent dead space.
-            clip: true
+            //
+            // No clip here (bugfix): this Flickable's own bounds sit 8px
+            // inset from mainFrame, and clipping AT that inset cut off a
+            // partially-scrolled line 8px before it needed to be, even
+            // though that 8px is otherwise-empty margin space. mainFrame
+            // already renders its whole subtree into one layer and masks it
+            // to its own rounded-rect bounds (NoteWindow.qml:1025-1047), so
+            // it's already the real, corner-aware final clip boundary —
+            // this second, tighter clip was redundant and is what caused
+            // the cutoff. See the layer.effect block below for the one case
+            // (hover ribbon showing) where editorFlick's OWN layer.enabled
+            // still implicitly re-clips to this rect regardless of this
+            // property.
 
             // Frosted ribbon (feature request: "blur text beneath it").
             // noteHud renders a blurred copy of this text behind itself, and
@@ -3296,6 +3317,10 @@ Window {
                 id: belowContentArea
 
                 property int dragAnchor: -1
+                property int pendingClickCount: 0
+                property real lastPressTime: 0
+                property real lastPressX: 0
+                property real lastPressY: 0
 
                 // Tracks editorDragFilter's own x rather than sitting at 0,
                 // which keeps reprojectedPosition()'s "both share the same
@@ -3324,13 +3349,67 @@ Window {
                     return editor.positionAt(mouseX, clampedY)
                 }
 
+                // No word-boundary helper exists anywhere in this codebase
+                // (Qt's own is buried in QQuickTextEdit's private C++ impl,
+                // not exposed to QML) — this is a minimal word-char scan,
+                // mirroring editor's own paragraphStart()/paragraphEnd()
+                // pattern above it.
+                function wordBoundsAt(pos) {
+                    const t = editor.text
+                    const isWordChar = (ch) => /\w/.test(ch)
+                    let start = pos
+                    let end = pos
+                    while (start > 0 && isWordChar(t.charAt(start - 1)))
+                        start--
+                    while (end < t.length && isWordChar(t.charAt(end)))
+                        end++
+                    return start === end ? [pos, pos] : [start, end]
+                }
+
+                // QML MouseArea has no native triple-click signal, and
+                // mixing manual counting with the native onDoubleClicked
+                // for a third click in the same sequence is unreliable —
+                // so click counting here is entirely manual, for both
+                // double and triple, same dragThreshold tolerance (4px)
+                // mouseDragArea uses below, and the OS's own double-click
+                // timing via Qt.application.styleHints (same object
+                // WheelSafeSlider.qml already reads for wheelScrollLines).
                 onPressed: (mouse) => {
                     editor.forceActiveFocus()
-                    dragAnchor = reprojectedPosition(mouse.x, mouse.y)
-                    editor.cursorPosition = dragAnchor
+                    const pos = reprojectedPosition(mouse.x, mouse.y)
+
+                    const now = Date.now()
+                    const withinInterval = (now - lastPressTime) <= Qt.application.styleHints.mouseDoubleClickInterval
+                    const withinDistance = Math.abs(mouse.x - lastPressX) <= 4 && Math.abs(mouse.y - lastPressY) <= 4
+                    pendingClickCount = (withinInterval && withinDistance) ? pendingClickCount + 1 : 1
+                    lastPressTime = now
+                    lastPressX = mouse.x
+                    lastPressY = mouse.y
+
+                    if (pendingClickCount >= 3) {
+                        editor.select(editor.paragraphStart(pos), editor.paragraphEnd(pos))
+                        dragAnchor = -1
+                    } else if (pendingClickCount === 2) {
+                        const bounds = wordBoundsAt(pos)
+                        editor.select(bounds[0], bounds[1])
+                        dragAnchor = -1
+                    } else {
+                        dragAnchor = pos
+                        editor.cursorPosition = pos
+                    }
                 }
                 onPositionChanged: (mouse) => {
                     if (!pressed)
+                        return
+                    // A real drag (movement past the same 4px tolerance
+                    // used above) invalidates the click-count sequence —
+                    // without this, a press-drag-release gesture still
+                    // counts as "click 1" for timing/position purposes, so
+                    // a plain single click landing at the same spot shortly
+                    // after would be misread as a continuing double-click.
+                    if (Math.abs(mouse.x - lastPressX) > 4 || Math.abs(mouse.y - lastPressY) > 4)
+                        pendingClickCount = 0
+                    if (dragAnchor < 0)
                         return
                     editor.select(dragAnchor, reprojectedPosition(mouse.x, mouse.y))
                 }
@@ -4061,13 +4140,32 @@ Window {
                     // Self-guarding (see DocumentHandler.removeCheckedCheckbox-
                     // LineAt): if the line stopped being a ticked item during
                     // the three seconds this took, nothing is removed. Nothing
-                    // restarts the animation in that case either — see the
-                    // change handler below for why that must stay true. Only
-                    // record the label on an actual removal, for the same
-                    // reason: a refused removal faded nothing, so there is
-                    // nothing yet to refuse to re-arm for.
-                    if (docHandler.removeCheckedCheckboxLineAt(position))
+                    // restarts the animation in that case either — see
+                    // armNextTickTickFade's own change-handler trigger for why
+                    // that must stay true. Only record the label on an actual
+                    // removal, for the same reason: a refused removal faded
+                    // nothing, so there is nothing yet to refuse to re-arm for.
+                    if (docHandler.removeCheckedCheckboxLineAt(position)) {
                         noteWindow.tickTickLastFadedLabel = label
+                        // Bug found live: removing this line can leave the
+                        // NEXT still-checked line's glyph sitting at the exact
+                        // same character offset this one just occupied —
+                        // whenever two ticked lines are directly adjacent,
+                        // shifting everything below the removed line up by
+                        // its own length lands the next line's marker right
+                        // where this one's was. tickTickFadingPosition's
+                        // computed VALUE then does not change even though
+                        // what it refers to completely has, so the change
+                        // handler this animation is normally started from
+                        // never fires — a burst of two adjacent ticks would
+                        // fade the first and then stall forever, the second
+                        // line sitting checked with no undo window and no
+                        // path to TickTick until the next pull silently swept
+                        // it away instead. Called explicitly here so the next
+                        // queued line (if any) is armed regardless of whether
+                        // the position's own notification fired.
+                        noteWindow.armNextTickTickFade()
+                    }
                 }
             }
         }

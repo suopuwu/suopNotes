@@ -69,6 +69,21 @@ Item {
         alwaysExpanded: true
     }
 
+    // Windowed-mode stand-in (animateSize: false, matching the ribbon
+    // NoteHudWindow.qml actually instantiates) used to verify a note switch
+    // snaps straight to its new height instead of easing into it — covering
+    // change A directly. Starts with TickTick off so the test below has a
+    // toggle to make.
+    NoteHud {
+        id: snappedHud
+        x: 0
+        y: 650
+        vertical: true
+        alwaysExpanded: true
+        animateSize: false
+        tickTickEnabled: false
+    }
+
     // Frosted-backdrop fixture, mirroring NoteWindow.qml's real geometry: the
     // ribbon is inset 4px from the note's frame while the editor is inset 8px,
     // so the ribbon genuinely overhangs the editor's viewport on two sides.
@@ -393,6 +408,37 @@ Item {
         function test_vertical_ribbon_is_a_narrow_fixed_width_column() {
             verify(verticalHud.width <= 30, "the vertical ribbon stays a narrow fixed-width column")
             verify(verticalHud.height > verticalHud.width, "and is taller than it is wide")
+        }
+
+        // Covers change A directly: in windowed mode (animateSize: false)
+        // toggling tickTickEnabled must snap the ribbon straight to its new
+        // required height rather than easing into it over the 180ms
+        // Behavior — a note switch should look like a hard cut, matching the
+        // buttons that already change on the same tick (see
+        // NoteHudWindow.qml's onNoteWindowChanged).
+        function test_animateSize_false_snaps_height_without_easing() {
+            compare(snappedHud.animateSize, false,
+                    "precondition: this fixture has size animation switched off, like the windowed ribbon")
+            const before = snappedHud.height
+
+            snappedHud.tickTickEnabled = true
+
+            // One short wait lets the GridLayout recompute implicitHeight
+            // (an unrelated layout pass, nothing to do with any animation)
+            // and settle on the new value.
+            wait(30)
+            const settled = snappedHud.height
+            verify(settled !== before,
+                   "the new-task glyph changed the ribbon's required height")
+
+            // If the 180ms Behavior were (wrongly) still active, height would
+            // still be creeping toward its target this far in — 30ms plus
+            // another 100ms is comfortably short of 180ms. With no animation
+            // running there's nothing left to finish, so it must read
+            // exactly the same value a good while later.
+            wait(100)
+            compare(snappedHud.height, settled,
+                    "height held steady — nothing was still easing toward a target")
         }
 
         // ---- Frosted backdrop (blurring the note's text under the ribbon) ----

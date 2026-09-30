@@ -250,6 +250,7 @@ Rectangle {
     // a horizontal strip when collapsed, and the fixed width of a vertical
     // column always. Named so both orientations read from one constant.
     readonly property int _band: 28
+    property bool animateSize: true
 
     // Horizontal (default): height fixed at 26, width grows along the row.
     // Vertical: width fixed at _band, height grows down the column. The
@@ -266,8 +267,8 @@ Rectangle {
     // One Behavior per axis — only the main axis of the current orientation
     // actually animates (the cross axis is a constant, so its Behavior never
     // sees a change); harmless to have both declared.
-    Behavior on width { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
-    Behavior on height { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+    Behavior on width { enabled: hud.animateSize; NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+    Behavior on height { enabled: hud.animateSize; NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
 
     MouseArea {
         anchors.fill: parent

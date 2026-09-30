@@ -44,6 +44,55 @@ Item {
         id: hudWindow
     }
 
+    // Plain QtObject stand-ins (not NoteWindow) for the switch test below:
+    // tickTickAvailable on a real NoteWindow is readonly, driven off the
+    // single process-wide `tickTick` context property, so two real note
+    // instances can never disagree on it within one test run — these fill
+    // the same duck-typed shape the ribbon's bindings actually read
+    // (noteX/noteY/noteWidth/screen/alwaysOnTop/noteAppearance/
+    // tickTickAvailable), nothing more. `screen: null` means reposition()'s
+    // screen-edge clamping never applies, so the x/y assertions below are
+    // pinned to its own raw gap math alone.
+    QtObject {
+        id: tickTickNote
+        property real noteX: 400
+        property real noteY: 150
+        property real noteWidth: 260
+        property real noteHeight: 260
+        property var screen: null
+        property bool alwaysOnTop: false
+        property bool tickTickAvailable: true
+        property QtObject noteAppearance: QtObject {
+            property int windowRadius: 8
+            property color fontColor: "#ffffff"
+            property bool glassEnabled: false
+            property color glassTintColor: "#ffffff"
+            property real glassSheenOpacity: 0.12
+            property real glassSheenStrength: 10
+            property real glassSheenSize: 0.18
+        }
+    }
+
+    QtObject {
+        id: plainNote
+        property real noteX: 900
+        property real noteY: 500
+        property real noteWidth: 260
+        property real noteHeight: 260
+        property var screen: null
+        property bool alwaysOnTop: false
+        property bool tickTickAvailable: false
+        property QtObject noteAppearance: QtObject {
+            property int windowRadius: 8
+            property color fontColor: "#ffffff"
+            property bool glassEnabled: false
+            property color glassTintColor: "#ffffff"
+            property real glassSheenOpacity: 0.12
+            property real glassSheenStrength: 10
+            property real glassSheenSize: 0.18
+        }
+    }
+
     // Emitted for search (the one action Main.qml routes rather than the
     // ribbon acting on the note directly — the find panel is bound to the
     // ACTIVE note, not a merely-hovered one).
@@ -167,6 +216,44 @@ Item {
             compare(hudWindow.x, noteA.noteX + noteA.noteWidth + 4,
                     "the ribbon should re-anchor to the note's new position")
             compare(hudWindow.y, noteA.noteY)
+        }
+
+        // THE regression from the bug report: "the popup loses/gains its
+        // correct buttons, but slightly before it moves to the new spot."
+        // Buttons flip synchronously (a plain binding), but position used to
+        // only update ~230ms later through repositionDebounce, re-armed each
+        // frame of the ribbon's own height-change animation (see the work
+        // order's root-cause writeup). With change A (animateSize: false on
+        // the windowed ribbon) and change B (onNoteWindowChanged calling
+        // reposition() directly instead of restarting the debounce), both
+        // must already agree on the SAME tick a note switch happens —
+        // asserted here with deliberately no wait() at all.
+        function test_switching_note_updates_buttons_and_position_in_the_same_tick() {
+            hudWindow.noteWindow = tickTickNote
+            wait(80)
+            compare(hudWindow.hud.tickTickEnabled, true,
+                    "precondition: tracking the TickTick-enabled note")
+            compare(hudWindow.x, tickTickNote.noteX + tickTickNote.noteWidth + 4,
+                    "precondition: anchored to the TickTick note")
+            compare(hudWindow.y, tickTickNote.noteY)
+
+            // The switch itself — no wait(): the assertions below must
+            // already hold by the time this line returns.
+            hudWindow.noteWindow = plainNote
+
+            compare(hudWindow.hud.tickTickEnabled, false,
+                    "the button set already matches the newly-hovered note")
+            compare(hudWindow.x, plainNote.noteX + plainNote.noteWidth + 4,
+                    "the ribbon has already repositioned to the new note, not lagging behind on a debounce")
+            compare(hudWindow.y, plainNote.noteY,
+                    "the ribbon has already repositioned to the new note, not lagging behind on a debounce")
+
+            // ...and the same holds switching back the other direction.
+            hudWindow.noteWindow = tickTickNote
+
+            compare(hudWindow.hud.tickTickEnabled, true)
+            compare(hudWindow.x, tickTickNote.noteX + tickTickNote.noteWidth + 4)
+            compare(hudWindow.y, tickTickNote.noteY)
         }
 
         // "Hidden" = parked off every screen (plus content-invisible + input
